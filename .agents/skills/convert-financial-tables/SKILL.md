@@ -1,68 +1,58 @@
 ---
 name: convert-financial-tables
-description: Convert financial tables from filings, reports, spreadsheets, PDFs, screenshots, or pasted text into faithful Markdown before passing them to an LLM for analysis, extraction, summarization, or QA.
+description: Converts PDF financial filings, reports, and statements into LLM-ready Markdown tables with opendataloader-pdf before prompt construction; use when app code needs to send 10-K, 10-Q, or statement tables to an LLM.
 ---
 
 # Convert Financial Tables
 
-## Core Rule
+## Core Workflow
 
-Convert every financial table into Markdown before including it in an LLM prompt. Do not pass raw OCR, copied PDF layout text, HTML fragments, spreadsheet dumps, or visually implied rows directly when a Markdown table can preserve the structure.
+Use this skill to convert financial tables from PDF filings and reports into Markdown before the text is passed to an LLM.
 
-## Workflow
+1. Accept only PDF financial documents: 10-Ks, 10-Qs, annual reports, interim reports, financial statements, and similar filing/report PDFs.
+2. Do not route CSV, XLSX, HTML, image-only files, or generic non-financial PDFs through this skill unless they have first become a PDF filing/report handled by the project convention.
+3. Use the `opendataloader-pdf` CLI as the extraction backend. It is the Java-based project convention for PDF table conversion.
+4. Let `opendataloader-pdf` handle extraction escalation in this order: Markdown, then cluster, then hybrid Docling for borderless or scanned tables.
+5. Return a Markdown string that preserves table structure, period labels, units, notes, page or section markers, and source context when the CLI provides them.
+6. Call the conversion immediately before building the LLM prompt, so the prompt receives Markdown tables instead of raw PDF text or bytes.
 
-1. Identify each logical table and its context:
-   - Source document, page or sheet, table title, reporting period, currency, units, and footnotes.
-   - Whether values are audited, unaudited, restated, pro forma, non-GAAP, trailing twelve months, or estimates.
-2. Extract the table structure before interpreting it:
-   - Preserve row order, column order, indentation, subtotals, section headers, and blank separator rows when they carry meaning.
-   - Combine multi-row column headers into explicit labels such as `Q1 2026 Revenue` or `2026 Actual`.
-   - Repeat shared units or period labels inside column names when the source relies on visual grouping.
-3. Render one Markdown table per logical table:
-   - Use a header row, separator row, and one row per source row.
-   - Escape literal pipe characters as `\|`.
-   - Keep original numeric notation for negatives, dashes, percentages, basis points, currency symbols, and footnote markers.
-   - Use `[blank]` only when the source cell is intentionally empty; use `[illegible]` only when extraction is uncertain.
-4. Add compact metadata immediately before the Markdown table:
-   - Include source, title, period, units, and relevant notes.
-   - State extraction uncertainties before the table, not after the LLM has reasoned over it.
-5. Pass the Markdown table to the LLM with task instructions:
-   - Ask the LLM to rely only on the supplied Markdown and notes unless external data is explicitly requested.
-   - Tell the LLM not to recompute totals unless the user asks for calculation or validation.
+## TypeScript Integration
 
-## Financial Table Conventions
+Expose the conversion as an async library function in the `ts-base` codebase:
 
-- Preserve parentheses for negative numbers, e.g. `(123)`, unless explicitly normalizing values for a downstream tool.
-- Preserve scale statements such as `in millions`, `except per-share data`, `bps`, or `%`; do not silently convert units.
-- Preserve footnote markers such as `Revenue (1)` or `Adjusted EBITDA*` and include footnote text below the table when available.
-- Keep section rows such as `Current assets`, `Operating expenses`, or `Cash flows from financing activities` as table rows with blank numeric cells.
-- Keep signs and dashes distinct: `-`, `--`, `nm`, `n/a`, and `0` may mean different things in financial reporting.
-- If a wide table must be split, split by period or metric group and repeat the row labels, units, title, and source in each segment.
-
-## Prompt Package Format
-
-Use this structure when sending the result onward:
-
-```markdown
-Source: <document, page/sheet, URL or file if available>
-Table: <title>
-Period: <period covered>
-Units: <currency and scale>
-Notes: <footnotes, extraction caveats, accounting basis>
-
-| <row label> | <column 1> | <column 2> |
-| --- | ---: | ---: |
-| <source row> | <value> | <value> |
+```ts
+export async function convertFinancialTablesToMarkdown(
+  pdfPath: string,
+): Promise<string> {
+  // Run opendataloader-pdf with the local project command shape.
+}
 ```
 
-Align numeric columns with `---:` when convenient, but prioritize faithful extraction over Markdown styling.
+Implementation guidance:
 
-## Quality Check
+- Use `execFile` or `spawn` with argv arrays rather than shell-interpolated commands.
+- Validate that the input path points to a `.pdf` before invoking the CLI.
+- Prefer the existing local `opendataloader-pdf` command syntax from project docs or scripts if present.
+- Configure the CLI for Markdown output and the project escalation path: markdown -> cluster -> hybrid Docling.
+- Reject empty or whitespace-only output as a conversion failure.
+- Include CLI stderr and exit code context in thrown errors, without swallowing the original failure.
+- Keep the function responsible only for conversion; LLM prompt construction should call it and then insert the returned Markdown into the prompt.
 
-Before passing the table to an LLM, verify:
+Example call site:
 
-- Every row has the same number of Markdown cells.
-- Column headers contain enough period, scenario, unit, and currency context to stand alone.
-- Totals, subtotals, and key metrics match the source visually or are flagged as uncertain.
-- Footnotes, exceptions, and non-GAAP labels are included when they affect interpretation.
-- No values were rounded, normalized, inferred, reordered, or omitted without an explicit note.
+```ts
+const tablesMarkdown = await convertFinancialTablesToMarkdown(filingPdfPath);
+
+const prompt = [
+  "Analyze these financial tables.",
+  "",
+  tablesMarkdown,
+].join("\n");
+```
+
+## Guardrails
+
+- Do not hand-roll PDF table extraction with generic text extraction, OCR, `pdfplumber`, Camelot, Tabula, or ad hoc regex parsing unless the task is explicitly to maintain `opendataloader-pdf` itself.
+- Do not pass raw extracted page text to the LLM when a table-aware Markdown conversion can run.
+- Do not persist converted Markdown unless the application already has a reason to cache or audit intermediate conversion output.
+- Preserve financial labels exactly: statement names, row labels, column headings, currencies, units, footnotes, negative-number notation, and fiscal period text.
