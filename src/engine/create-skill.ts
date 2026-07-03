@@ -10,6 +10,7 @@ import {
   type AgentBackend,
   type BackendCommandRunner
 } from "./backend";
+import type { ResolvedModelSettings } from "../config/farrier-config";
 import type { RenderedFile } from "./render";
 import {
   collapseDescription,
@@ -202,6 +203,13 @@ export type CreateSkillDeps = {
   signal?: AbortSignal;
   /** Asked when the authored skill's destination already exists; absent = keep (error). */
   onCollision?: (info: CollisionInfo) => Promise<CollisionDecision>;
+  /**
+   * Per-backend model/effort from config resolution. Used when the request
+   * carries no explicit model; each per-agent leg reads its own backend's
+   * settings. Built-in defaults (claude opus, codex high effort) apply when a
+   * backend has no entry.
+   */
+  modelSettings?: Partial<Record<CreateAgent, ResolvedModelSettings>>;
 };
 
 function throwIfCancelled(signal: AbortSignal | undefined): void {
@@ -288,7 +296,13 @@ async function authorSkill(input: {
 
   throwIfCancelled(input.deps.signal);
   input.deps.progress?.("authoring", input.agent);
-  const command = backendCommand(input.agent, input.model, prompt, { write: true, stream: true });
+  // Explicit request model wins; else config for this backend; else the
+  // built-in skill-creation defaults (claude authors with opus, codex leans on
+  // its account default at high reasoning effort).
+  const settings = input.deps.modelSettings?.[input.agent];
+  const model = input.model ?? settings?.model ?? (input.agent === "claude" ? "opus" : undefined);
+  const reasoningEffort = settings?.reasoningEffort ?? (input.agent === "codex" ? "high" : undefined);
+  const command = backendCommand(input.agent, model, prompt, { write: true, stream: true, reasoningEffort });
   const runner = input.deps.backendRunner ?? defaultBackendRunner;
   const output = await runner({
     cmd: command.cmd,

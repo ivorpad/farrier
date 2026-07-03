@@ -1,6 +1,7 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
+import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
 import { probeAgents, type AgentAvailability } from "../engine/backend";
 import {
   createSkills,
@@ -20,6 +21,7 @@ type Phase = "form" | "refining" | "questions" | "writing" | "done" | "eval";
 
 type CreateAppProps = {
   targetDir: string;
+  models: ModelsConfig;
   onExit: (code: number, message?: string) => void;
 };
 
@@ -99,11 +101,14 @@ function CreateApp(props: CreateAppProps) {
     Promise.all(
       requests.map(async (request, requestIndex) => {
         try {
+          const refineSettings = resolveModelSettings({ models: props.models, backend: refineBackend, role: "refine" });
           const questions = await generateRefineQuestions({
             description: request.description,
             backend: refineBackend,
             targetDir: props.targetDir,
-            packId
+            packId,
+            model: refineSettings.model,
+            reasoningEffort: refineSettings.reasoningEffort
           });
           return questions.map((question): PendingQuestion => ({ requestIndex, description: request.description, question }));
         } catch {
@@ -160,7 +165,12 @@ function CreateApp(props: CreateAppProps) {
 
     // Concurrent authoring (each run has its own staging root); lock-touching
     // installs are serialized inside createSkills.
-    createSkills(requests, props.targetDir, { signal: controller.signal, onCollision }, (event) => {
+    const modelSettings = {
+      claude: resolveModelSettings({ models: props.models, backend: "claude", role: "skillCreation" }),
+      codex: resolveModelSettings({ models: props.models, backend: "codex", role: "skillCreation" })
+    };
+
+    createSkills(requests, props.targetDir, { signal: controller.signal, onCollision, modelSettings }, (event) => {
       if (cancelled) {
         return;
       }
@@ -311,6 +321,10 @@ function CreateApp(props: CreateAppProps) {
 export async function runCreateWizard(targetDir: string): Promise<number> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
 
+  const models = await loadFarrierConfig({ projectDir: targetDir })
+    .then((loaded) => loaded.config.models)
+    .catch(() => ({}) as ModelsConfig);
+
   try {
     // The default ctrl+c handler destroys the renderer without resolving
     // anything, orphaning spawned claude/codex runs; CreateApp handles ctrl+c
@@ -336,7 +350,7 @@ export async function runCreateWizard(targetDir: string): Promise<number> {
         resolve(code);
       };
 
-      createRoot(cliRenderer).render(<CreateApp targetDir={targetDir} onExit={finish} />);
+      createRoot(cliRenderer).render(<CreateApp targetDir={targetDir} models={models} onExit={finish} />);
     });
   } catch (error) {
     renderer?.destroy();

@@ -243,6 +243,35 @@ describe("learn LLM proposal validation", () => {
     ]);
   });
 
+  test("codex learn passes reasoningEffort through to the spawned command", async () => {
+    const project = await tempDir();
+    const transcripts = await tempDir("farrier-learn-transcripts-");
+    await renderPack(project, "python-fastapi");
+
+    await writeTranscript(transcripts, [
+      bashUse("rm-1", "rm -rf node_modules"),
+      toolResult("rm-1", "exited with code 1: blocked by hook")
+    ]);
+
+    const calls: Array<{ cmd: string[]; cwd: string; stdin?: string }> = [];
+    const runner: LearnCommandRunner = async (input) => {
+      calls.push(input);
+      return { exitCode: 0, stderr: "", stdout: JSON.stringify({ rules: [] }) };
+    };
+
+    await createLearnReport({
+      targetDir: project,
+      transcriptsDir: transcripts,
+      backend: "codex",
+      reasoningEffort: "xhigh",
+      runner
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.cmd[0]).toBe("codex");
+    expect(calls[0]!.cmd.join(" ")).toContain("-c model_reasoning_effort=xhigh");
+  });
+
   test("backend infrastructure failure falls back to deterministic proposals with a note", async () => {
     const project = await tempDir();
     const transcripts = await tempDir("farrier-learn-transcripts-");

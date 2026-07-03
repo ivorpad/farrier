@@ -7,6 +7,7 @@ import {
   type AgentBackend,
   type BackendCommandRunner
 } from "./backend";
+import type { ReasoningEffort } from "../config/farrier-config";
 import {
   ensureCreatorInstalled,
   nativeSkillRoots,
@@ -209,6 +210,7 @@ export async function evaluatePerAgentSkill(input: {
   description?: string;
   backend: AgentBackend;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   runner?: BackendCommandRunner;
   signal?: AbortSignal;
   /** Used only to self-heal a missing pinned creator via a global install. */
@@ -241,6 +243,7 @@ export async function evaluatePerAgentSkill(input: {
       const parsed = await invokeBackend({
         backend: input.backend,
         model: input.model,
+        reasoningEffort: input.reasoningEffort,
         prompt: buildLabeledEvalPrompt({
           skillName: input.skillName,
           description: input.description,

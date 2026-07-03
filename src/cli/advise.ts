@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { loadFarrierConfig, resolveModelSettings } from "../config/farrier-config";
 import { detectPacks } from "../engine/detect";
 import { adviseSkills, detectAgentBackend, resolveContext, type AdviseBackend } from "../engine/advise";
 
@@ -164,13 +165,19 @@ export async function runAdvise(args: string[]): Promise<number> {
   const detectedPackIds = await detectPacks(targetDir).catch(() => [] as string[]);
   const packId = detectedPackIds[0] ?? "generic";
 
+  const models = await loadFarrierConfig({ projectDir: targetDir })
+    .then((loaded) => loaded.config.models)
+    .catch(() => ({}));
+  const adviseSettings = resolveModelSettings({ models, backend, role: "advise", explicitModel: options.model });
+
   try {
     const result = await adviseSkills({
       targetDir,
       packId,
       contextText: resolvedContext.text,
       backend,
-      model: options.model
+      model: adviseSettings.model,
+      reasoningEffort: adviseSettings.reasoningEffort
     });
 
     if (options.json) {

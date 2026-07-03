@@ -7,7 +7,7 @@ import { runSkillEval } from "./cli/skill-eval";
 import { runSkillNew } from "./cli/skill-new";
 import { runUpdate } from "./cli/update";
 import { loadConfiguredCatalog } from "./cli/registry";
-import { loadFarrierConfig } from "./config/farrier-config";
+import { loadFarrierConfig, resolveModelSettings } from "./config/farrier-config";
 import { detectPacks } from "./engine/detect";
 import {
   applyLearn,
@@ -430,6 +430,16 @@ async function runLearn(args: string[]): Promise<number> {
   const targetDir = resolve(options.dir);
   const transcriptsDir = options.transcripts ? resolve(options.transcripts) : undefined;
 
+  const models = await loadFarrierConfig({ projectDir: targetDir })
+    .then((loaded) => loaded.config.models)
+    .catch(() => ({}));
+  const learnSettings = resolveModelSettings({
+    models,
+    backend: options.backend ?? "claude",
+    role: "learn",
+    explicitModel: options.model
+  });
+
   if (options.yes) {
     const result = await applyLearn({
       targetDir,
@@ -438,7 +448,8 @@ async function runLearn(args: string[]): Promise<number> {
       json: options.json,
       noLlm: options.noLlm,
       backend: options.backend,
-      model: options.model
+      model: learnSettings.model,
+      reasoningEffort: learnSettings.reasoningEffort
     });
 
     if (options.json) {
@@ -470,7 +481,8 @@ async function runLearn(args: string[]): Promise<number> {
     json: options.json,
     noLlm: options.noLlm,
     backend: options.backend,
-    model: options.model
+    model: learnSettings.model,
+    reasoningEffort: learnSettings.reasoningEffort
   });
 
   if (options.json) {

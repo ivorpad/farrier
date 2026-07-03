@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
 import { probeAgents } from "../engine/backend";
 import {
   canonicalSkillRoot,
@@ -54,7 +55,7 @@ Options:
                        author-codex   codex authors the canonical copy, installed to all agents
                        per-agent      each agent authors its own copy in its native skill dir
   --name <kebab>     Ask the creator for this exact skill name.
-  --model <name>     Backend model override for the authoring run.
+  --model <name>     Backend model override for the authoring run (overrides the models config).
   --no-llm           Skip agent authoring; write a deterministic SKILL.md scaffold instead.
   --refine           Ask clarifying questions first (interactive; requires a terminal): the backend
                      proposes the open implementation decisions, your answers join the brief.
@@ -179,6 +180,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Best-effort model config load; a broken/absent config falls back to no overrides. */
+async function loadModelsConfig(targetDir: string): Promise<ModelsConfig> {
+  try {
+    return (await loadFarrierConfig({ projectDir: targetDir })).config.models;
+  } catch {
+    return {};
+  }
+}
+
 function emit(options: SkillNewCliOptions, result: Record<string, unknown>, lines: string[]): void {
   if (options.json) {
     console.log(JSON.stringify(result, null, 2));
@@ -287,16 +297,23 @@ async function askRefineQuestions(
   return answers;
 }
 
-async function refineDescription(options: SkillNewCliOptions, targetDir: string, backend: CreateAgent): Promise<string> {
+async function refineDescription(
+  options: SkillNewCliOptions,
+  targetDir: string,
+  backend: CreateAgent,
+  models: ModelsConfig
+): Promise<string> {
   const packId = (await detectPacks(targetDir).catch(() => [] as string[]))[0];
   console.log(`Asking ${backend} what the brief leaves open…`);
 
+  const refineSettings = resolveModelSettings({ models, backend, role: "refine", explicitModel: options.model });
   const questions = await generateRefineQuestions({
     description: options.description!,
     backend,
     targetDir,
     packId,
-    model: options.model
+    model: refineSettings.model,
+    reasoningEffort: refineSettings.reasoningEffort
   });
 
   if (questions.length === 0) {
@@ -405,6 +422,8 @@ export async function runSkillNew(args: string[]): Promise<number> {
       return 1;
     }
 
+    const models = await loadModelsConfig(targetDir);
+
     let description = options.description;
 
     if (options.refine) {
@@ -413,15 +432,21 @@ export async function runSkillNew(args: string[]): Promise<number> {
         return 1;
       }
 
-      description = await refineDescription(options, targetDir, authoringAgents[0]!);
+      description = await refineDescription(options, targetDir, authoringAgents[0]!, models);
     }
 
+    // Explicit --model stays on the request (it wins everywhere); config-derived
+    // skillCreation settings fill in per backend when no --model was given.
     const outcomes = await createSkills(
       [{ description, agents, mode, nameOverride: options.name, model: options.model }],
       targetDir,
       {
         install: !options.noInstall,
-        onCollision: options.force ? async (): Promise<CollisionDecision> => "replace" : undefined
+        onCollision: options.force ? async (): Promise<CollisionDecision> => "replace" : undefined,
+        modelSettings: {
+          claude: resolveModelSettings({ models, backend: "claude", role: "skillCreation" }),
+          codex: resolveModelSettings({ models, backend: "codex", role: "skillCreation" })
+        }
       }
     );
     const outcome = outcomes[0]!;
@@ -436,11 +461,18 @@ export async function runSkillNew(args: string[]): Promise<number> {
         return 1;
       }
 
+      const evalSettings = resolveModelSettings({
+        models,
+        backend: authoringAgents[0]!,
+        role: "eval",
+        explicitModel: options.model
+      });
       verdict = await evaluatePerAgentSkill({
         targetDir,
         ...candidate,
         backend: authoringAgents[0]!,
-        model: options.model
+        model: evalSettings.model,
+        reasoningEffort: evalSettings.reasoningEffort
       });
 
       const scores = `claude ${verdict.copies.claude.score}/10 · codex ${verdict.copies.codex.score}/10`;

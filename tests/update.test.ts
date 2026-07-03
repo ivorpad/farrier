@@ -101,7 +101,8 @@ async function remoteCatalog(input: { hookVersion: number; hookContent: string; 
       useDefaultPacks: true,
       registries: {
         "@acme": "https://registry.example/{name}.json"
-      }
+      },
+      models: {}
     },
     client: remoteRegistryClient(input)
   });

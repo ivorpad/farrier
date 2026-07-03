@@ -268,6 +268,33 @@ Detection returns most-specific-first; packs inherit (`python-fastapi extends py
 
 ---
 
+## Model configuration
+
+The LLM-backed commands (`skill new`, `skill eval`, `advise`, `learn`) pick a model — and, for codex, a reasoning effort — per backend and per role. Set them under a `models` key in the same config files that hold registries: the user config (`${XDG_CONFIG_HOME:-~/.config}/farrier/config.json`) and the project config (`<project>/farrier.config.json`).
+
+```jsonc
+{
+  "models": {
+    "claude": {
+      "default": "sonnet",     // fallback for every claude role
+      "skillCreation": "opus"  // authoring uses Opus by default
+    },
+    "codex": {
+      "default": { "model": "gpt-5.5", "reasoningEffort": "medium" },
+      "skillCreation": { "reasoningEffort": "xhigh" }  // inherits model from default
+    }
+  }
+}
+```
+
+Each backend (`claude`, `codex`) takes a `default` plus any of the roles `skillCreation`, `eval`, `refine`, `advise`, `learn`. An entry is either a model-name string or a `{ model?, reasoningEffort? }` object. `reasoningEffort` is one of `minimal | low | medium | high | xhigh` and is **codex-only** — setting it under `claude` is a config error. Unknown backends or role keys are rejected so typos fail fast.
+
+Precedence for a given call, first match wins: **explicit `--model`** → project role entry → project `default` → user role entry → user `default` → built-in defaults. Field resolution is independent: a role can set only `reasoningEffort` and inherit `model` from `default`.
+
+Built-in defaults when nothing is configured: skill creation authors with **Opus** on claude and **high** reasoning effort on codex; every other claude role uses **sonnet**; `learn` falls back to `haiku` (claude) / `gpt-5.5` (codex). Codex is deliberately left with **no default model** — an explicit `--model` for a model your account lacks fails silently, so omitting it lets codex use your account's default (reasoning effort still applies).
+
+---
+
 ## Developing farrier itself
 
 ```bash

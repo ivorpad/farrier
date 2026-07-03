@@ -64,7 +64,8 @@ const baseConfig: FarrierConfig = {
   registries: {
     "@acme": "https://registry.example/{name}.json",
     "@platform": "https://platform.example/{name}.json"
-  }
+  },
+  models: {}
 };
 
 const guardHook: RegistryItem = {
@@ -220,7 +221,8 @@ describe("PackCatalog", () => {
       useDefaultPacks: true,
       registries: {
         "@acme": "https://registry.example/{name}.json"
-      }
+      },
+      models: {}
     };
     const client = fixtureClient({
       "@acme": {
@@ -261,7 +263,8 @@ describe("PackCatalog", () => {
       useDefaultPacks: true,
       registries: {
         "@acme": "https://registry.example/{name}.json"
-      }
+      },
+      models: {}
     };
 
     const catalog = await loadPackCatalog({
