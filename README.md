@@ -79,6 +79,14 @@ Open Claude Code in the generated project and try to misbehave:
 
 Meanwhile every edit triggers `just check`, and when the agent tries to end its turn, `just konsistent` verifies the project structure — failures block the stop with actionable feedback, so the agent fixes them before yielding.
 
+### How skill search & installs run
+
+The wizard's Skills step is tuned so neither the network nor the skills CLI ever makes you wait twice:
+
+- **Search** is debounced (300 ms), and a superseded keystroke *aborts* the in-flight HTTP request rather than just discarding its result. Results are cached per query for the wizard session, so backspacing to an earlier query renders instantly. Search runs concurrently with agent advise — neither blocks the other.
+- **Installs** are grouped by source: one `skills add <source> -s a b c` per source, so each source repo is cloned once no matter how many of its skills you picked. Different sources install concurrently (capped at 4 via [Effect](https://effect.website)).
+- **Lockfile repair**: the skills CLI updates `skills-lock.json` with an unlocked read-modify-write, so concurrent installs can drop each other's lock entries. After a multi-source install, farrier verifies the lock and sequentially re-runs any skills whose entries were clobbered — sequential runs can't race, so one repair pass converges.
+
 ---
 
 ## What got generated (and why each file exists)
@@ -207,6 +215,31 @@ farrier advise --dir . --backend codex --json
 It runs two backend calls — generate 2-4 registry search queries, then pick at most 6 skills from the candidates — and validates every returned ref against the candidate set before printing it, so a hallucinated ref never reaches an install. Exits 1 when there is no context, no backend available, or the backend call fails; otherwise it always prints (even zero recommendations).
 
 The same context and backend detection power a toggle on the wizard's Skills step. Passing `--context` on the bare `farrier` invocation enables it immediately — research starts at launch (searches run in parallel) so recommendations are ready by the time you reach Skills. With only an auto-detected `PRP.md` the toggle stays **off by default**; press `a` to run it. Recommendations merge into the picker as ★ proposals — nothing is auto-selected, and failures only show a warning, never blocking the wizard.
+
+### `farrier skill new` — create a skill with each vendor's own skill-creator
+
+Farrier does not own a skill-authoring prompt. It delegates to the vendor's recommended creator — Claude uses the pinned `anthropics/skills` **skill-creator** (installed into the target on first use, refreshed by `skills update`), Codex uses its **built-in `$skill-creator`** (ships with the codex CLI) — then deterministically validates the result (exactly one new kebab-case skill directory, parseable frontmatter, description ≤ 500 chars; frontmatter name repaired to match the directory) and installs it through the same `skills add` path as any third-party skill.
+
+The wizard has a **Create** step (Stack → Skills → Create → Hooks → Learn → Review): describe the skill, check the target agents (`[x] claude [x] codex` — only agents whose CLI answers `--version` are selectable), and when both are checked, pick who authors:
+
+- **Claude authors, install to both** — one canonical `skills/<name>/`, lock-tracked, installed via `skills add ./skills -a claude-code codex`.
+- **Codex authors, install to both** — same, codex writes the canonical copy.
+- **Each agent authors its own copy** — claude writes `.claude/skills/<name>/`, codex writes `.agents/skills/<name>/`; truest to each vendor, but the copies may diverge and are not lock-tracked.
+
+Vague briefs make dumb skills, so the standalone create flow **asks first**: before authoring, farrier makes one read-only backend call (`claude -p` / `codex exec`) that proposes 2–4 concrete questions about whatever the description leaves open — language, specific libraries, input/output formats — each with recommended options, a "let the creator decide" escape hatch, and free-text input (`s` skips a question, esc skips them all). Your answers are folded into the brief as an "Implementation decisions (follow these exactly)" block before it reaches the skill-creator. Toggle it off with the "ask clarifying questions first" checkbox; the wizard's Create step asks the same questions at queue time. Headless `farrier skill new` asks only with `--refine` (interactive: numbers pick options, free text is used verbatim, empty lets the creator decide) — otherwise put the decisions in the description yourself. If the authored skill's directory already exists, the TUI asks whether to **replace** it or keep the existing copy (the new one stays in `.farrier-staging/`); headless replaces only with `--force`.
+
+You don't need the full wizard to create a skill: bare `farrier` now opens a launcher — **⚒ Forge the harness** (the full wizard) or **✚ Create a skill** (straight to authoring) — and bare `farrier skill new` (optionally with `--dir`) on a terminal opens the same standalone create flow directly: describe → check agents → ⚒ Create → per-skill results.
+
+Queue as many skills as you like (each enter queues another; empty + enter starts). They are authored **in parallel** — up to 3 agent runs at once, each in its own staging root so runs can't cross-contaminate, with lockfile-touching installs serialized — while a progress screen shows each skill's phase (pinning creator → authoring via claude/codex → validating → installing → ✓/✗). Each run is a full agent session, so expect minutes. Headless:
+
+```bash
+farrier skill new "Convert financial tables to markdown before sending them to the LLM" --yes
+farrier skill new "Mask PII in outgoing prompts" --agents claude,codex --mode per-agent --yes
+farrier skill new "Route queries to docs or the balance API" --name query-router --yes --json
+farrier skill new "Log token costs as JSON" --no-llm --yes    # offline scaffold, no agent run
+```
+
+`--mode` is required when more than one agent is selected (headless never guesses). Authoring failures never silently downgrade: a failed backend or a malformed result exits 1 with the files left on disk for inspection, and a failed install prints the exact `skills add` retry command. Override the pinned creators with `FARRIER_CREATOR_CLAUDE` / `FARRIER_CREATOR_CODEX` (`<source>@<skillId>`).
 
 ### The harness-advisor skill
 
