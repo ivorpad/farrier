@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { AgentAvailability } from "../engine/backend";
 import type { CreateAgent, SkillCreationRequest } from "../engine/create-skill";
 import { CreateStep } from "./CreateStep";
+import type { SkillEvalPolicy } from "./create-eval";
 import { RefineFlow } from "./RefineScreen";
 
 type WizardCreateProps = {
@@ -9,6 +10,8 @@ type WizardCreateProps = {
   availability?: AgentAvailability;
   targetDir: string;
   packId?: string;
+  evalPolicy?: SkillEvalPolicy;
+  onCycleEvalPolicy?: () => void;
   onAdd: (request: SkillCreationRequest) => void;
   onRemove: (index: number) => void;
   onNext: () => void;
@@ -58,6 +61,8 @@ export function WizardCreate(props: WizardCreateProps) {
       refine={refine}
       refineBackend={refineBackend}
       onToggleRefine={() => setRefine((current) => !current)}
+      evalPolicy={props.evalPolicy}
+      onCycleEvalPolicy={props.onCycleEvalPolicy}
       onAddRequest={(request) => (shouldRefine ? setFlow({ request, thenNext: false }) : props.onAdd(request))}
       onRemoveRequest={props.onRemove}
       onSubmit={(pending) => {

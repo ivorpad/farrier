@@ -16,7 +16,7 @@ import {
   type SkillCreationProgressEvent,
   type SkillCreationRequest
 } from "../src/engine/create-skill";
-import type { CommandRunner, CommandRunnerInput } from "../src/engine/skills";
+import type { CommandRunner, CommandRunnerInput, ResolveSkillsCommandDeps } from "../src/engine/skills";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-create-skill-"));
@@ -131,26 +131,33 @@ describe("create-skill engine", () => {
     }
   });
 
-  test("ensureCreatorInstalled installs claude's creator for claude-code only and skips when pinned", async () => {
+  test("ensureCreatorInstalled installs claude's creator globally, and skips when already global or pinned", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];
     process.env[skillsBin] = "skills";
+    const missingGlobally: ResolveSkillsCommandDeps = { which: () => null, exists: () => false };
+    const presentGlobally: ResolveSkillsCommandDeps = { which: () => null, exists: () => true };
 
     try {
       const { runner, calls } = recordingSkillsRunner();
-      const result = await ensureCreatorInstalled("claude", dir, runner);
+      const result = await ensureCreatorInstalled("claude", dir, runner, missingGlobally);
 
       expect(calls).toEqual([
         {
-          cmd: ["skills", "add", "anthropics/skills", "-s", "skill-creator", "-a", "claude-code", "-y"],
+          cmd: ["skills", "add", "anthropics/skills", "-s", "skill-creator", "-a", "claude-code", "-g", "-y"],
           cwd: dir
         }
       ]);
       expect(result?.ok).toBe(true);
 
+      const global = recordingSkillsRunner();
+      const skippedGlobal = await ensureCreatorInstalled("claude", dir, global.runner, presentGlobally);
+      expect(global.calls).toEqual([]);
+      expect(skippedGlobal?.ok).toBe(true);
+
       await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
       const again = recordingSkillsRunner();
-      const skipped = await ensureCreatorInstalled("claude", dir, again.runner);
+      const skipped = await ensureCreatorInstalled("claude", dir, again.runner, missingGlobally);
       expect(again.calls).toEqual([]);
       expect(skipped?.ok).toBe(true);
 

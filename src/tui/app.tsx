@@ -12,15 +12,16 @@ import type { ResolvedPack } from "../packs/types";
 import { loadFarrierConfig } from "../config/farrier-config";
 import { builtinCatalog, loadPackCatalog, type PackCatalog } from "../registry/catalog";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
-import { eligiblePerAgentEvals, SkillEvalFlow, type PendingSkillEval } from "./create-eval";
+import { nextEvalPolicy, type SkillEvalPolicy } from "./create-eval";
 import { runForgeWrite } from "./forge";
+import { WizardDone } from "./wizard-done";
 import { createInitialWizardState, wizardReducer, type PackDefaults, type WizardState } from "./machine";
 import { StackStep } from "./StackStep";
 import { SkillsStep } from "./SkillsStep";
 import { WizardCreate } from "./wizard-create";
 import { HooksStep } from "./HooksStep";
 import { LearnStep } from "./LearnStep";
-import { DoneStep, ReviewStep, WritingStep, type ReviewFile } from "./ReviewStep";
+import { ReviewStep, WritingStep, type ReviewFile } from "./ReviewStep";
 
 type WizardAppProps = {
   targetDir: string;
@@ -87,7 +88,7 @@ function WizardApp(props: WizardAppProps) {
   const [agentAvailability, setAgentAvailability] = useState<AgentAvailability | undefined>(undefined);
   const [createCancelling, setCreateCancelling] = useState(false);
   const [collision, setCollision] = useState<CollisionPrompt | null>(null);
-  const [pendingEval, setPendingEval] = useState<PendingSkillEval | null>(null);
+  const [evalPolicy, setEvalPolicy] = useState<SkillEvalPolicy>("ask");
   const createAbortRef = useRef<AbortController | null>(null);
   const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -104,11 +105,9 @@ function WizardApp(props: WizardAppProps) {
       createAbortRef.current?.abort();
       collision?.resolve("keep");
     } else if (state.step === "Done") {
-      if (pendingEval) {
-        // SkillEvalFlow owns ctrl+c while active (its progress screen cancels).
-        return;
-      }
-      props.onExit(state.writeStatus?.ok === false ? 1 : 0);
+      // WizardDone owns ctrl+c: its eval screens cancel non-destructively and
+      // the summary screen exits.
+      return;
     } else {
       props.onExit(1);
     }
@@ -359,6 +358,8 @@ function WizardApp(props: WizardAppProps) {
           availability={agentAvailability}
           targetDir={props.targetDir}
           packId={state.packId}
+          evalPolicy={evalPolicy}
+          onCycleEvalPolicy={() => setEvalPolicy(nextEvalPolicy)}
           onAdd={(request) => dispatch({ type: "ADD_CREATE_REQUEST", request })}
           onRemove={(index) => dispatch({ type: "REMOVE_CREATE_REQUEST", index })}
           onNext={() => dispatch({ type: "NEXT" })}
@@ -420,22 +421,10 @@ function WizardApp(props: WizardAppProps) {
     case "Writing":
       return <WritingStep creatingCount={state.createRequests.length} cancelling={createCancelling} collision={collision} />;
 
-    case "Done": {
-      if (pendingEval) {
-        return (
-          <SkillEvalFlow
-            targetDir={props.targetDir}
-            candidate={pendingEval}
-            backend={agentAvailability?.claude ? "claude" : agentAvailability?.codex ? "codex" : undefined}
-            onClose={() => setPendingEval(null)}
-            onExit={() => props.onExit(0)}
-          />
-        );
-      }
-
-      const evalCandidate = eligiblePerAgentEvals(state.createOutcomes)[0];
+    case "Done":
       return (
-        <DoneStep
+        <WizardDone
+          targetDir={props.targetDir}
           writeStatus={state.writeStatus}
           installResults={state.installResults}
           createOutcomes={state.createOutcomes}
@@ -443,16 +432,11 @@ function WizardApp(props: WizardAppProps) {
           hookCount={state.selectedHooks.length}
           skillCount={state.selectedSkills.length}
           ruleCount={ruleCount}
-          evalCandidate={evalCandidate}
-          onEvaluate={() => {
-            if (evalCandidate) {
-              setPendingEval(evalCandidate);
-            }
-          }}
-          onExit={() => props.onExit(0)}
+          evalPolicy={evalPolicy}
+          evalBackend={agentAvailability?.claude ? "claude" : agentAvailability?.codex ? "codex" : undefined}
+          onExit={props.onExit}
         />
       );
-    }
   }
 }
 

@@ -327,7 +327,7 @@ export function DoneStep(props: DoneStepProps) {
       return;
     }
 
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q") {
+    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
       props.onExit();
     }
   });

@@ -11,7 +11,7 @@ import {
 import { detectPacks } from "../engine/detect";
 import { applyRefinements, generateRefineQuestions } from "../engine/refine-skill";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
-import { eligiblePerAgentEvals, SkillEvalFlow, type PendingSkillEval } from "./create-eval";
+import { eligiblePerAgentEvals, nextEvalPolicy, SkillEvalFlow, type PendingSkillEval, type SkillEvalPolicy } from "./create-eval";
 import { CreateDoneScreen, CreateProgressScreen, type RequestStatus } from "./create-progress";
 import { CreateStep } from "./CreateStep";
 import { RefineScreen, RefineWaitScreen, type PendingAnswer, type PendingQuestion } from "./RefineScreen";
@@ -35,6 +35,7 @@ function CreateApp(props: CreateAppProps) {
   const [questionItems, setQuestionItems] = useState<PendingQuestion[]>([]);
   const [collision, setCollision] = useState<CollisionPrompt | null>(null);
   const [pendingEval, setPendingEval] = useState<PendingSkillEval | null>(null);
+  const [evalPolicy, setEvalPolicy] = useState<SkillEvalPolicy>("ask");
   const abortRef = useRef<AbortController | null>(null);
   // Concurrent runs can collide at once; prompts are shown one at a time.
   const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -186,8 +187,21 @@ function CreateApp(props: CreateAppProps) {
         })
       );
     }).then((results) => {
-      if (!cancelled) {
-        setOutcomes(results);
+      if (cancelled) {
+        return;
+      }
+
+      setOutcomes(results);
+
+      // Per-agent pairs go straight to the eval unless the user chose skip on
+      // the form. evalPolicy is frozen once the form is submitted, so reading
+      // it from the closure here is safe.
+      const candidate = evalPolicy === "skip" ? undefined : eligiblePerAgentEvals(results)[0];
+
+      if (candidate) {
+        setPendingEval(candidate);
+        setPhase("eval");
+      } else {
         setPhase("done");
       }
     });
@@ -211,6 +225,8 @@ function CreateApp(props: CreateAppProps) {
           refine={refine}
           refineBackend={refineBackend}
           onToggleRefine={() => setRefine((current) => !current)}
+          evalPolicy={evalPolicy}
+          onCycleEvalPolicy={() => setEvalPolicy(nextEvalPolicy)}
           onSubmit={(pending) => {
             const all = pending ? [...requests, pending] : requests;
 
@@ -278,6 +294,7 @@ function CreateApp(props: CreateAppProps) {
           targetDir={props.targetDir}
           candidate={pendingEval}
           backend={evalBackend}
+          autoApply={evalPolicy === "auto"}
           onClose={() => setPhase("done")}
           onExit={() => props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0)}
         />

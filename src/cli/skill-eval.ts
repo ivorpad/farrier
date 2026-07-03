@@ -10,11 +10,13 @@ import type { CreateAgent } from "../engine/create-skill";
 
 export type SkillEvalCliOptions = {
   skillName?: string;
+  claudeName?: string;
+  codexName?: string;
   dir: string;
   backend?: AgentBackend;
   model?: string;
   description?: string;
-  applyWinner?: CreateAgent;
+  applyWinner?: CreateAgent | "recommended";
   deleteLoserAndLink: boolean;
   json: boolean;
   help: boolean;
@@ -25,11 +27,18 @@ function usage(): string {
 
 Usage:
   farrier skill eval <skill-name> [--dir <target>] [--backend claude|codex] [--description <text>] [--json]
-  farrier skill eval <skill-name> --apply-winner claude|codex --delete-loser-and-link [--dir <target>]
+  farrier skill eval <skill-name> --apply-winner claude|codex|recommended --delete-loser-and-link [--dir <target>]
+  farrier skill eval <skill-name> --claude-name <name> --codex-name <name>   # copies that chose different names
 
-By default this is read-only: it asks a backend to compare .claude/skills/<name> and
-.agents/skills/<name> using the pinned Anthropic skill-creator eval guidance. It deletes
-and symlinks only when both --apply-winner and --delete-loser-and-link are present.`;
+By default this is read-only: the copies are staged at neutral paths and judged blind,
+twice with the candidates swapped, using the pinned Anthropic skill-creator eval guidance;
+a winner is only recommended when both passes agree. Per-copy reports are written under
+.farrier-staging/eval/<name>/. When the copies chose different directory names, pass
+--claude-name/--codex-name (each defaults to <skill-name>); picking a winner then links
+the loser's root under the winner's name. It deletes and symlinks only when both
+--apply-winner and --delete-loser-and-link are present. --apply-winner recommended applies
+the verdict's own pick — it keeps the deleted copy in .farrier-staging/trash/ so you can
+change your mind, and keeps both copies (exit 0) when the verdict is a tie.`;
 }
 
 function parseBackend(value: string): AgentBackend {
@@ -40,12 +49,12 @@ function parseBackend(value: string): AgentBackend {
   throw new Error("--backend must be claude or codex");
 }
 
-function parseWinner(value: string): CreateAgent {
-  if (value === "claude" || value === "codex") {
+function parseWinner(value: string): CreateAgent | "recommended" {
+  if (value === "claude" || value === "codex" || value === "recommended") {
     return value;
   }
 
-  throw new Error("--apply-winner must be claude or codex");
+  throw new Error("--apply-winner must be claude, codex, or recommended");
 }
 
 export function parseSkillEvalArgs(args: string[]): SkillEvalCliOptions {
@@ -61,7 +70,9 @@ export function parseSkillEvalArgs(args: string[]): SkillEvalCliOptions {
     { flag: "--backend", set: (value) => (options.backend = parseBackend(value)) },
     { flag: "--model", set: (value) => (options.model = value) },
     { flag: "--description", set: (value) => (options.description = value) },
-    { flag: "--apply-winner", set: (value) => (options.applyWinner = parseWinner(value)) }
+    { flag: "--apply-winner", set: (value) => (options.applyWinner = parseWinner(value)) },
+    { flag: "--claude-name", set: (value) => (options.claudeName = value) },
+    { flag: "--codex-name", set: (value) => (options.codexName = value) }
   ];
 
   const booleans: Record<string, () => void> = {
@@ -129,6 +140,9 @@ function printVerdict(verdict: SkillEvalVerdict): void {
   for (const note of verdict.notes) {
     console.log(`- ${note}`);
   }
+  if (verdict.reportPaths) {
+    console.log(`Reports: ${verdict.reportPaths.claude} · ${verdict.reportPaths.codex}`);
+  }
 }
 
 function printResolution(resolution: SkillWinnerResolution): void {
@@ -137,6 +151,9 @@ function printResolution(resolution: SkillWinnerResolution): void {
   }
   for (const link of resolution.links) {
     console.log(`Linked ${link.path} -> ${link.target}`);
+  }
+  if (resolution.backupPath) {
+    console.log(`Deleted copy kept at ${resolution.backupPath}`);
   }
 }
 
@@ -174,29 +191,46 @@ export async function runSkillEval(args: string[]): Promise<number> {
       return 1;
     }
 
+    const names = {
+      claude: options.claudeName ?? options.skillName,
+      codex: options.codexName ?? options.skillName
+    };
+
     const verdict = await evaluatePerAgentSkill({
       targetDir,
       skillName: options.skillName,
+      names,
       description: options.description,
       backend,
       model: options.model
     });
 
     let resolution: SkillWinnerResolution | undefined;
+    let tieKeptBoth = false;
 
-    if (options.applyWinner) {
+    if (options.applyWinner === "recommended" && verdict.recommendedWinner === "tie") {
+      tieKeptBoth = true;
+    } else if (options.applyWinner) {
       resolution = await resolvePerAgentSkillWinner({
         targetDir,
         skillName: options.skillName,
-        winner: options.applyWinner,
-        confirmDeleteAndLink: options.deleteLoserAndLink
+        names,
+        winner: options.applyWinner === "recommended" ? (verdict.recommendedWinner as CreateAgent) : options.applyWinner,
+        confirmDeleteAndLink: options.deleteLoserAndLink,
+        // Consent for "recommended" was given before the verdict existed, so
+        // the deleted copy is kept recoverable; an explicit pick deletes clean.
+        retainBackupInTrash: options.applyWinner === "recommended"
       });
     }
 
     if (options.json) {
-      console.log(JSON.stringify({ verdict, resolution }, null, 2));
+      console.log(JSON.stringify({ verdict, resolution, tieKeptBoth: tieKeptBoth || undefined }, null, 2));
     } else {
       printVerdict(verdict);
+      if (tieKeptBoth) {
+        console.log("");
+        console.log("Verdict is a tie — kept both copies, nothing deleted.");
+      }
       if (resolution) {
         console.log("");
         printResolution(resolution);
