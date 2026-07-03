@@ -1,0 +1,172 @@
+import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseSkillNewArgs, resolveRefineAnswer } from "../src/cli/skill-new";
+
+async function tempDir(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "farrier-skill-new-"));
+}
+
+function repoRoot(): string {
+  return dirname(dirname(fileURLToPath(import.meta.url)));
+}
+
+async function runCli(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn({
+    cmd: ["bun", "run", join(repoRoot(), "src", "cli.ts"), ...args],
+    cwd: repoRoot(),
+    stdout: "pipe",
+    stderr: "pipe"
+  });
+
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text()
+  ]);
+
+  return { exitCode, stdout, stderr };
+}
+
+describe("parseSkillNewArgs", () => {
+  test("takes a positional description and both flag forms", () => {
+    const options = parseSkillNewArgs([
+      "Extract IBANs",
+      "--dir",
+      "/tmp/x",
+      "--agents=claude,codex",
+      "--mode",
+      "per-agent",
+      "--name=iban-extractor",
+      "--model",
+      "sonnet",
+      "--no-llm",
+      "--refine",
+      "--force",
+      "--no-install",
+      "--dry-run",
+      "-y",
+      "--json"
+    ]);
+
+    expect(options.description).toBe("Extract IBANs");
+    expect(options.dir).toBe("/tmp/x");
+    expect(options.agents).toEqual(["claude", "codex"]);
+    expect(options.mode).toBe("per-agent");
+    expect(options.name).toBe("iban-extractor");
+    expect(options.model).toBe("sonnet");
+    expect(options.noLlm).toBe(true);
+    expect(options.refine).toBe(true);
+    expect(options.force).toBe(true);
+    expect(options.noInstall).toBe(true);
+    expect(options.dryRun).toBe(true);
+    expect(options.yes).toBe(true);
+    expect(options.json).toBe(true);
+  });
+
+  test("resolveRefineAnswer maps blank to creator-decides, numbers to options, text to itself", () => {
+    const options = ["pdfplumber", "camelot"];
+    expect(resolveRefineAnswer("", options)).toBe("");
+    expect(resolveRefineAnswer("  ", options)).toBe("");
+    expect(resolveRefineAnswer("1", options)).toBe("pdfplumber");
+    expect(resolveRefineAnswer("2", options)).toBe("camelot");
+    expect(resolveRefineAnswer("3", options)).toBe("3");
+    expect(resolveRefineAnswer("use tabula instead", options)).toBe("use tabula instead");
+  });
+
+  test("rejects unknown flags, second positionals, and bad enum values", () => {
+    expect(() => parseSkillNewArgs(["desc", "--wat"])).toThrow("Unknown skill new argument: --wat");
+    expect(() => parseSkillNewArgs(["one", "two"])).toThrow("single description");
+    expect(() => parseSkillNewArgs(["desc", "--mode", "freestyle"])).toThrow("--mode must be");
+    expect(() => parseSkillNewArgs(["desc", "--agents", "claude,cursor"])).toThrow("--agents accepts");
+    expect(() => parseSkillNewArgs(["desc", "--dir"])).toThrow("--dir requires a value");
+  });
+});
+
+describe("farrier skill new e2e (scaffold paths)", () => {
+  test("scaffolds a SKILL.md with --no-llm --yes --no-install", async () => {
+    const dir = await tempDir();
+    const result = await runCli(["skill", "new", "Summarize PR diffs before review", "--no-llm", "--yes", "--no-install", "--dir", dir]);
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+
+    const skillMd = await readFile(join(dir, "skills", "summarize-pr-diffs-before-review", "SKILL.md"), "utf8");
+    expect(skillMd).toStartWith("---\nname: summarize-pr-diffs-before-review\n");
+    expect(skillMd).toContain("description: Summarize PR diffs before review");
+    expect(skillMd).toContain("## Steps");
+  });
+
+  test("refuses to write without --yes and writes nothing", async () => {
+    const dir = await tempDir();
+    const result = await runCli(["skill", "new", "Some skill", "--no-llm", "--no-install", "--dir", dir]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("refusing to write without --yes");
+    expect(existsSync(join(dir, "skills"))).toBe(false);
+  });
+
+  test("dry-run previews without writing", async () => {
+    const dir = await tempDir();
+    const result = await runCli(["skill", "new", "Some skill", "--no-llm", "--dry-run", "--dir", dir]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("skills/some-skill/SKILL.md");
+    expect(result.stdout).toContain("nothing written");
+    expect(existsSync(join(dir, "skills"))).toBe(false);
+  });
+
+  test("collision exits 1 and --force overwrites", async () => {
+    const dir = await tempDir();
+    const args = ["skill", "new", "Some skill", "--no-llm", "--yes", "--no-install", "--dir", dir];
+
+    expect((await runCli(args)).exitCode).toBe(0);
+
+    const collision = await runCli(args);
+    expect(collision.exitCode).toBe(1);
+    expect(collision.stderr).toContain("already exists");
+
+    expect((await runCli([...args, "--force"])).exitCode).toBe(0);
+  });
+
+  test("honors --name and emits parseable --json", async () => {
+    const dir = await tempDir();
+    const result = await runCli([
+      "skill",
+      "new",
+      "Whatever text",
+      "--no-llm",
+      "--yes",
+      "--no-install",
+      "--name",
+      "my-skill",
+      "--json",
+      "--dir",
+      dir
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { name: string; mode: string; files: string[]; installed: boolean };
+    expect(parsed.name).toBe("my-skill");
+    expect(parsed.mode).toBe("scaffold");
+    expect(parsed.files).toEqual(["skills/my-skill/SKILL.md"]);
+    expect(parsed.installed).toBe(false);
+  });
+
+  test("requires a description and rejects unknown skill subcommands", async () => {
+    const missing = await runCli(["skill", "new", "--no-llm"]);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stderr).toContain("a description is required");
+
+    const unknown = await runCli(["skill", "delete", "x"]);
+    expect(unknown.exitCode).toBe(1);
+    expect(unknown.stderr).toContain("unknown skill subcommand");
+
+    const help = await runCli(["skill", "new", "--help"]);
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain("farrier skill new");
+  });
+});
