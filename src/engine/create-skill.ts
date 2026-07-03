@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import {
@@ -85,6 +86,22 @@ export const nativeSkillRoots: Record<CreateAgent, string> = {
 
 export const canonicalSkillRoot = "skills";
 
+// Bun's homedir() reads the OS user record directly and ignores a
+// runtime-mutated $HOME (unlike Node's, which checks it first on POSIX) —
+// check it ourselves so tests can point HOME at a scratch directory.
+export function resolvedHomedir(): string {
+  return process.env.HOME || homedir();
+}
+
+// Each agent's user-level (global) skill directory — where a `skills add -g`
+// install lands, and where the agent's own CLI discovers skills regardless of
+// which project it's running in. Resolved per call (not cached at module
+// load) so tests can point HOME at a scratch directory.
+export function globalSkillRoot(agent: CreateAgent): string {
+  const dir = agent === "claude" ? ".claude" : ".codex";
+  return join(resolvedHomedir(), dir, "skills");
+}
+
 const descriptionCharLimit = 16_000;
 
 async function lockedSkillIds(targetDir: string): Promise<Set<string>> {
@@ -97,6 +114,11 @@ async function lockedSkillIds(targetDir: string): Promise<Set<string>> {
   }
 }
 
+/**
+ * Global-first: an already-installed global copy (from this project or any
+ * other) is used as-is; only a genuinely missing skill triggers a GitHub
+ * pull, and that pull installs globally (-g) so future projects skip it too.
+ */
 export async function ensureCreatorInstalled(
   agent: CreateAgent,
   targetDir: string,
@@ -116,7 +138,13 @@ export async function ensureCreatorInstalled(
     return { ref, ok: true, stdout: "", stderr: "", exitCode: 0 };
   }
 
-  const results = await installSkills([ref], targetDir, runner, resolveDeps, [skillsCliAgentIds[agent]]);
+  const exists = resolveDeps?.exists ?? existsSync;
+
+  if (exists(join(globalSkillRoot(agent), skillId, "SKILL.md"))) {
+    return { ref, ok: true, stdout: "", stderr: "", exitCode: 0 };
+  }
+
+  const results = await installSkills([ref], targetDir, runner, resolveDeps, [skillsCliAgentIds[agent]], true);
   return results[0];
 }
 

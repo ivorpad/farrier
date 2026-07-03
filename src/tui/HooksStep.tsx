@@ -1,14 +1,14 @@
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
-import type { HookId, ToolPolicyRule } from "../packs/types";
+import type { HookId, PackHookRef, ToolPolicyRule } from "../packs/types";
 import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { DetailPane, palette, StepHeader, type PaneLine } from "./chrome";
 
 type HooksStepProps = {
-  availableHooks: HookId[];
-  selectedHooks: HookId[];
+  availableHooks: PackHookRef[];
+  selectedHooks: PackHookRef[];
   toolPolicyRules: ToolPolicyRule[];
-  onToggleHook: (hook: HookId) => void;
+  onToggleHook: (hook: PackHookRef) => void;
   onNext: () => void;
   onBack: () => void;
 };
@@ -26,7 +26,15 @@ const buttons: ButtonSpec[] = [
  */
 const protectHooks: readonly HookId[] = ["secret-shield", "tool-policy", "write-guard"];
 
-function hookGroup(hook: HookId): "protect" | "verify" {
+function isBuiltinHook(hook: PackHookRef): hook is HookId {
+  return !hook.startsWith("@");
+}
+
+function hookGroup(hook: PackHookRef): "protect" | "verify" | "registry" {
+  if (!isBuiltinHook(hook)) {
+    return "registry";
+  }
+
   return protectHooks.includes(hook) ? "protect" : "verify";
 }
 
@@ -43,7 +51,15 @@ const hookDescriptions: Record<HookId, string> = {
  * The deny text is the product — the agent reads it — so the picker shows it
  * while you decide, exactly in the shape the engine will render it.
  */
-function agentSeesLines(hook: HookId, rules: ToolPolicyRule[]): PaneLine[] {
+function describeHook(hook: PackHookRef): string {
+  if (!isBuiltinHook(hook)) {
+    return "registry hook payload";
+  }
+
+  return hookDescriptions[hook];
+}
+
+function agentSeesLines(hook: PackHookRef, rules: ToolPolicyRule[]): PaneLine[] {
   switch (hook) {
     case "secret-shield":
       return [
@@ -88,6 +104,12 @@ function agentSeesLines(hook: HookId, rules: ToolPolicyRule[]): PaneLine[] {
         { fg: palette.success, text: "full-diff semantic review before the agent yields" },
         { fg: palette.muted, text: "the last gate between “done” and “actually done”" }
       ];
+
+    default:
+      return [
+        { fg: palette.gold, text: "registry hook payload" },
+        { fg: palette.muted, text: "review the rendered hook files before forging" }
+      ];
   }
 }
 
@@ -96,16 +118,18 @@ function isSpace(key: unknown): boolean {
   return candidate.name === "space" || candidate.sequence === " ";
 }
 
-const groupHeaders: Record<"protect" | "verify", { title: string; tagline: string }> = {
+const groupHeaders: Record<"protect" | "verify" | "registry", { title: string; tagline: string }> = {
   protect: { title: "Protect", tagline: " — block the move, teach the right one" },
-  verify: { title: "Verify", tagline: " — runs the engine wrote, not the LLM" }
+  verify: { title: "Verify", tagline: " — runs the engine wrote, not the LLM" },
+  registry: { title: "Registry", tagline: " — private executable hook payloads" }
 };
 
 export function HooksStep(props: HooksStepProps) {
-  const orderedHooks = useMemo<HookId[]>(() => {
+  const orderedHooks = useMemo<PackHookRef[]>(() => {
     const protect = props.availableHooks.filter((hook) => hookGroup(hook) === "protect");
     const verify = props.availableHooks.filter((hook) => hookGroup(hook) === "verify");
-    return [...protect, ...verify];
+    const registry = props.availableHooks.filter((hook) => hookGroup(hook) === "registry");
+    return [...protect, ...verify, ...registry];
   }, [props.availableHooks]);
 
   const nameWidth = orderedHooks.reduce((width, hook) => Math.max(width, hook.length), 0);
@@ -207,7 +231,7 @@ export function HooksStep(props: HooksStepProps) {
 
   const paneHook = focusedHook ?? orderedHooks[0];
 
-  const groups: Array<"protect" | "verify"> = ["protect", "verify"];
+  const groups: Array<"protect" | "verify" | "registry"> = ["protect", "verify", "registry"];
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
@@ -240,7 +264,7 @@ export function HooksStep(props: HooksStepProps) {
                     <span fg={palette.accent}>{cursor}</span>
                     <span fg={selected ? palette.success : palette.faint}>{selected ? "[x] " : "[ ] "}</span>
                     <span fg={palette.text}>{hook.padEnd(nameWidth + 2)}</span>
-                    <span fg={palette.faint}>{hookDescriptions[hook]}</span>
+                    <span fg={palette.faint}>{describeHook(hook)}</span>
                   </text>
                 );
               })}

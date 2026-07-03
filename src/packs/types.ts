@@ -6,6 +6,27 @@ export type HookId =
   | "quality-judge"
   | "stop-judge";
 
+export type PackHookRef = HookId | `@${string}`;
+
+export type ResolvedRemoteHook = {
+  id: `@${string}`;
+  version: string;
+  sha256: string;
+  fromCache: boolean;
+  hookVersion: number;
+  events: {
+    event: "PreToolUse" | "PostToolUse" | "Stop";
+    matcher?: string;
+  }[];
+  entry: string;
+  runner: "python3" | "bash" | "bun";
+  files: {
+    path: string;
+    content: string;
+    executable?: boolean;
+  }[];
+};
+
 export type SkillRef = string;
 
 export type ToolPolicyRule = {
@@ -104,7 +125,7 @@ export type Pack = {
     onlyWhenEmptyDir: boolean;
   };
   skills: SkillRef[];
-  hooks: HookId[];
+  hooks: PackHookRef[];
   toolPolicyRules?: ToolPolicyRule[];
   konsistentTemplate?: KonsistentTemplate;
   verbs: PackVerbs;
@@ -117,4 +138,5 @@ export type ResolvedPack = Omit<Pack, "toolPolicyRules" | "agentsRules" | "secon
   agentsRules: string[];
   secondaryDetectors: SecondaryDetector[];
   packIds: string[];
+  remoteHooks: ResolvedRemoteHook[];
 };

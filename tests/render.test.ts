@@ -298,6 +298,98 @@ describe("render engine", () => {
       qualityJudge: "v1",
       stopJudge: "v1"
     });
+    expect(manifest.registry).toBeUndefined();
+  });
+
+  test("renders remote hook settings files versions and registry pins", async () => {
+    const dir = await tempDir();
+    const basePack = resolvePack("generic");
+    const pack: ResolvedPack = {
+      ...basePack,
+      hooks: [...basePack.hooks, "@acme/guard"],
+      remoteHooks: [
+        {
+          id: "@acme/guard",
+          version: "1.2.3",
+          sha256: "abc123".padEnd(64, "0"),
+          fromCache: false,
+          hookVersion: 7,
+          events: [
+            { event: "PreToolUse", matcher: "Bash" },
+            { event: "Stop" }
+          ],
+          entry: "guard.sh",
+          runner: "bash",
+          files: [
+            { path: "guard.sh", content: "#!/usr/bin/env bash\necho guard\n" },
+            { path: "lib/helper.sh", content: "echo helper\n", executable: true }
+          ]
+        }
+      ]
+    };
+
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack,
+      registryPins: {
+        "@acme/guard": {
+          type: "hook",
+          version: "1.2.3",
+          sha256: "abc123".padEnd(64, "0")
+        },
+        "@acme/demo": {
+          type: "pack",
+          version: "2.0.0",
+          sha256: "def456".padEnd(64, "0")
+        }
+      }
+    });
+
+    const settings = JSON.parse(plan.files.find((file) => file.path === ".claude/settings.json")!.content);
+    expect(settings.hooks.PreToolUse.at(-1)).toEqual({
+      matcher: "Bash",
+      hooks: [
+        {
+          type: "command",
+          command: 'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/@acme/guard/guard.sh"'
+        }
+      ]
+    });
+    expect(settings.hooks.Stop.at(-1)).toEqual({
+      hooks: [
+        {
+          type: "command",
+          command: 'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/@acme/guard/guard.sh"'
+        }
+      ]
+    });
+
+    const remoteEntry = plan.files.find((file) => file.path === ".claude/hooks/@acme/guard/guard.sh");
+    const remoteHelper = plan.files.find((file) => file.path === ".claude/hooks/@acme/guard/lib/helper.sh");
+    expect(remoteEntry).toMatchObject({
+      content: "#!/usr/bin/env bash\necho guard\n",
+      mode: 0o755
+    });
+    expect(remoteHelper).toMatchObject({
+      content: "echo helper\n",
+      mode: 0o755
+    });
+
+    const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
+    expect(manifest.hookIds).toEqual([...basePack.hooks, "@acme/guard"]);
+    expect(manifest.versions.hooks["@acme/guard"]).toBe(7);
+    expect(manifest.registry.items).toEqual({
+      "@acme/guard": {
+        type: "hook",
+        version: "1.2.3",
+        sha256: "abc123".padEnd(64, "0")
+      },
+      "@acme/demo": {
+        type: "pack",
+        version: "2.0.0",
+        sha256: "def456".padEnd(64, "0")
+      }
+    });
   });
 
   test("renders manifest with wizard-selected hooks skills and learn toggle", async () => {

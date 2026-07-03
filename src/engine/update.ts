@@ -8,8 +8,9 @@ import {
   type FarrierManifestInput,
   type RenderedFile
 } from "./render";
-import { resolvePack } from "../packs/index";
-import type { HookId, ResolvedPack, SecondaryDetectionFinding, SkillRef } from "../packs/types";
+import type { HookId, PackHookRef, ResolvedPack, SecondaryDetectionFinding, SkillRef } from "../packs/types";
+import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
+import { parseItemRef } from "../registry/ref";
 
 export const notFarrierProjectMessage = "not a farrier project; run farrier first";
 
@@ -17,6 +18,7 @@ export type InventoryOwnership = "farrier-owned" | "user-mutable" | "manifest";
 
 export type UpdateInput = {
   targetDir: string;
+  catalog?: PackCatalog;
 };
 
 export type FarrierVersionDrift = {
@@ -34,9 +36,18 @@ export type StackDriftReport = {
 };
 
 export type HookDrift = {
-  hookId: HookId;
+  hookId: PackHookRef;
   manifestVersion: number | null;
   currentVersion: number;
+};
+
+export type RegistryPinDrift = {
+  id: string;
+  type: RegistryPin["type"];
+  manifestVersion: string | null;
+  currentVersion: string;
+  manifestSha256: string | null;
+  currentSha256: string;
 };
 
 export type UpdateReport = {
@@ -48,6 +59,7 @@ export type UpdateReport = {
   stackDrift: StackDriftReport;
   unacknowledgedSecondaryFindings: SecondaryDetectionFinding[];
   hookDrift: HookDrift[];
+  registryPinDrift: RegistryPinDrift[];
   missingInventoryFiles: string[];
   outdatedOwnedFiles: string[];
   outdatedUserFiles: string[];
@@ -66,7 +78,7 @@ export type NormalizedManifest = {
   farrierVersion: string | null;
   packIds: string[];
   currentPackId: string;
-  hookIds: HookId[];
+  hookIds: PackHookRef[];
   skills: SkillRef[];
   secondaryAcknowledged: string[];
   learn: {
@@ -78,6 +90,9 @@ export type NormalizedManifest = {
     farrierManifest: number | null;
     hooks: Record<string, number>;
     prompts?: unknown;
+  };
+  registry: {
+    items: Record<string, RegistryPin>;
   };
 };
 
@@ -138,16 +153,25 @@ function isHookId(value: string): value is HookId {
   return hookIdSet.has(value);
 }
 
-function parseHookIds(value: unknown, fallback: HookId[]): HookId[] {
-  const values = value === undefined ? fallback : stringArray(value);
+function isSupportedHookId(value: string, catalog: PackCatalog): value is PackHookRef {
+  if (isHookId(value)) {
+    return true;
+  }
+
+  const parsed = parseItemRef(value);
+  return Boolean(parsed && catalog.remoteHook(parsed.id));
+}
+
+function parseHookIds(value: unknown, fallback: PackHookRef[], catalog: PackCatalog): PackHookRef[] {
+  const values = value === undefined ? [...fallback] : stringArray(value);
 
   if (!values) {
     throw new Error("invalid .farrier.json: hookIds must be a string array");
   }
 
-  const hookIds = values.filter(isHookId);
+  const hookIds = values.filter((hookId): hookId is PackHookRef => isSupportedHookId(hookId, catalog));
   if (hookIds.length !== values.length) {
-    const invalid = values.find((hookId) => !isHookId(hookId));
+    const invalid = values.find((hookId) => !isSupportedHookId(hookId, catalog));
     throw new Error(`invalid .farrier.json: unsupported hook id '${invalid}'`);
   }
 
@@ -183,6 +207,35 @@ function parseVersions(value: unknown): NormalizedManifest["versions"] {
   };
 }
 
+function parseRegistry(value: unknown): NormalizedManifest["registry"] {
+  if (!isRecord(value) || !isRecord(value.items)) {
+    return {
+      items: {}
+    };
+  }
+
+  const items: Record<string, RegistryPin> = {};
+  for (const [id, pin] of Object.entries(value.items)) {
+    if (!isRecord(pin)) {
+      continue;
+    }
+
+    if (
+      (pin.type === "pack" || pin.type === "hook" || pin.type === "skill") &&
+      typeof pin.version === "string" &&
+      typeof pin.sha256 === "string"
+    ) {
+      items[id] = {
+        type: pin.type,
+        version: pin.version,
+        sha256: pin.sha256
+      };
+    }
+  }
+
+  return { items };
+}
+
 function parseLearn(value: unknown): { enabled: boolean } {
   if (!isRecord(value)) {
     return {
@@ -195,7 +248,7 @@ function parseLearn(value: unknown): { enabled: boolean } {
   };
 }
 
-function normalizeManifest(raw: unknown): NormalizedManifest {
+function normalizeManifest(raw: unknown, catalog: PackCatalog): NormalizedManifest {
   if (!isRecord(raw)) {
     throw new Error("invalid .farrier.json: root must be an object");
   }
@@ -207,8 +260,8 @@ function normalizeManifest(raw: unknown): NormalizedManifest {
     throw new Error("invalid .farrier.json: packIds must be a non-empty string array");
   }
 
-  const resolvedPack = resolvePack(currentPackId);
-  const hookIds = parseHookIds(raw.hookIds, resolvedPack.hooks);
+  const resolvedPack = catalog.resolvePack(currentPackId);
+  const hookIds = parseHookIds(raw.hookIds, resolvedPack.hooks, catalog);
   const skills = stringArray(raw.skills) ?? [...resolvedPack.skills];
   const secondaryAcknowledged = stringArray(raw.secondaryAcknowledged) ?? [];
 
@@ -222,7 +275,8 @@ function normalizeManifest(raw: unknown): NormalizedManifest {
     learn: parseLearn(raw.learn),
     judge: raw.judge,
     quality: raw.quality,
-    versions: parseVersions(raw.versions)
+    versions: parseVersions(raw.versions),
+    registry: parseRegistry(raw.registry)
   };
 }
 
@@ -242,11 +296,14 @@ function toManifestInput(manifest: NormalizedManifest): FarrierManifestInput {
       farrierManifest: manifest.versions.farrierManifest ?? undefined,
       hooks: { ...manifest.versions.hooks },
       prompts: manifest.versions.prompts
+    },
+    registry: {
+      items: { ...manifest.registry.items }
     }
   };
 }
 
-async function readProjectManifest(targetDir: string): Promise<NormalizedManifest> {
+async function readProjectManifest(targetDir: string, catalog: PackCatalog = builtinCatalog()): Promise<NormalizedManifest> {
   const manifestPath = join(targetDir, ".farrier.json");
 
   let text: string;
@@ -268,15 +325,16 @@ async function readProjectManifest(targetDir: string): Promise<NormalizedManifes
     throw new Error(`invalid .farrier.json: ${message}`);
   }
 
-  return normalizeManifest(raw);
+  return normalizeManifest(raw, catalog);
 }
 
 export async function readManifest(input: UpdateInput | string): Promise<NormalizedManifest> {
-  return readProjectManifest(targetDirFromInput(input));
+  const catalog = typeof input === "string" ? builtinCatalog() : input.catalog ?? builtinCatalog();
+  return readProjectManifest(targetDirFromInput(input), catalog);
 }
 
-function packForManifest(manifest: NormalizedManifest): ResolvedPack {
-  const pack = resolvePack(manifest.currentPackId);
+function packForManifest(manifest: NormalizedManifest, catalog: PackCatalog): ResolvedPack {
+  const pack = catalog.resolvePack(manifest.currentPackId);
 
   return {
     ...pack,
@@ -296,11 +354,18 @@ function stackDriftMessage(currentPackId: string, detectedPackIds: string[]): st
   return `Detected '${detectedPackIds[0]}' but manifest uses '${currentPackId}'. Update will not switch packs automatically.`;
 }
 
-function hookDriftForManifest(manifest: NormalizedManifest): HookDrift[] {
+function hookDriftForManifestWithCatalog(manifest: NormalizedManifest, catalog: PackCatalog): HookDrift[] {
   const drift: HookDrift[] = [];
 
   for (const hookId of manifest.hookIds) {
-    const currentVersion = hookCatalogVersions[hookId];
+    const currentVersion = isHookId(hookId)
+      ? hookCatalogVersions[hookId]
+      : catalog.remoteHook(hookId)?.hookVersion;
+
+    if (currentVersion === undefined) {
+      continue;
+    }
+
     const manifestVersion = manifest.versions.hooks[hookId] ?? null;
 
     if (manifestVersion === null || manifestVersion < currentVersion) {
@@ -308,6 +373,40 @@ function hookDriftForManifest(manifest: NormalizedManifest): HookDrift[] {
         hookId,
         manifestVersion,
         currentVersion
+      });
+    }
+  }
+
+  return drift;
+}
+
+function registryPinsForManifest(manifest: NormalizedManifest, catalog: PackCatalog): Record<string, RegistryPin> {
+  const currentPins = catalog.registryPins();
+  return Object.fromEntries(
+    Object.keys(manifest.registry.items)
+      .map((id) => [id, currentPins[id]])
+      .filter((entry): entry is [string, RegistryPin] => entry[1] !== undefined)
+  );
+}
+
+function registryPinDriftForManifest(manifest: NormalizedManifest, catalog: PackCatalog): RegistryPinDrift[] {
+  const currentPins = catalog.registryPins();
+  const drift: RegistryPinDrift[] = [];
+
+  for (const [id, manifestPin] of Object.entries(manifest.registry.items)) {
+    const currentPin = currentPins[id];
+    if (!currentPin) {
+      continue;
+    }
+
+    if (manifestPin.version !== currentPin.version || manifestPin.sha256 !== currentPin.sha256) {
+      drift.push({
+        id,
+        type: currentPin.type,
+        manifestVersion: manifestPin.version,
+        currentVersion: currentPin.version,
+        manifestSha256: manifestPin.sha256,
+        currentSha256: currentPin.sha256
       });
     }
   }
@@ -333,6 +432,10 @@ export function inventoryOwnership(path: string): InventoryOwnership {
   }
 
   if (path.startsWith(".claude/hooks/prompts/") && path.endsWith(".txt")) {
+    return "farrier-owned";
+  }
+
+  if (path.startsWith(".claude/hooks/@")) {
     return "farrier-owned";
   }
 
@@ -430,6 +533,7 @@ function reportNotes(input: {
   stackDrift: StackDriftReport;
   unacknowledgedSecondaryFindings: SecondaryDetectionFinding[];
   hookDrift: HookDrift[];
+  registryPinDrift: RegistryPinDrift[];
   missingInventoryFiles: string[];
   outdatedOwnedFiles: string[];
   outdatedUserFiles: string[];
@@ -449,6 +553,10 @@ function reportNotes(input: {
     notes.push("Hook catalog versions differ from manifest metadata; update with --yes refreshes manifest metadata.");
   }
 
+  if (input.registryPinDrift.length > 0) {
+    notes.push("Registry item pins differ from the current registry catalog; update with --yes refreshes registry pins.");
+  }
+
   if (input.missingInventoryFiles.length > 0 || input.outdatedOwnedFiles.length > 0) {
     notes.push("Run update with --yes to repair missing files and outdated Farrier-owned files.");
   }
@@ -466,12 +574,13 @@ function reportNotes(input: {
 
 export async function createUpdateReport(input: UpdateInput | string): Promise<UpdateReport> {
   const targetDir = targetDirFromInput(input);
-  const manifest = await readProjectManifest(targetDir);
+  const catalog = typeof input === "string" ? builtinCatalog() : input.catalog ?? builtinCatalog();
+  const manifest = await readProjectManifest(targetDir, catalog);
   const currentFarrierVersion = await getFarrierVersion();
-  const currentPack = resolvePack(manifest.currentPackId);
-  const renderPack = packForManifest(manifest);
+  const currentPack = catalog.resolvePack(manifest.currentPackId);
+  const renderPack = packForManifest(manifest, catalog);
 
-  const detectedPackIds = await detectPacks(targetDir);
+  const detectedPackIds = await detectPacks(targetDir, catalog);
   const stackDrift: StackDriftReport = {
     currentPackId: manifest.currentPackId,
     detectedPackIds,
@@ -484,7 +593,8 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
   const acknowledged = new Set(manifest.secondaryAcknowledged);
   const unacknowledgedSecondaryFindings = secondaryFindings.filter((finding) => !acknowledged.has(finding.id));
   const suggestedSkills = suggestedSkillsFromFindings(unacknowledgedSecondaryFindings);
-  const hookDrift = hookDriftForManifest(manifest);
+  const hookDrift = hookDriftForManifestWithCatalog(manifest, catalog);
+  const registryPinDrift = registryPinDriftForManifest(manifest, catalog);
 
   const expectedPlan = await createRenderPlan({
     targetDir,
@@ -492,7 +602,8 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     skills: manifest.skills,
     learnEnabled: manifest.learn.enabled,
     secondaryAcknowledged: manifest.secondaryAcknowledged,
-    existingManifest: toManifestInput(manifest)
+    existingManifest: toManifestInput(manifest),
+    registryPins: registryPinsForManifest(manifest, catalog)
   });
 
   const inventoryDrift = await classifyInventoryDrift(targetDir, expectedPlan.files);
@@ -507,11 +618,13 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     stackDrift,
     unacknowledgedSecondaryFindings,
     hookDrift,
+    registryPinDrift,
     missingInventoryFiles: inventoryDrift.missingInventoryFiles,
     outdatedOwnedFiles: inventoryDrift.outdatedOwnedFiles,
     outdatedUserFiles: inventoryDrift.outdatedUserFiles,
     suggestedSkills
   });
+  notes.push(...catalog.warnings.map((warning) => `${warning.namespace}: ${warning.message}`));
 
   return {
     targetDir,
@@ -522,6 +635,7 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     stackDrift,
     unacknowledgedSecondaryFindings,
     hookDrift,
+    registryPinDrift,
     missingInventoryFiles: inventoryDrift.missingInventoryFiles,
     outdatedOwnedFiles: inventoryDrift.outdatedOwnedFiles,
     outdatedUserFiles: inventoryDrift.outdatedUserFiles,
@@ -551,12 +665,13 @@ async function manifestContentDiffers(targetDir: string, expectedManifestContent
 
 export async function applyUpdate(input: UpdateInput | string): Promise<UpdateApplyResult> {
   const targetDir = targetDirFromInput(input);
-  const report = await createUpdateReport({ targetDir });
-  const manifest = await readProjectManifest(targetDir);
+  const catalog = typeof input === "string" ? builtinCatalog() : input.catalog ?? builtinCatalog();
+  const report = await createUpdateReport({ targetDir, catalog });
+  const manifest = await readProjectManifest(targetDir, catalog);
   const acknowledgedSecondaryIds = report.unacknowledgedSecondaryFindings.map((finding) => finding.id);
   const secondaryAcknowledged = unique([...manifest.secondaryAcknowledged, ...acknowledgedSecondaryIds]);
 
-  const renderPack = packForManifest(manifest);
+  const renderPack = packForManifest(manifest, catalog);
   const plan = await createRenderPlan({
     targetDir,
     pack: renderPack,
@@ -566,7 +681,8 @@ export async function applyUpdate(input: UpdateInput | string): Promise<UpdateAp
     existingManifest: toManifestInput({
       ...manifest,
       secondaryAcknowledged
-    })
+    }),
+    registryPins: registryPinsForManifest(manifest, catalog)
   });
 
   const repairPaths = new Set<string>([
@@ -610,6 +726,10 @@ function renderList(values: string[], empty: string): string[] {
   return values.map((value) => `  - ${value}`);
 }
 
+function shortSha(value: string | null): string {
+  return value ? value.slice(0, 12) : "(missing)";
+}
+
 export function formatUpdateReport(report: UpdateReport): string {
   const lines: string[] = [
     `Farrier update report for ${report.targetDir}`,
@@ -634,6 +754,15 @@ export function formatUpdateReport(report: UpdateReport): string {
       report.hookDrift.map(
         (drift) =>
           `${drift.hookId}: manifest ${drift.manifestVersion ?? "(missing)"} -> catalog ${drift.currentVersion}`
+      ),
+      "none"
+    ),
+    "",
+    "Registry pin drift:",
+    ...renderList(
+      report.registryPinDrift.map(
+        (drift) =>
+          `${drift.id}: manifest ${drift.manifestVersion ?? "(missing)"} ${shortSha(drift.manifestSha256)} -> catalog ${drift.currentVersion} ${shortSha(drift.currentSha256)}`
       ),
       "none"
     ),

@@ -13,6 +13,7 @@ import {
   type SkillCreationOutcome
 } from "../engine/create-skill";
 import { detectPacks } from "../engine/detect";
+import { evaluatePerAgentSkill, perAgentEvalCandidates, type SkillEvalVerdict } from "../engine/eval-skill";
 import { applyRefinements, generateRefineQuestions, type RefineAnswer, type RefineQuestion } from "../engine/refine-skill";
 import { writeRenderPlan } from "../engine/render";
 
@@ -29,6 +30,7 @@ export type SkillNewCliOptions = {
   noInstall: boolean;
   dryRun: boolean;
   yes: boolean;
+  eval: boolean;
   json: boolean;
   help: boolean;
 };
@@ -60,7 +62,10 @@ Options:
   --no-install       Skip the 'skills add ./skills' install step after authoring.
   --dry-run          Preview the scaffold without writing (only valid with --no-llm).
   --yes, -y          Required for writes.
-  --json             Emit { name, mode, agents, files, installed, notes, error }.
+  --eval             After a per-agent creation with both copies, run the read-only blind
+                     eval and include the verdict (never deletes; apply a winner with
+                     farrier skill eval --apply-winner ... --delete-loser-and-link).
+  --json             Emit { name, mode, agents, files, installed, notes, error, eval? }.
   --help             Show this help.
 
 Exits 0 on success; exits 1 on refusal, authoring failure, or install failure (authored files
@@ -103,6 +108,7 @@ export function parseSkillNewArgs(args: string[]): SkillNewCliOptions {
     noInstall: false,
     dryRun: false,
     yes: false,
+    eval: false,
     json: false,
     help: false
   };
@@ -125,6 +131,7 @@ export function parseSkillNewArgs(args: string[]): SkillNewCliOptions {
     "--dry-run": () => (options.dryRun = true),
     "--yes": () => (options.yes = true),
     "-y": () => (options.yes = true),
+    "--eval": () => (options.eval = true),
     "--json": () => (options.json = true)
   };
 
@@ -349,6 +356,11 @@ export async function runSkillNew(args: string[]): Promise<number> {
   const targetDir = resolve(options.dir);
 
   try {
+    if (options.eval && (options.noLlm || (options.mode && options.mode !== "per-agent"))) {
+      console.error("farrier skill new: --eval compares per-agent copies; it requires --mode per-agent (not --no-llm).");
+      return 1;
+    }
+
     if (options.noLlm) {
       return await runScaffold(options, targetDir);
     }
@@ -413,6 +425,31 @@ export async function runSkillNew(args: string[]): Promise<number> {
       }
     );
     const outcome = outcomes[0]!;
+    let verdict: SkillEvalVerdict | undefined;
+    const evalLines: string[] = [];
+
+    if (options.eval && !outcome.error) {
+      const candidate = perAgentEvalCandidates(outcomes)[0];
+
+      if (!candidate) {
+        console.error("farrier skill new: --eval needs a per-agent creation with both copies in place.");
+        return 1;
+      }
+
+      verdict = await evaluatePerAgentSkill({
+        targetDir,
+        ...candidate,
+        backend: authoringAgents[0]!,
+        model: options.model
+      });
+
+      const scores = `claude ${verdict.copies.claude.score}/10 · codex ${verdict.copies.codex.score}/10`;
+      evalLines.push(
+        `Eval recommendation: ${verdict.recommendedWinner} (${scores}) — nothing deleted.`,
+        ...(verdict.reportPaths ? [`  Reports: ${verdict.reportPaths.claude} · ${verdict.reportPaths.codex}`] : []),
+        `  Apply one with: farrier skill eval ${candidate.skillName} --apply-winner claude|codex|recommended --delete-loser-and-link`
+      );
+    }
 
     emit(
       options,
@@ -423,9 +460,10 @@ export async function runSkillNew(args: string[]): Promise<number> {
         files: outcome.files,
         installed: outcome.installed,
         notes: outcome.notes,
-        error: outcome.error
+        error: outcome.error,
+        eval: verdict
       },
-      outcomeLines(outcome)
+      [...outcomeLines(outcome), ...evalLines]
     );
 
     return outcome.error ? 1 : 0;

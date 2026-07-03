@@ -1,95 +1,65 @@
 ---
 name: convert-financial-tables-to-markdown
-description: Converts financial PDF filings and reports (10-Ks, 10-Qs, balance sheets, income statements) into clean markdown tables using opendataloader-pdf, escalating through cluster and hybrid-docling table extraction as needed — use this whenever a PDF financial document needs to be turned into markdown before it's fed into an LLM prompt, especially when the tables are borderless, scanned, or otherwise fail to extract cleanly on the first pass.
+description: "Converts financial tables from Excel (.xlsx/.xls) or CSV files into clean GFM pipe-table markdown (.md) files, using the opendataloader-pdf CLI's table extraction to reliably handle borderless and complex financial table layouts before the content is passed to an LLM; use this whenever the user has a spreadsheet, workbook, or CSV of financial data (income statements, balance sheets, cap tables, expense reports, etc.) that needs to become markdown for LLM consumption, even if they just say \"turn"
 ---
 
-# Convert financial tables to markdown
+# Convert Financial Tables to Markdown
 
-Financial PDFs (10-Ks, 10-Qs, earnings statements, balance sheets) routinely contain
-tables that plain PDF-to-text conversion mangles — numbers get flattened into
-run-on prose with no column structure, which is useless context for an LLM.
-This skill converts such PDFs into markdown, escalating through progressively
-stronger extraction methods only when the cheaper method fails to find real
-tables, since the stronger methods cost more time (they require running a local
-docling server).
+Turn Excel/CSV financial tables into GFM pipe-table markdown that's safe to paste into an LLM
+prompt. Raw spreadsheet exports and naive CSV-to-markdown conversions routinely mangle merged
+header cells, multi-row financial statement headers, and borderless table layouts common in
+financial exports. This skill routes the data through a PDF rendering + table-extraction pass
+(the same technique used for borderless PDF tables) instead of a naive cell dump, because that
+pass is what correctly reconstructs table structure when column/row boundaries aren't explicit
+in the source data.
 
-## Prerequisite
+## Why the PDF-extraction detour
 
-`opendataloader-pdf` must be available. It's a Java 11+ tool, normally installed
-via `pipx`. On machines without a global install, fall back to `uvx opendataloader-pdf`
-or `pipx run opendataloader-pdf` (the escalation script tries `opendataloader-pdf`
-first and falls back automatically).
+`opendataloader-pdf` has robust table-structure detection (including a `cluster` table method
+built for borderless/complex tables) that a direct spreadsheet-to-markdown dump doesn't have.
+Rendering the spreadsheet to PDF first and running it through that extractor catches merged
+headers and irregular financial-statement layouts more reliably than reading cells directly.
+The tradeoff is an extra conversion hop — worth it for messy financial exports; a plain,
+simple CSV with one clean header row will also work fine through this path, just with a bit of
+overhead.
 
-## When to use this
+## Prerequisites
 
-Reach for this skill any time a PDF financial filing or report needs to become
-markdown for an LLM prompt — not just when the user says "convert this table."
-Signs this skill applies:
-- The input is a 10-K, 10-Q, annual report, earnings release, or similar filing PDF.
-- The document contains numeric tables (balance sheets, income statements, cash flow statements).
-- The end goal is passing the extracted content into an LLM prompt.
+- LibreOffice (`soffice` on PATH) — renders the input spreadsheet to PDF.
+- `opendataloader-pdf` CLI (Java 11+) — extracts tables from that PDF. Install via `pipx`, or
+  use `uvx opendataloader-pdf` / `pipx run opendataloader-pdf` if not installed globally.
+- `python3` (stdlib only, no extra packages required).
 
-This skill is scoped to **PDF input only**. It is not for spreadsheets, HTML
-tables, or images of tables outside a PDF context — those need different tooling.
+## Usage
 
-## The escalation path
-
-Not every PDF needs the expensive path. Try the cheapest method first and only
-escalate if it didn't actually find the tables — verify by counting markdown
-pipe-rows (`grep -c '^|'`) after each attempt. A near-zero count on a document
-you know has tables means the tables were flattened into prose, and it's time
-to escalate.
-
-1. **Plain markdown** — `opendataloader-pdf file.pdf -f markdown --to-stdout`.
-   Works for most well-formed tables with visible borders.
-2. **Cluster-based markdown** — `opendataloader-pdf file.pdf -f markdown-with-html --table-method cluster --to-stdout`.
-   Fixes many borderless tables (common in financial statements where columns
-   are aligned by whitespace, not ruled lines) by clustering text positions
-   instead of relying on visible grid lines.
-3. **Hybrid docling** — for tables that are scanned images, or borderless
-   tables complex enough that clustering still misses them. This spins up a
-   local docling layout-model server and re-runs extraction against it:
-   ```bash
-   opendataloader-pdf-hybrid --port 5003 --log-level warning &
-   until curl -s http://localhost:5003/ >/dev/null; do sleep 2; done
-   opendataloader-pdf file.pdf -f markdown-with-html,json \
-     --hybrid docling-fast --hybrid-url http://localhost:5003 -o <outdir>
-   # kill the server when done:
-   lsof -tiTCP:5003 -sTCP:LISTEN | xargs kill
-   ```
-   This step is noticeably slower (model startup + inference), so only reach
-   for it after steps 1 and 2 have been verified to fail.
-
-## Using it from TypeScript app code
-
-`scripts/convertFinancialTablesToMarkdown.ts` implements this escalation path
-as a single async function, so app code doesn't need to shell out by hand:
-
-```ts
-import { convertFinancialTablesToMarkdown } from "./scripts/convertFinancialTablesToMarkdown";
-
-const markdown = await convertFinancialTablesToMarkdown("/path/to/10-K.pdf");
-// ...build the LLM prompt using `markdown` as context
-const prompt = `Analyze the following financial statement:\n\n${markdown}`;
+```bash
+scripts/convert.sh <input.xlsx|input.xls|input.csv> [-o output.md]
 ```
 
-Call this right before constructing the LLM prompt, not earlier in the
-pipeline — it does real subprocess work (and potentially spins up a local
-server for step 3), so only pay that cost for documents that are actually
-about to be sent to the model.
+If `-o` is omitted, the output is written next to the input file's basename with a `.md`
+extension in the current directory (e.g. `Q4_income_statement.xlsx` → `Q4_income_statement.md`).
 
-The function:
-- Runs step 1 (`-f markdown`) and counts pipe-rows in the output.
-- If the count looks too low relative to the page count (heuristic: fewer
-  than one table row per 3 pages), retries with step 2 (`cluster`).
-- If step 2 still looks weak, escalates to step 3 (hybrid docling), managing
-  the local server's lifecycle (start, wait for health check, run extraction,
-  kill it afterward) internally.
-- Returns the best markdown output obtained (highest pipe-row count wins if
-  an escalation didn't actually improve things).
-- Throws if `opendataloader-pdf` isn't found on `PATH` via any of
-  `opendataloader-pdf`, `uvx opendataloader-pdf`, or `pipx run opendataloader-pdf`.
+The script:
+1. Converts the input to a PDF with `soffice --headless --convert-to pdf`.
+2. Runs `opendataloader-pdf` on that PDF with plain `-f markdown` first.
+3. Checks whether real pipe tables came out (`grep -c '^|'`). If the table was borderless and
+   got flattened into prose instead (a known failure mode — no `|` characters), it retries with
+   `-f markdown-with-html --table-method cluster`, which handles borderless tables but embeds
+   them as raw HTML `<table>` elements instead of GFM pipes.
+4. Runs `scripts/html_table_to_gfm.py` over the result, which rewrites any HTML `<table>`
+   elements into `| col | col |` GFM pipe-table syntax and passes already-clean markdown through
+   unchanged. This guarantees the final `.md` file is pure GFM pipe tables regardless of which
+   extraction path was taken.
 
-Read `scripts/convertFinancialTablesToMarkdown.ts` directly if you need to
-adjust the escalation thresholds or wire it into a different CLI invocation
-pattern (e.g. a fixed output directory instead of stdout).
+Inspect the output afterward — skim for a table whose column count looks wrong or whose header
+row repeats mid-table, since that usually means the source had merged cells the extractor
+mis-split. Re-running with the source PDF fallback described in `references/quirks.md` fixes
+most of those cases.
+
+## Files
+
+- `scripts/convert.sh` — the standalone CLI entry point described above.
+- `scripts/html_table_to_gfm.py` — stdlib-only HTML-table-to-GFM-pipe-table rewriter, also
+  usable standalone: `html_table_to_gfm.py <input.md> <output.md>`.
+- `references/quirks.md` — extraction edge cases (borderless tables, scanned/OCR pages, nested
+  tables) and how to work around each.

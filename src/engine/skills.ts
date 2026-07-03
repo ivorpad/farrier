@@ -195,7 +195,8 @@ export async function installSkills(
   targetDir: string,
   runner: CommandRunner = defaultRunner,
   resolveDeps: ResolveSkillsCommandDeps = defaultResolveDeps,
-  agents: string[] = defaultInstallAgents
+  agents: string[] = defaultInstallAgents,
+  global = false
 ): Promise<InstallSkillResult[]> {
   const uniqueRefs = Array.from(new Set(refs));
   const resultByRef = new Map<SkillRef, InstallSkillResult>();
@@ -241,7 +242,7 @@ export async function installSkills(
   }
 
   const installSource = async (source: string, skillIds: string[]): Promise<InstallSkillResult[]> => {
-    const cmd = [...commandHead, "add", source, "-s", ...skillIds, "-a", ...agents, "-y"];
+    const cmd = [...commandHead, "add", source, "-s", ...skillIds, "-a", ...agents, ...(global ? ["-g"] : []), "-y"];
     const refs = skillIds.map((skillId): SkillRef => `${source}@${skillId}`);
 
     let output: CommandRunnerOutput;

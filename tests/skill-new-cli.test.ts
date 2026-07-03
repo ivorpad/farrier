@@ -50,6 +50,7 @@ describe("parseSkillNewArgs", () => {
       "--no-install",
       "--dry-run",
       "-y",
+      "--eval",
       "--json"
     ]);
 
@@ -65,6 +66,7 @@ describe("parseSkillNewArgs", () => {
     expect(options.noInstall).toBe(true);
     expect(options.dryRun).toBe(true);
     expect(options.yes).toBe(true);
+    expect(options.eval).toBe(true);
     expect(options.json).toBe(true);
   });
 
@@ -113,6 +115,21 @@ describe("parseSkillEvalArgs", () => {
     expect(options.json).toBe(true);
   });
 
+  test("takes per-agent name overrides in both flag forms", () => {
+    const options = parseSkillEvalArgs(["pdf-tables", "--claude-name", "pdf-tables", "--codex-name=convert-tables"]);
+
+    expect(options.skillName).toBe("pdf-tables");
+    expect(options.claudeName).toBe("pdf-tables");
+    expect(options.codexName).toBe("convert-tables");
+    expect(() => parseSkillEvalArgs(["pdf-tables", "--codex-name"])).toThrow("--codex-name requires a value");
+  });
+
+  test("accepts --apply-winner recommended and still rejects tie", () => {
+    expect(parseSkillEvalArgs(["x", "--apply-winner", "recommended"]).applyWinner).toBe("recommended");
+    expect(parseSkillEvalArgs(["x", "--apply-winner=codex"]).applyWinner).toBe("codex");
+    expect(() => parseSkillEvalArgs(["x", "--apply-winner", "tie"])).toThrow("must be claude, codex, or recommended");
+  });
+
   test("rejects unknown flags, second names, and bad enum values", () => {
     expect(() => parseSkillEvalArgs(["pii-masker", "--wat"])).toThrow("Unknown skill eval argument: --wat");
     expect(() => parseSkillEvalArgs(["one", "two"])).toThrow("single skill name");
@@ -123,6 +140,14 @@ describe("parseSkillEvalArgs", () => {
 });
 
 describe("farrier skill new e2e (scaffold paths)", () => {
+  test("--eval refuses non-per-agent runs before any authoring", async () => {
+    const dir = await tempDir();
+    const result = await runCli(["skill", "new", "Summarize PR diffs", "--no-llm", "--yes", "--eval", "--dir", dir]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--eval compares per-agent copies");
+  });
+
   test("scaffolds a SKILL.md with --no-llm --yes --no-install", async () => {
     const dir = await tempDir();
     const result = await runCli(["skill", "new", "Summarize PR diffs before review", "--no-llm", "--yes", "--no-install", "--dir", dir]);

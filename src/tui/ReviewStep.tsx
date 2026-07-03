@@ -2,7 +2,7 @@ import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
-import type { HookId, PackVerbs, SkillRef } from "../packs/types";
+import type { PackHookRef, PackVerbs, SkillRef } from "../packs/types";
 import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { DetailPane, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
 import { CollisionPromptView, type CollisionPrompt } from "./collision";
@@ -45,9 +45,13 @@ type ReviewStepProps = {
   verbs: PackVerbs;
   ruleCount: number;
   selectedSkills: SkillRef[];
-  selectedHooks: HookId[];
+  selectedHooks: PackHookRef[];
   createRequests: SkillCreationRequest[];
   learnEnabled: boolean;
+  generator?: {
+    source: string;
+    command: string;
+  };
   files: ReviewFile[];
   loading: boolean;
   error?: string;
@@ -88,6 +92,7 @@ function fileNote(path: string, ctx: NoteContext): string {
   const base = path.split("/").pop() ?? path;
 
   if (base === "AGENTS.md") return `${ctx.ruleCount} rules · source of truth`;
+  if (path.startsWith(".claude/hooks/@")) return "registry hook — review contents before forging";
   if (base === "CLAUDE.md") return "one line → see AGENTS.md";
   if (base === "settings.json") return `${ctx.hookCount} hooks wired`;
   if (base === "justfile") {
@@ -261,6 +266,14 @@ export function ReviewStep(props: ReviewStepProps) {
         </box>
       ) : null}
 
+      {props.generator ? (
+        <text>
+          <span fg={palette.gold}>{"Generator will run: "}</span>
+          <span fg={palette.text}>{truncateTo(props.generator.command, 42)}</span>
+          <span fg={palette.faint}>{` (from ${props.generator.source})`}</span>
+        </text>
+      ) : null}
+
       {focusedFile ? <DetailPane title={focusedFile.path} lines={previewLines(focusedFile.content)} /> : null}
 
       <ButtonBar
@@ -314,7 +327,7 @@ export function DoneStep(props: DoneStepProps) {
       return;
     }
 
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q") {
+    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
       props.onExit();
     }
   });
