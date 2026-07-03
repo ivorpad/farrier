@@ -144,8 +144,17 @@ describe("adviseSkills", () => {
     await adviseSkills({ ...baseInput, backend: "codex", model: "gpt-x", runner, search: async () => [candidate("o/r", "s")] });
 
     for (const call of calls) {
-      expect(call.cmd.slice(0, 6)).toEqual(["codex", "exec", "--model", "gpt-x", "-s", "read-only"]);
-      expect(call.cmd[6]).toContain("Return JSON only");
+      expect(call.cmd.slice(0, 8)).toEqual([
+        "codex",
+        "exec",
+        "--model",
+        "gpt-x",
+        "-s",
+        "read-only",
+        "-c",
+        "skills.include_instructions=false"
+      ]);
+      expect(call.cmd[8]).toContain("Return JSON only");
       expect(call.stdin).toBeUndefined();
     }
   });
