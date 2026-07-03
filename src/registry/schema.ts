@@ -232,7 +232,7 @@ function validateVerbs(value: unknown, path: string): PackVerbs | undefined {
   };
 }
 
-function validateStringRecordArray<T>(value: unknown, path: string): T[] | undefined {
+function recordArray(value: unknown, path: string): Record<string, unknown>[] | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -241,7 +241,94 @@ function validateStringRecordArray<T>(value: unknown, path: string): T[] | undef
     fail(path, "must be an object array");
   }
 
-  return value as T[];
+  return value as Record<string, unknown>[];
+}
+
+function validateToolPolicyRules(value: unknown, path: string): ToolPolicyRule[] | undefined {
+  return recordArray(value, path)?.map((rule, index) => {
+    const rulePath = `${path}.${index}`;
+    if (rule.tool !== "Bash") {
+      fail(`${rulePath}.tool`, 'must be "Bash"');
+    }
+    return {
+      id: stringField(rule.id, `${rulePath}.id`),
+      description: stringField(rule.description, `${rulePath}.description`),
+      tool: "Bash",
+      commandPattern: stringField(rule.commandPattern, `${rulePath}.commandPattern`),
+      flags: optionalStringField(rule.flags, `${rulePath}.flags`),
+      message: stringField(rule.message, `${rulePath}.message`),
+      redirect: stringField(rule.redirect, `${rulePath}.redirect`)
+    };
+  });
+}
+
+function validateSecondaryDetectors(value: unknown, path: string): SecondaryDetector[] | undefined {
+  return recordArray(value, path)?.map((detector, index) => {
+    const detectorPath = `${path}.${index}`;
+    if (detector.detect === undefined) {
+      fail(`${detectorPath}.detect`, "is required");
+    }
+    return {
+      id: stringField(detector.id, `${detectorPath}.id`),
+      description: stringField(detector.description, `${detectorPath}.description`),
+      detect: validateDetect(detector.detect, `${detectorPath}.detect`),
+      suggestSkills: stringArray(detector.suggestSkills, `${detectorPath}.suggestSkills`),
+      suggestPackIds: stringArray(detector.suggestPackIds, `${detectorPath}.suggestPackIds`),
+      notes: stringArray(detector.notes, `${detectorPath}.notes`)
+    };
+  });
+}
+
+function validateKonsistentTemplate(value: unknown, path: string): KonsistentTemplate | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    fail(path, "must be an object");
+  }
+
+  if (value.version !== "v1") {
+    fail(`${path}.version`, 'must be "v1"');
+  }
+
+  if (!Array.isArray(value.conventions)) {
+    fail(`${path}.conventions`, "must be an array");
+  }
+
+  const conventions = value.conventions.map((convention, index) => {
+    const conventionPath = `${path}.conventions.${index}`;
+    if (!isRecord(convention)) {
+      fail(conventionPath, "must be an object");
+    }
+
+    const paths = convention.paths;
+    if (typeof paths !== "string" && !(Array.isArray(paths) && paths.every((item) => typeof item === "string"))) {
+      fail(`${conventionPath}.paths`, "must be a string or string array");
+    }
+
+    const hasMust = convention.must !== undefined;
+    const hasMustNot = convention.mustNot !== undefined;
+    if (hasMust === hasMustNot) {
+      fail(conventionPath, "must have exactly one of must or mustNot");
+    }
+    const predicate = hasMust ? convention.must : convention.mustNot;
+    if (!isRecord(predicate)) {
+      fail(`${conventionPath}.${hasMust ? "must" : "mustNot"}`, "must be an object");
+    }
+
+    return {
+      name: stringField(convention.name, `${conventionPath}.name`),
+      description: stringField(convention.description, `${conventionPath}.description`),
+      paths: typeof paths === "string" ? paths : [...paths],
+      ...(convention.excludeFiles === undefined
+        ? {}
+        : { excludeFiles: stringArray(convention.excludeFiles, `${conventionPath}.excludeFiles`) }),
+      ...(hasMust ? { must: predicate } : { mustNot: predicate })
+    };
+  });
+
+  return { version: "v1", conventions: conventions as KonsistentTemplate["conventions"] };
 }
 
 function validatePackItem(record: Record<string, unknown>, base: Omit<RegistryPackItem, "pack" | "type">): RegistryPackItem {
@@ -268,14 +355,11 @@ function validatePackItem(record: Record<string, unknown>, base: Omit<RegistryPa
       generator: validateGenerator(record.pack.generator, "pack.generator"),
       skills: stringArray(record.pack.skills, "pack.skills"),
       hooks: stringArray(record.pack.hooks, "pack.hooks"),
-      toolPolicyRules: validateStringRecordArray<ToolPolicyRule>(record.pack.toolPolicyRules, "pack.toolPolicyRules"),
-      konsistentTemplate: record.pack.konsistentTemplate as KonsistentTemplate | undefined,
+      toolPolicyRules: validateToolPolicyRules(record.pack.toolPolicyRules, "pack.toolPolicyRules"),
+      konsistentTemplate: validateKonsistentTemplate(record.pack.konsistentTemplate, "pack.konsistentTemplate"),
       verbs,
       agentsRules: stringArray(record.pack.agentsRules, "pack.agentsRules"),
-      secondaryDetectors: validateStringRecordArray<SecondaryDetector>(
-        record.pack.secondaryDetectors,
-        "pack.secondaryDetectors"
-      )
+      secondaryDetectors: validateSecondaryDetectors(record.pack.secondaryDetectors, "pack.secondaryDetectors")
     }
   };
 }
