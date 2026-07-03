@@ -84,6 +84,35 @@ describe("skills engine", () => {
     }
   });
 
+  test("searchSkills orders results by installs descending with stable ties", async () => {
+    const previous = process.env.SKILLS_API_URL;
+
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({
+          skills: [
+            { skillId: "low", name: "Low", installs: 5, source: "owner/low" },
+            { skillId: "high", name: "High", installs: 5000, source: "owner/high" },
+            { skillId: "mid", name: "Mid", installs: 120, source: "owner/mid" },
+            { skillId: "tie-first", name: "Tie First", installs: 5, source: "owner/tie-first" }
+          ]
+        });
+      }
+    });
+
+    process.env.SKILLS_API_URL = server.url.origin;
+
+    try {
+      const results = await searchSkills("ordering");
+
+      expect(results.map((result) => result.skillId)).toEqual(["high", "mid", "low", "tie-first"]);
+    } finally {
+      restoreSkillsApiUrl(previous);
+      server.stop(true);
+    }
+  });
+
   test("searchSkills drops malformed records and supports id fallback", async () => {
     const previous = process.env.SKILLS_API_URL;
 

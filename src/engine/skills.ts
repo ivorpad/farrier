@@ -84,7 +84,10 @@ export async function searchSkills(q: string, options?: { signal?: AbortSignal }
   const body = (await response.json()) as { skills?: unknown[] };
   const skills = Array.isArray(body.skills) ? body.skills : [];
 
-  return skills.map(normalizeSkill).filter(isSkillSearchResult);
+  return skills
+    .map(normalizeSkill)
+    .filter(isSkillSearchResult)
+    .sort((a, b) => b.installs - a.installs);
 }
 
 function parseSkillRef(ref: SkillRef): { source: string; skillId: string } | undefined {
