@@ -80,8 +80,22 @@ export function backendCommand(
   // No default codex model: an explicit --model for a model the account lacks
   // fails silently, while omitting the flag uses the account's default.
   // No approval flag: `codex exec` is non-interactive and rejects `-a`.
+  // Catalog off: farrier prompts name any skill they need explicitly
+  // ($skill-creator), and codex resolves explicit mentions even without the
+  // available-skills catalog. Including the catalog would spend context on the
+  // user's whole global skill/plugin set and emit "skills context budget"
+  // warnings into the run. Unknown -c keys are ignored by older codex builds.
   return {
-    cmd: ["codex", "exec", ...(model ? ["--model", model] : []), "-s", sandbox, prompt],
+    cmd: [
+      "codex",
+      "exec",
+      ...(model ? ["--model", model] : []),
+      "-s",
+      sandbox,
+      "-c",
+      "skills.include_instructions=false",
+      prompt
+    ],
     stdin: undefined
   };
 }
