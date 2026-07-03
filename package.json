@@ -15,6 +15,7 @@
   "dependencies": {
     "@opentui/core": "0.4.2",
     "@opentui/react": "0.4.2",
+    "effect": "^3.21.4",
     "react": "^19.1.0",
     "skills": "^1.5.14"
   },
