@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import type { HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef } from "../packs/types";
 import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
+import type { RegistryPin } from "../registry/catalog";
 
 export type RenderedFile = {
   path: string;
@@ -28,6 +29,7 @@ export type RenderOptions = {
   learnEnabled?: boolean;
   secondaryAcknowledged?: string[];
   existingManifest?: FarrierManifestInput;
+  registryPins?: Record<string, RegistryPin>;
 };
 
 export type CreateRenderPlanOptions = {
@@ -37,6 +39,7 @@ export type CreateRenderPlanOptions = {
   learnEnabled?: boolean;
   secondaryAcknowledged?: string[];
   existingManifest?: FarrierManifestInput;
+  registryPins?: Record<string, RegistryPin>;
 };
 
 export type FarrierManifestVersions = {
@@ -60,6 +63,9 @@ export type FarrierManifest = {
   judge: Record<string, unknown>;
   quality: Record<string, unknown>;
   versions: FarrierManifestVersions;
+  registry?: {
+    items: Record<string, RegistryPin>;
+  };
 };
 
 export type FarrierManifestInput = Partial<Omit<FarrierManifest, "judge" | "quality" | "versions">> & {
@@ -299,6 +305,21 @@ function renderSettingsJson(pack: ResolvedPack): string {
     );
   }
 
+  for (const remoteHook of pack.remoteHooks) {
+    const entryPath = posixPath(join(".claude", "hooks", remoteHook.id, remoteHook.entry));
+    const command = `${remoteHook.runner} "$CLAUDE_PROJECT_DIR/${entryPath}"`;
+
+    for (const event of remoteHook.events) {
+      const target = event.event === "PreToolUse" ? preToolUse : event.event === "PostToolUse" ? postToolUse : stop;
+      target.push(
+        hookEntry({
+          matcher: event.matcher,
+          command
+        })
+      );
+    }
+  }
+
   const hooks: ClaudeSettingsHooks = {};
 
   if (preToolUse.length > 0) {
@@ -407,8 +428,13 @@ async function renderManifest(
     learnEnabled: boolean;
     secondaryAcknowledged: string[];
     existingManifest?: FarrierManifestInput;
+    registryPins?: Record<string, RegistryPin>;
   }
 ): Promise<string> {
+  const remoteHookVersions = Object.fromEntries(
+    pack.remoteHooks.map((hook) => [hook.id, hook.hookVersion])
+  );
+  const registryPins = options.registryPins ?? {};
   const manifest: FarrierManifest = {
     farrierVersion: await getFarrierVersion(),
     packIds: [...pack.packIds],
@@ -422,13 +448,22 @@ async function renderManifest(
     quality: manifestRecord(options.existingManifest?.quality, defaultQualityConfig()),
     versions: {
       farrierManifest: farrierManifestVersion,
-      hooks: Object.fromEntries(pack.hooks.filter(isBuiltinHookId).map((hook) => [hook, hookCatalogVersions[hook]])),
+      hooks: {
+        ...Object.fromEntries(pack.hooks.filter(isBuiltinHookId).map((hook) => [hook, hookCatalogVersions[hook]])),
+        ...remoteHookVersions
+      },
       prompts: {
         qualityJudge: "v1",
         stopJudge: "v1"
       }
     }
   };
+
+  if (Object.keys(registryPins).length > 0) {
+    manifest.registry = {
+      items: registryPins
+    };
+  }
 
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
@@ -523,6 +558,16 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     }
   }
 
+  for (const remoteHook of options.pack.remoteHooks) {
+    for (const file of remoteHook.files) {
+      files.push({
+        path: posixPath(join(".claude", "hooks", remoteHook.id, file.path)),
+        content: file.content,
+        mode: file.executable === true || file.path === remoteHook.entry ? 0o755 : undefined
+      });
+    }
+  }
+
   if (options.pack.hooks.includes("tool-policy")) {
     files.push({
       path: ".claude/hooks/tool-policy-rules.json",
@@ -563,7 +608,8 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
         skills: selectedSkills,
         learnEnabled,
         secondaryAcknowledged,
-        existingManifest: options.existingManifest
+        existingManifest: options.existingManifest,
+        registryPins: options.registryPins
       })
     },
     {
@@ -604,7 +650,8 @@ export async function renderHarness(options: RenderOptions): Promise<RenderPlan>
     skills: options.skills,
     learnEnabled: options.learnEnabled,
     secondaryAcknowledged: options.secondaryAcknowledged,
-    existingManifest: options.existingManifest
+    existingManifest: options.existingManifest,
+    registryPins: options.registryPins
   });
 
   if (!options.dryRun) {
