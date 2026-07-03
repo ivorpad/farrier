@@ -106,6 +106,94 @@ describe("registry schema validation", () => {
     ).not.toThrow();
   });
 
+  test("validates nested pack payloads field by field", () => {
+    const item = validateRegistryItem(
+      packItem({
+        toolPolicyRules: [
+          {
+            id: "no-pip",
+            description: "Use uv instead of pip",
+            tool: "Bash",
+            commandPattern: "^pip ",
+            message: "Use uv.",
+            redirect: "uv add"
+          }
+        ],
+        secondaryDetectors: [
+          {
+            id: "docker",
+            description: "Dockerfile present",
+            detect: { files: ["Dockerfile"] },
+            suggestSkills: ["owner/repo@docker"]
+          }
+        ],
+        konsistentTemplate: {
+          version: "v1",
+          conventions: [
+            {
+              name: "engine-modules",
+              description: "engine files are flat modules",
+              paths: "src/engine",
+              must: { haveType: "file" }
+            }
+          ]
+        }
+      }),
+      indexItem
+    );
+
+    expect(item.type).toBe("pack");
+    if (item.type === "pack") {
+      expect(item.pack.toolPolicyRules?.[0]?.id).toBe("no-pip");
+      expect(item.pack.secondaryDetectors?.[0]?.detect.files).toEqual(["Dockerfile"]);
+      expect(item.pack.konsistentTemplate?.conventions[0]?.name).toBe("engine-modules");
+    }
+
+    expect(() =>
+      validateRegistryItem(
+        packItem({
+          secondaryDetectors: [{ id: "s1", description: "missing detect" }]
+        }),
+        indexItem
+      )
+    ).toThrow("pack.secondaryDetectors.0.detect: is required");
+
+    expect(() =>
+      validateRegistryItem(
+        packItem({
+          toolPolicyRules: [
+            {
+              description: "no id",
+              tool: "Bash",
+              commandPattern: "^pip ",
+              message: "Use uv.",
+              redirect: "uv add"
+            }
+          ]
+        }),
+        indexItem
+      )
+    ).toThrow("pack.toolPolicyRules.0.id: must be a non-empty string");
+
+    expect(() =>
+      validateRegistryItem(
+        packItem({
+          konsistentTemplate: { version: "v1", conventions: [{ name: "x", description: "y", paths: "src" }] }
+        }),
+        indexItem
+      )
+    ).toThrow("pack.konsistentTemplate.conventions.0: must have exactly one of must or mustNot");
+
+    expect(() =>
+      validateRegistryItem(
+        packItem({
+          konsistentTemplate: { version: 2, conventions: [] }
+        }),
+        indexItem
+      )
+    ).toThrow('pack.konsistentTemplate.version: must be "v1"');
+  });
+
   test("validates hook payload paths and entry file", () => {
     const hookIndexItem = {
       name: "guard",
