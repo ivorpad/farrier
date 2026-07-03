@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { AgentAvailability } from "../engine/backend";
 import type { AuthoringMode, CreateAgent, SkillCreationRequest } from "../engine/create-skill";
 import { DetailPane, KeyHints, palette, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
+import { evalPolicyLabels, type SkillEvalPolicy } from "./create-eval";
 
 type CreateStepProps = {
   requests: SkillCreationRequest[];
@@ -13,6 +14,9 @@ type CreateStepProps = {
   refine?: boolean;
   refineBackend?: string;
   onToggleRefine?: () => void;
+  /** When set, renders the per-agent eval policy cycler (only shown for per-agent mode). */
+  evalPolicy?: SkillEvalPolicy;
+  onCycleEvalPolicy?: () => void;
   onAddRequest: (request: SkillCreationRequest) => void;
   onRemoveRequest: (index: number) => void;
   /** Confirm: `pending` is the filled-but-unqueued form to include, if any. */
@@ -20,7 +24,7 @@ type CreateStepProps = {
   onBack: () => void;
 };
 
-type Zone = "input" | "agents" | "mode" | "queued" | "refine" | "actions";
+type Zone = "input" | "agents" | "mode" | "queued" | "refine" | "eval" | "actions";
 
 type ActionId = "create" | "queue" | "back";
 
@@ -116,6 +120,10 @@ export function CreateStep(props: CreateStepProps) {
   ];
 
   const showRefine = Boolean(props.onToggleRefine && props.refineBackend);
+  // The eval policy only matters when both copies will exist to compare.
+  const perAgentPlanned =
+    modeFor(agents, mode) === "per-agent" || props.requests.some((request) => request.mode === "per-agent");
+  const showEval = Boolean(props.onCycleEvalPolicy && props.evalPolicy && perAgentPlanned);
 
   const zones: Zone[] = [
     "input",
@@ -123,6 +131,7 @@ export function CreateStep(props: CreateStepProps) {
     ...(showMode ? (["mode"] as Zone[]) : []),
     ...(props.requests.length > 0 ? (["queued"] as Zone[]) : []),
     ...(showRefine ? (["refine"] as Zone[]) : []),
+    ...(showEval ? (["eval"] as Zone[]) : []),
     "actions"
   ];
 
@@ -191,8 +200,8 @@ export function CreateStep(props: CreateStepProps) {
         modeIndex < modeRows.length - 1 ? setModeIndex(modeIndex + 1) : cycleZone();
       } else if (zone === "queued") {
         queuedIndex < props.requests.length - 1 ? setQueuedIndex(queuedIndex + 1) : cycleZone();
-      } else if (zone === "refine") {
-        setZone("actions");
+      } else if (zone === "refine" || zone === "eval") {
+        cycleZone();
       }
       return;
     }
@@ -204,8 +213,8 @@ export function CreateStep(props: CreateStepProps) {
         modeIndex > 0 ? setModeIndex(modeIndex - 1) : setZone("agents");
       } else if (zone === "queued") {
         queuedIndex > 0 ? setQueuedIndex(queuedIndex - 1) : setZone(showMode ? "mode" : "agents");
-      } else if (zone === "refine") {
-        setZone(zones[Math.max(zones.indexOf("refine") - 1, 0)] ?? "input");
+      } else if (zone === "refine" || zone === "eval") {
+        setZone(zones[Math.max(zones.indexOf(zone) - 1, 0)] ?? "input");
       } else if (zone === "actions") {
         setZone(zones[zones.length - 2] ?? "input");
       }
@@ -246,6 +255,11 @@ export function CreateStep(props: CreateStepProps) {
         props.onToggleRefine?.();
         return;
       }
+
+      if (zone === "eval") {
+        props.onCycleEvalPolicy?.();
+        return;
+      }
     }
 
     if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
@@ -269,6 +283,11 @@ export function CreateStep(props: CreateStepProps) {
 
       if (zone === "refine") {
         props.onToggleRefine?.();
+        return;
+      }
+
+      if (zone === "eval") {
+        props.onCycleEvalPolicy?.();
         return;
       }
 
@@ -399,6 +418,15 @@ export function CreateStep(props: CreateStepProps) {
           <span fg={props.refine ? palette.success : palette.faint}>{props.refine ? "[x] " : "[ ] "}</span>
           <span fg={palette.text}>{`ask clarifying questions first`}</span>
           <span fg={palette.faint}>{`  ${props.refineBackend} picks libraries/formats with you before authoring`}</span>
+        </text>
+      ) : null}
+
+      {showEval ? (
+        <text bg={zone === "eval" ? palette.selBg : undefined}>
+          <span fg={palette.accent}>{zone === "eval" ? "▸ " : "  "}</span>
+          <span fg={palette.gold}>{"after authoring: "}</span>
+          <span fg={props.evalPolicy === "skip" ? palette.faint : palette.text}>{evalPolicyLabels[props.evalPolicy!]}</span>
+          <span fg={palette.faint}>{"  space cycles"}</span>
         </text>
       ) : null}
 

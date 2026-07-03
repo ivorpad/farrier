@@ -152,10 +152,13 @@ export function CreateDoneScreen(props: {
         ))}
       </box>
       {props.evalCandidate ? (
-        <text fg={palette.gold}>
-          {"e "}
-          <span fg={palette.muted}>{`evaluate ${props.evalCandidate.skillName} copies · enter close`}</span>
-        </text>
+        <box style={{ flexDirection: "column", gap: 0 }}>
+          <text fg={palette.gold}>
+            {"e "}
+            <span fg={palette.muted}>{`evaluate ${props.evalCandidate.skillName} copies & pick a winner · enter close`}</span>
+          </text>
+          <text fg={palette.faint}>{`  or later: farrier skill eval ${props.evalCandidate.skillName}${props.evalCandidate.names.codex !== props.evalCandidate.skillName ? ` --codex-name ${props.evalCandidate.names.codex}` : ""}`}</text>
+        </box>
       ) : (
         <text fg={palette.gold}>
           {"enter "}

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, lstat, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
+import { access, cp, lstat, mkdir, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import {
   defaultBackendRunner,
@@ -7,10 +7,27 @@ import {
   type AgentBackend,
   type BackendCommandRunner
 } from "./backend";
-import { nativeSkillRoots, type CreateAgent } from "./create-skill";
+import {
+  ensureCreatorInstalled,
+  nativeSkillRoots,
+  resolvedHomedir,
+  type CreateAgent,
+  type SkillCreationOutcome
+} from "./create-skill";
+import {
+  buildLabeledEvalPrompt,
+  mergeJudgePasses,
+  validateLabeledEvalVerdict,
+  type LabelAssignment
+} from "./eval-judge";
+import { writeEvalReports, type EvalReportPaths } from "./eval-report";
 import { maxSkillNameLength, skillNamePattern } from "./skill-validate";
+import type { CommandRunner, ResolveSkillsCommandDeps } from "./skills";
 
 export type SkillEvalWinner = CreateAgent | "tie";
+
+/** Per-agent authoring lets each agent name its copy, so the two can diverge. */
+export type PerAgentSkillNames = Record<CreateAgent, string>;
 
 export type SkillEvalCopyScore = {
   path: string;
@@ -27,6 +44,7 @@ export type SkillEvalVerdict = {
   rationale: string;
   copies: Record<CreateAgent, SkillEvalCopyScore>;
   notes: string[];
+  reportPaths?: EvalReportPaths;
 };
 
 export type SkillWinnerResolution = {
@@ -36,10 +54,17 @@ export type SkillWinnerResolution = {
   winnerPath: string;
   deleted: string[];
   links: Array<{ path: string; target: string; resolvesTo: string }>;
+  /** Where the deleted copy was retained, when the recoverable path was used. */
+  backupPath?: string;
   notes: string[];
 };
 
 const pinnedCreatorRoot = ".claude/skills/skill-creator";
+// Resolved per call (not cached at module load) so tests can point HOME at a
+// scratch directory.
+function globalPinnedCreatorRoot(): string {
+  return join(resolvedHomedir(), ".claude", "skills", "skill-creator");
+}
 const pinnedEvalFiles = [
   "SKILL.md",
   "agents/comparator.md",
@@ -61,99 +86,11 @@ function skillPath(agent: CreateAgent, skillName: string): string {
   return `${nativeSkillRoots[agent]}/${skillName}`;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function stringArray(value: unknown, field: string, backend: AgentBackend): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error(`${backend} backend JSON field ${field} must be an array of strings`);
-  }
-
-  const strings = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-
-  if (strings.length !== value.length) {
-    throw new Error(`${backend} backend JSON field ${field} must be an array of strings`);
-  }
-
-  return strings.map((item) => item.trim());
-}
-
-function scoreCopy(raw: unknown, field: string, backend: AgentBackend): SkillEvalCopyScore {
-  if (!isRecord(raw)) {
-    throw new Error(`${backend} backend JSON field ${field} must be an object`);
-  }
-
-  if (typeof raw.path !== "string" || raw.path.trim().length === 0) {
-    throw new Error(`${backend} backend JSON field ${field}.path must be a string`);
-  }
-
-  if (typeof raw.score !== "number" || !Number.isFinite(raw.score) || raw.score < 0 || raw.score > 10) {
-    throw new Error(`${backend} backend JSON field ${field}.score must be a number from 0 to 10`);
-  }
-
-  if (typeof raw.rationale !== "string" || raw.rationale.trim().length === 0) {
-    throw new Error(`${backend} backend JSON field ${field}.rationale must be a non-empty string`);
-  }
-
-  return {
-    path: raw.path.trim(),
-    score: raw.score,
-    rationale: raw.rationale.trim(),
-    strengths: stringArray(raw.strengths, `${field}.strengths`, backend),
-    weaknesses: stringArray(raw.weaknesses, `${field}.weaknesses`, backend)
-  };
-}
-
-export function validateSkillEvalVerdict(
-  parsed: unknown,
-  backend: AgentBackend,
-  expected?: { skillName: string; claudePath: string; codexPath: string }
-): SkillEvalVerdict {
-  if (!isRecord(parsed) || !isRecord(parsed.copies)) {
-    throw new Error(`${backend} backend JSON must have shape {"skill_name":"...","recommended_winner":"claude|codex|tie","copies":{...}}`);
-  }
-
-  if (typeof parsed.skill_name !== "string" || parsed.skill_name.trim().length === 0) {
-    throw new Error(`${backend} backend JSON field skill_name must be a non-empty string`);
-  }
-
-  const winner = parsed.recommended_winner;
-  if (winner !== "claude" && winner !== "codex" && winner !== "tie") {
-    throw new Error(`${backend} backend JSON field recommended_winner must be claude, codex, or tie`);
-  }
-
-  if (typeof parsed.rationale !== "string" || parsed.rationale.trim().length === 0) {
-    throw new Error(`${backend} backend JSON field rationale must be a non-empty string`);
-  }
-
-  const verdict: SkillEvalVerdict = {
-    skillName: parsed.skill_name.trim(),
-    backend,
-    recommendedWinner: winner,
-    rationale: parsed.rationale.trim(),
-    copies: {
-      claude: scoreCopy(parsed.copies.claude, "copies.claude", backend),
-      codex: scoreCopy(parsed.copies.codex, "copies.codex", backend)
-    },
-    notes: stringArray(parsed.notes ?? [], "notes", backend)
-  };
-
-  if (expected) {
-    if (verdict.skillName !== expected.skillName) {
-      throw new Error(`${backend} backend JSON field skill_name must be ${expected.skillName}, got ${verdict.skillName}`);
-    }
-
-    if (verdict.copies.claude.path !== expected.claudePath) {
-      throw new Error(`${backend} backend JSON field copies.claude.path must be ${expected.claudePath}, got ${verdict.copies.claude.path}`);
-    }
-
-    if (verdict.copies.codex.path !== expected.codexPath) {
-      throw new Error(`${backend} backend JSON field copies.codex.path must be ${expected.codexPath}, got ${verdict.copies.codex.path}`);
-    }
-  }
-
-  return verdict;
+function resolveNames(input: { skillName: string; names?: PerAgentSkillNames }, context: string): PerAgentSkillNames {
+  const names = input.names ?? { claude: input.skillName, codex: input.skillName };
+  assertSafeSkillName(names.claude, context);
+  assertSafeSkillName(names.codex, context);
+  return names;
 }
 
 async function assertFile(path: string, message: string): Promise<void> {
@@ -164,106 +101,190 @@ async function assertFile(path: string, message: string): Promise<void> {
   }
 }
 
-async function assertPinnedCreator(targetDir: string): Promise<void> {
+async function hasAllPinnedFiles(root: string): Promise<boolean> {
   for (const file of pinnedEvalFiles) {
-    await assertFile(
-      join(targetDir, pinnedCreatorRoot, file),
-      `Pinned Anthropic skill-creator eval tooling is missing: ${pinnedCreatorRoot}/${file}`
-    );
+    try {
+      await access(join(root, file));
+    } catch {
+      return false;
+    }
   }
+  return true;
 }
 
-async function assertPerAgentSkillPair(targetDir: string, skillName: string): Promise<void> {
+/**
+ * Global-first: a copy already pinned globally (or in this project) is used
+ * as-is; only a genuinely missing copy triggers a GitHub pull via the same
+ * global-install path authoring uses, so the two never fight over scope.
+ * Returns the root to read the eval tooling from — project-relative when the
+ * project has its own copy, absolute when falling back to the global one.
+ */
+async function resolvePinnedCreatorRoot(
+  targetDir: string,
+  runner?: CommandRunner,
+  resolveDeps?: ResolveSkillsCommandDeps
+): Promise<string> {
+  if (await hasAllPinnedFiles(join(targetDir, pinnedCreatorRoot))) {
+    return pinnedCreatorRoot;
+  }
+
+  const globalRoot = globalPinnedCreatorRoot();
+
+  if (await hasAllPinnedFiles(globalRoot)) {
+    return globalRoot;
+  }
+
+  await ensureCreatorInstalled("claude", targetDir, runner, resolveDeps);
+
+  if (await hasAllPinnedFiles(globalRoot)) {
+    return globalRoot;
+  }
+
+  throw new Error(
+    `Pinned Anthropic skill-creator eval tooling is missing from both ${pinnedCreatorRoot} (project) and ${globalRoot} (global), and installing anthropics/skills@skill-creator failed.`
+  );
+}
+
+export type SkillEvalCandidate = {
+  skillName: string;
+  /** Directory name per agent — the copies can legitimately diverge. */
+  names: PerAgentSkillNames;
+  description: string;
+};
+
+/**
+ * Which outcomes have a comparable per-agent pair: per-agent mode, no failed
+ * leg, and exactly one top-level SKILL.md per native root. Each agent named
+ * its own copy, so the names are recovered from the outcome files rather than
+ * assumed to match.
+ */
+export function perAgentEvalCandidates(outcomes: SkillCreationOutcome[]): SkillEvalCandidate[] {
+  return outcomes.flatMap((outcome) => {
+    if (outcome.error || !outcome.name || outcome.request.mode !== "per-agent") {
+      return [];
+    }
+
+    const names: Partial<PerAgentSkillNames> = {};
+
+    for (const agent of ["claude", "codex"] as const) {
+      const prefix = `${nativeSkillRoots[agent]}/`;
+      const found = new Set(
+        outcome.files
+          .filter((file) => file.startsWith(prefix) && file.endsWith("/SKILL.md"))
+          .map((file) => file.slice(prefix.length, -"/SKILL.md".length))
+          .filter((name) => name.length > 0 && !name.includes("/"))
+      );
+
+      if (found.size !== 1) {
+        return [];
+      }
+
+      names[agent] = [...found][0];
+    }
+
+    return [
+      {
+        skillName: outcome.name,
+        names: names as PerAgentSkillNames,
+        description: outcome.request.description
+      }
+    ];
+  });
+}
+
+async function assertPerAgentSkillPair(targetDir: string, names: PerAgentSkillNames): Promise<void> {
   for (const agent of ["claude", "codex"] as const) {
     await assertFile(
-      join(targetDir, skillPath(agent, skillName), "SKILL.md"),
-      `Cannot evaluate ${skillName}: missing ${skillPath(agent, skillName)}/SKILL.md`
+      join(targetDir, skillPath(agent, names[agent]), "SKILL.md"),
+      `Cannot evaluate ${names[agent]}: missing ${skillPath(agent, names[agent])}/SKILL.md`
     );
   }
-}
-
-export function buildEvalSkillPrompt(input: {
-  skillName: string;
-  description?: string;
-  claudePath: string;
-  codexPath: string;
-}): string {
-  const description = input.description?.trim()
-    ? `Original request:\n${input.description.trim()}\n\n`
-    : "Original request: not provided; infer intended behavior from both SKILL.md files.\n\n";
-
-  return `You are Farrier's per-agent skill evaluator. Return JSON only.
-
-Use the pinned Anthropic skill-creator eval workflow installed in this project:
-- Read ${pinnedCreatorRoot}/agents/comparator.md and apply its blind-comparison rubric.
-- Read ${pinnedCreatorRoot}/agents/analyzer.md and use its post-hoc analysis guidance to explain why the better skill wins.
-- Read ${pinnedCreatorRoot}/references/schemas.md for comparison/analysis field expectations.
-
-This is a read-only static eval of two completed skill directories; do not edit files, create workspaces, run agents, or delete anything. If either skill has evals/evals.json, use its expectations as secondary evidence.
-
-Skill name: ${input.skillName}
-${description}Candidate A (Claude copy): ${input.claudePath}
-Candidate B (Codex copy): ${input.codexPath}
-
-Return exactly this JSON shape, with no markdown:
-{
-  "skill_name": "${input.skillName}",
-  "recommended_winner": "claude" | "codex" | "tie",
-  "rationale": "one concise paragraph explaining the recommendation",
-  "copies": {
-    "claude": {
-      "path": "${input.claudePath}",
-      "score": 0,
-      "rationale": "why this copy scored this way",
-      "strengths": ["specific strength"],
-      "weaknesses": ["specific weakness"]
-    },
-    "codex": {
-      "path": "${input.codexPath}",
-      "score": 0,
-      "rationale": "why this copy scored this way",
-      "strengths": ["specific strength"],
-      "weaknesses": ["specific weakness"]
-    }
-  },
-  "notes": ["anything the user should know before choosing"]
-}
-
-Score each copy from 0 to 10 for instruction clarity, triggering description, progressive disclosure, bundled resource usefulness, safety, and likely reliability for the original request. The recommendation is advisory; the user will choose what to keep.`;
 }
 
 export async function evaluatePerAgentSkill(input: {
   targetDir: string;
   skillName: string;
+  /** Per-agent directory names when the copies diverged; defaults to skillName for both. */
+  names?: PerAgentSkillNames;
   description?: string;
   backend: AgentBackend;
   model?: string;
   runner?: BackendCommandRunner;
   signal?: AbortSignal;
+  /** Used only to self-heal a missing pinned creator via a global install. */
+  skillsRunner?: CommandRunner;
+  resolveDeps?: ResolveSkillsCommandDeps;
 }): Promise<SkillEvalVerdict> {
-  assertSafeSkillName(input.skillName, "Cannot evaluate");
-  await assertPinnedCreator(input.targetDir);
-  await assertPerAgentSkillPair(input.targetDir, input.skillName);
+  const names = resolveNames(input, "Cannot evaluate");
+  const creatorRoot = await resolvePinnedCreatorRoot(input.targetDir, input.skillsRunner, input.resolveDeps);
+  await assertPerAgentSkillPair(input.targetDir, names);
 
-  const parsed = await invokeBackend({
-    backend: input.backend,
-    model: input.model,
-    prompt: buildEvalSkillPrompt({
+  // The native paths (.claude/skills vs .agents/skills) reveal the vendor, so
+  // both copies are staged at neutral paths before the blind judge sees them.
+  const stagingRoot = `.farrier-staging/eval-${randomUUID().slice(0, 8)}`;
+  const stagedPaths: Record<CreateAgent, string> = {
+    claude: `${stagingRoot}/candidate-one`,
+    codex: `${stagingRoot}/candidate-two`
+  };
+
+  try {
+    for (const agent of ["claude", "codex"] as const) {
+      await cp(join(input.targetDir, skillPath(agent, names[agent])), join(input.targetDir, stagedPaths[agent]), {
+        recursive: true
+      });
+    }
+
+    const runPass = async (assignment: LabelAssignment) => {
+      const aPath = stagedPaths[assignment.A];
+      const bPath = stagedPaths[assignment.B];
+
+      const parsed = await invokeBackend({
+        backend: input.backend,
+        model: input.model,
+        prompt: buildLabeledEvalPrompt({
+          skillName: input.skillName,
+          description: input.description,
+          aPath,
+          bPath,
+          creatorRoot
+        }),
+        targetDir: input.targetDir,
+        runner: input.runner ?? defaultBackendRunner,
+        signal: input.signal
+      });
+
+      return {
+        verdict: validateLabeledEvalVerdict(parsed, input.backend, { skillName: input.skillName, aPath, bPath }),
+        assignment
+      };
+    };
+
+    // Two blind passes with the labels swapped, in parallel; a winner only
+    // stands when both passes agree (position/self-preference bias guard).
+    const passes = await Promise.all([
+      runPass({ A: "claude", B: "codex" }),
+      runPass({ A: "codex", B: "claude" })
+    ]);
+
+    const merged = mergeJudgePasses(passes);
+
+    const verdict: SkillEvalVerdict = {
       skillName: input.skillName,
-      description: input.description,
-      claudePath: skillPath("claude", input.skillName),
-      codexPath: skillPath("codex", input.skillName)
-    }),
-    targetDir: input.targetDir,
-    runner: input.runner ?? defaultBackendRunner,
-    signal: input.signal
-  });
+      backend: input.backend,
+      recommendedWinner: merged.recommendedWinner,
+      rationale: merged.rationale,
+      copies: {
+        claude: { path: skillPath("claude", names.claude), ...merged.copies.claude },
+        codex: { path: skillPath("codex", names.codex), ...merged.copies.codex }
+      },
+      notes: merged.notes
+    };
 
-  return validateSkillEvalVerdict(parsed, input.backend, {
-    skillName: input.skillName,
-    claudePath: skillPath("claude", input.skillName),
-    codexPath: skillPath("codex", input.skillName)
-  });
+    verdict.reportPaths = await writeEvalReports(input.targetDir, verdict);
+    return verdict;
+  } finally {
+    await rm(join(input.targetDir, stagingRoot), { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 async function assertRealSkillDir(targetDir: string, relPath: string): Promise<void> {
@@ -289,39 +310,65 @@ async function assertRealSkillDir(targetDir: string, relPath: string): Promise<v
 export async function resolvePerAgentSkillWinner(input: {
   targetDir: string;
   skillName: string;
+  /** Per-agent directory names when the copies diverged; defaults to skillName for both. */
+  names?: PerAgentSkillNames;
   winner: CreateAgent;
   confirmDeleteAndLink: boolean;
+  /**
+   * Keep the deleted copy in .farrier-staging/trash/ instead of removing it.
+   * Used by the auto-apply paths, where consent was given before the verdict
+   * existed — reversibility offsets the blind consent. Interactive picks (the
+   * user saw the exact paths and confirmed) delete cleanly.
+   */
+  retainBackupInTrash?: boolean;
 }): Promise<SkillWinnerResolution> {
-  assertSafeSkillName(input.skillName, "Cannot resolve winner");
+  const names = resolveNames(input, "Cannot resolve winner");
 
   if (!input.confirmDeleteAndLink) {
     throw new Error("Refusing to delete and symlink without explicit confirmation.");
   }
 
   const loser: CreateAgent = input.winner === "claude" ? "codex" : "claude";
-  const winnerPath = skillPath(input.winner, input.skillName);
-  const loserPath = skillPath(loser, input.skillName);
+  const winnerPath = skillPath(input.winner, names[input.winner]);
+  const loserPath = skillPath(loser, names[loser]);
+  // The link carries the winner's name so both roots expose the same skill;
+  // it only differs from loserPath when the copies chose different names.
+  const linkPath = skillPath(loser, names[input.winner]);
 
   await assertRealSkillDir(input.targetDir, winnerPath);
   await assertRealSkillDir(input.targetDir, loserPath);
 
   const winnerAbs = join(input.targetDir, winnerPath);
   const loserAbs = join(input.targetDir, loserPath);
+  const linkAbs = join(input.targetDir, linkPath);
+
+  if (linkPath !== loserPath && (await lstat(linkAbs).catch(() => undefined))) {
+    throw new Error(`Cannot resolve winner: ${linkPath} already exists and would be overwritten by the symlink.`);
+  }
+
   const winnerSkillReal = await realpath(join(winnerAbs, "SKILL.md"));
   const backupAbs = `${loserAbs}.farrier-delete-${randomUUID().slice(0, 8)}`;
-  const linkTarget = relative(dirname(loserAbs), winnerAbs) || ".";
+  const linkTarget = relative(dirname(linkAbs), winnerAbs) || ".";
 
   await rename(loserAbs, backupAbs);
 
   try {
-    await symlink(linkTarget, loserAbs, "dir");
-    const linkedSkillReal = await realpath(join(loserAbs, "SKILL.md"));
+    await symlink(linkTarget, linkAbs, "dir");
+    const linkedSkillReal = await realpath(join(linkAbs, "SKILL.md"));
 
     if (linkedSkillReal !== winnerSkillReal) {
-      throw new Error(`symlink ${loserPath} resolves to ${linkedSkillReal}, not ${winnerSkillReal}`);
+      throw new Error(`symlink ${linkPath} resolves to ${linkedSkillReal}, not ${winnerSkillReal}`);
     }
 
-    await rm(backupAbs, { recursive: true, force: false });
+    let backupPath: string | undefined;
+
+    if (input.retainBackupInTrash) {
+      backupPath = `.farrier-staging/trash/${names[loser]}-${randomUUID().slice(0, 8)}`;
+      await mkdir(dirname(join(input.targetDir, backupPath)), { recursive: true });
+      await rename(backupAbs, join(input.targetDir, backupPath));
+    } else {
+      await rm(backupAbs, { recursive: true, force: false });
+    }
 
     return {
       skillName: input.skillName,
@@ -329,13 +376,17 @@ export async function resolvePerAgentSkillWinner(input: {
       loser,
       winnerPath,
       deleted: [loserPath],
-      links: [{ path: loserPath, target: linkTarget, resolvesTo: winnerPath }],
-      notes: [`Deleted ${loserPath} and linked it to ${winnerPath}.`]
+      links: [{ path: linkPath, target: linkTarget, resolvesTo: winnerPath }],
+      backupPath,
+      notes: [
+        `Deleted ${loserPath} and linked ${linkPath} to ${winnerPath}.`,
+        ...(backupPath ? [`The deleted copy was kept at ${backupPath} in case you change your mind.`] : [])
+      ]
     };
   } catch (error) {
-    await rm(loserAbs, { recursive: true, force: true }).catch(() => undefined);
+    await rm(linkAbs, { recursive: true, force: true }).catch(() => undefined);
     await rename(backupAbs, loserAbs).catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to link ${loserPath} to ${winnerPath}: ${message}`);
+    throw new Error(`Failed to link ${linkPath} to ${winnerPath}: ${message}`);
   }
 }
