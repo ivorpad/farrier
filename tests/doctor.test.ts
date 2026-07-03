@@ -11,6 +11,8 @@ import {
 } from "../src/engine/doctor";
 import { createRenderPlan, writeRenderPlan } from "../src/engine/render";
 import { resolvePack } from "../src/packs/index";
+import type { ResolvedPack } from "../src/packs/types";
+import { builtinCatalog, type PackCatalog } from "../src/registry/catalog";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-doctor-"));
@@ -20,6 +22,29 @@ async function renderPack(dir: string, packId = "python-fastapi"): Promise<void>
   const pack = resolvePack(packId);
   const plan = await createRenderPlan({ targetDir: dir, pack });
   await writeRenderPlan(plan);
+}
+
+function remoteDoctorCatalog(pack: ResolvedPack): PackCatalog {
+  const base = builtinCatalog();
+  return {
+    ...base,
+    packIds: () => [...base.packIds(), "@acme/demo"],
+    listings: () => [...base.listings(), { id: "@acme/demo", source: "registry", cached: false }],
+    resolvePack: (id) => (id === "@acme/demo" ? pack : base.resolvePack(id)),
+    remoteHook: (id) => pack.remoteHooks.find((hook) => hook.id === id),
+    registryPins: () => ({
+      "@acme/demo": {
+        type: "pack",
+        version: "1.0.0",
+        sha256: "pack".padEnd(64, "0")
+      },
+      "@acme/guard": {
+        type: "hook",
+        version: "1.0.0",
+        sha256: "hook".padEnd(64, "0")
+      }
+    })
+  };
 }
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
@@ -59,6 +84,42 @@ describe("doctor engine", () => {
     expect(report.problems).toEqual([]);
     expect(doctorExitCode(report)).toBe(0);
     expect(formatDoctorReport(report)).toContain("Health: healthy");
+  });
+
+  test("healthy rendered fixture with a remote bash hook passes", async () => {
+    const dir = await tempDir();
+    const basePack = resolvePack("generic");
+    const pack: ResolvedPack = {
+      ...basePack,
+      id: "@acme/demo",
+      packIds: ["generic", "@acme/demo"],
+      hooks: [...basePack.hooks, "@acme/guard"],
+      remoteHooks: [
+        {
+          id: "@acme/guard",
+          version: "1.0.0",
+          sha256: "hook".padEnd(64, "0"),
+          fromCache: false,
+          hookVersion: 1,
+          events: [{ event: "PreToolUse", matcher: "Bash" }],
+          entry: "guard.sh",
+          runner: "bash",
+          files: [{ path: "guard.sh", content: "echo guard\n" }]
+        }
+      ]
+    };
+    const catalog = remoteDoctorCatalog(pack);
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack,
+      registryPins: catalog.registryPins()
+    });
+    await writeRenderPlan(plan);
+
+    const report = await createDoctorReport({ targetDir: dir, catalog });
+
+    expect(report.healthy).toBe(true);
+    expect(report.problems).toEqual([]);
   });
 
   test("flags missing generated hook file", async () => {
