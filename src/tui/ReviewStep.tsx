@@ -7,8 +7,13 @@ import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { DetailPane, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
 import { CollisionPromptView, type CollisionPrompt } from "./collision";
 import type { PendingSkillEval } from "./create-eval";
+import { pickForgeVerb } from "./verbs";
 
 type Zone = "content" | "buttons";
+
+// One verb per process so the writing spinner, escape hint, and done line
+// all speak the same word within a run.
+const runVerb = pickForgeVerb();
 
 const reviewButtons: ButtonSpec[] = [
   { id: "back", label: "← Back" },
@@ -307,11 +312,11 @@ export function WritingStep(props: { creatingCount?: number; cancelling?: boolea
       {props.cancelling ? (
         <text fg={palette.warn}>{`${spinner}  Cancelling skill authoring — killing the agent runs… (files already written stay on disk)`}</text>
       ) : (
-        <text fg={palette.accent}>{`${spinner}  Forging the harness — writing files, installing skills${creating > 0 ? `, authoring ${creating} skill(s)` : ""}…`}</text>
+        <text fg={palette.accent}>{`${spinner}  ${runVerb.gerund} the harness — writing files, installing skills${creating > 0 ? `, authoring ${creating} skill(s)` : ""}…`}</text>
       )}
       {creating > 0 ? <text fg={palette.muted}>Skill authoring runs a full agent per skill — expect minutes, not seconds.</text> : null}
       {props.collision ? <CollisionPromptView collision={props.collision} /> : null}
-      <text fg={palette.muted}>{creating > 0 ? "ctrl+c cancels skill authoring and kills the agent runs." : "Escape is ignored while forging."}</text>
+      <text fg={palette.muted}>{creating > 0 ? "ctrl+c cancels skill authoring and kills the agent runs." : `Escape is ignored while ${runVerb.gerund.toLowerCase()}.`}</text>
     </box>
   );
 }
@@ -336,7 +341,7 @@ export function DoneStep(props: DoneStepProps) {
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       {ok ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
-          <text fg={palette.accent}>{"  ⚒  Harness forged."}</text>
+          <text fg={palette.accent}>{`  ⚒  Harness ${runVerb.past}.`}</text>
           <text> </text>
           <text>
             <span fg={palette.gold}>{String(props.fileCount)}</span>

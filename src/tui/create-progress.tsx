@@ -3,6 +3,10 @@ import type { CreateAgent, SkillCreationOutcome, SkillCreationPhase, SkillCreati
 import { palette, truncateTo, useSpinner } from "./chrome";
 import { CollisionPromptView, type CollisionPrompt } from "./collision";
 import type { PendingSkillEval } from "./create-eval";
+import { pickForgeVerb } from "./verbs";
+
+// One verb per process so the authoring spinner and done line match.
+const runVerb = pickForgeVerb();
 
 export type RequestStatus =
   | { kind: "pending" }
@@ -73,7 +77,7 @@ export function CreateProgressScreen(props: {
         {props.cancelling
           ? `${spinner}  Cancelling — killing the agent runs…`
           : running
-            ? `${spinner}  Forging ${props.requests.length} skill(s) — up to 3 agent runs in parallel…`
+            ? `${spinner}  ${runVerb.gerund} ${props.requests.length} skill(s) — up to 3 agent runs in parallel…`
             : "  ⚒  Finishing up…"}
       </text>
       <box style={{ flexDirection: "column", gap: 0 }}>
@@ -131,7 +135,7 @@ export function CreateDoneScreen(props: {
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <text fg={failed === 0 ? palette.accent : palette.warn}>
-        {failed === 0 ? "  ⚒  Skills forged." : `  ✗  ${failed} of ${props.outcomes.length} skill(s) failed.`}
+        {failed === 0 ? `  ⚒  Skills ${runVerb.past}.` : `  ✗  ${failed} of ${props.outcomes.length} skill(s) failed.`}
       </text>
       <box style={{ flexDirection: "column", gap: 0 }}>
         {props.outcomes.map((outcome, index) => (
