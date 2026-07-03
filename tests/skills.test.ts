@@ -127,6 +127,33 @@ describe("skills engine", () => {
     }
   });
 
+  test("searchSkills aborts the in-flight request when the signal fires", async () => {
+    const previous = process.env.SKILLS_API_URL;
+
+    const server = Bun.serve({
+      port: 0,
+      async fetch() {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        return Response.json({ skills: [] });
+      }
+    });
+
+    process.env.SKILLS_API_URL = server.url.origin;
+
+    try {
+      const controller = new AbortController();
+      const pending = searchSkills("python", { signal: controller.signal });
+
+      setTimeout(() => controller.abort(), 10);
+
+      await expect(pending).rejects.toThrow();
+      expect(controller.signal.aborted).toBe(true);
+    } finally {
+      restoreSkillsApiUrl(previous);
+      server.stop(true);
+    }
+  });
+
   test("searchSkills returns empty results for blank queries", async () => {
     await expect(searchSkills("   ")).resolves.toEqual([]);
   });
@@ -151,7 +178,7 @@ describe("skills engine", () => {
     }
   });
 
-  test("installSkills shells out once per source@skill ref", async () => {
+  test("installSkills shells out once for a single ref", async () => {
     const dir = await tempDir();
     const calls: CommandRunnerInput[] = [];
     const previousBin = process.env.FARRIER_SKILLS_BIN;
@@ -191,6 +218,36 @@ describe("skills engine", () => {
     }
   });
 
+  test("installSkills threads a custom agents list into the -a args", async () => {
+    const dir = await tempDir();
+    const calls: CommandRunnerInput[] = [];
+    const previousBin = process.env.FARRIER_SKILLS_BIN;
+    process.env.FARRIER_SKILLS_BIN = "skills";
+
+    const runner: CommandRunner = async (input) => {
+      calls.push(input);
+      return {
+        exitCode: 0,
+        stdout: "installed",
+        stderr: ""
+      };
+    };
+
+    try {
+      const results = await installSkills(["owner/repo@one"], dir, runner, undefined, ["codex"]);
+
+      expect(calls).toEqual([
+        {
+          cmd: ["skills", "add", "owner/repo", "-s", "one", "-a", "codex", "-y"],
+          cwd: dir
+        }
+      ]);
+      expect(results[0]?.ok).toBe(true);
+    } finally {
+      restoreSkillsBinEnv(previousBin);
+    }
+  });
+
   test("installSkills dedupes refs while preserving order", async () => {
     const dir = await tempDir();
     const calls: CommandRunnerInput[] = [];
@@ -207,11 +264,133 @@ describe("skills engine", () => {
     };
 
     try {
-      await installSkills(["owner/repo@one", "owner/repo@one", "owner/repo@two"], dir, runner);
+      const results = await installSkills(["owner/repo@one", "owner/repo@one", "owner/repo@two"], dir, runner);
 
       expect(calls.map((call) => call.cmd)).toEqual([
-        ["skills", "add", "owner/repo", "-s", "one", "-a", "claude-code", "codex", "-y"],
-        ["skills", "add", "owner/repo", "-s", "two", "-a", "claude-code", "codex", "-y"]
+        ["skills", "add", "owner/repo", "-s", "one", "two", "-a", "claude-code", "codex", "-y"]
+      ]);
+
+      expect(results.map((result) => result.ref)).toEqual(["owner/repo@one", "owner/repo@two"]);
+    } finally {
+      restoreSkillsBinEnv(previousBin);
+    }
+  });
+
+  test("installSkills batches per source and reports each ref", async () => {
+    const dir = await tempDir();
+    const calls: CommandRunnerInput[] = [];
+    const previousBin = process.env.FARRIER_SKILLS_BIN;
+    process.env.FARRIER_SKILLS_BIN = "skills";
+
+    const runner: CommandRunner = async (input) => {
+      calls.push(input);
+      const failing = input.cmd.includes("bad/repo");
+      return {
+        exitCode: failing ? 3 : 0,
+        stdout: failing ? "" : "installed",
+        stderr: failing ? "clone failed" : ""
+      };
+    };
+
+    try {
+      const results = await installSkills(
+        ["owner/repo@one", "bad/repo@three", "owner/repo@two", "not-a-valid-ref"],
+        dir,
+        runner
+      );
+
+      expect(calls.map((call) => call.cmd)).toEqual([
+        ["skills", "add", "owner/repo", "-s", "one", "two", "-a", "claude-code", "codex", "-y"],
+        ["skills", "add", "bad/repo", "-s", "three", "-a", "claude-code", "codex", "-y"]
+      ]);
+
+      expect(results.map((result) => [result.ref, result.ok])).toEqual([
+        ["owner/repo@one", true],
+        ["bad/repo@three", false],
+        ["owner/repo@two", true],
+        ["not-a-valid-ref", false]
+      ]);
+
+      const failed = results.find((result) => result.ref === "bad/repo@three");
+      expect(failed?.exitCode).toBe(3);
+      expect(failed?.stderr).toBe("clone failed");
+      expect(failed?.error).toMatch(/exited with code 3/);
+    } finally {
+      restoreSkillsBinEnv(previousBin);
+    }
+  });
+
+  test("installSkills runs different sources concurrently", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env.FARRIER_SKILLS_BIN;
+    process.env.FARRIER_SKILLS_BIN = "skills";
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const runner: CommandRunner = async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      inFlight--;
+      return {
+        exitCode: 0,
+        stdout: "",
+        stderr: ""
+      };
+    };
+
+    try {
+      const results = await installSkills(["alpha/repo@one", "beta/repo@two", "gamma/repo@three"], dir, runner);
+
+      expect(maxInFlight).toBe(3);
+      expect(results.every((result) => result.ok)).toBe(true);
+    } finally {
+      restoreSkillsBinEnv(previousBin);
+    }
+  });
+
+  test("installSkills re-runs skills the lockfile race dropped", async () => {
+    const dir = await tempDir();
+    const calls: CommandRunnerInput[] = [];
+    const previousBin = process.env.FARRIER_SKILLS_BIN;
+    process.env.FARRIER_SKILLS_BIN = "skills";
+
+    const runner: CommandRunner = async (input) => {
+      calls.push(input);
+      const lockPath = join(dir, "skills-lock.json");
+
+      // Simulate the CLI's unlocked read-modify-write: both first-pass runs read
+      // an empty lock, and alpha finishes last, clobbering beta's entry.
+      if (input.cmd.includes("alpha/repo")) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        await Bun.write(lockPath, JSON.stringify({ version: 1, skills: { one: {} } }));
+      } else if (calls.filter((call) => call.cmd.includes("beta/repo")).length === 1) {
+        await Bun.write(lockPath, JSON.stringify({ version: 1, skills: { two: {} } }));
+      } else {
+        // The repair re-run has no concurrent writer, so the merge survives.
+        await Bun.write(lockPath, JSON.stringify({ version: 1, skills: { one: {}, two: {} } }));
+      }
+
+      return {
+        exitCode: 0,
+        stdout: "",
+        stderr: ""
+      };
+    };
+
+    try {
+      const results = await installSkills(["alpha/repo@one", "beta/repo@two"], dir, runner);
+
+      expect(calls.map((call) => call.cmd)).toEqual([
+        ["skills", "add", "alpha/repo", "-s", "one", "-a", "claude-code", "codex", "-y"],
+        ["skills", "add", "beta/repo", "-s", "two", "-a", "claude-code", "codex", "-y"],
+        ["skills", "add", "beta/repo", "-s", "two", "-a", "claude-code", "codex", "-y"]
+      ]);
+
+      expect(results.map((result) => [result.ref, result.ok])).toEqual([
+        ["alpha/repo@one", true],
+        ["beta/repo@two", true]
       ]);
     } finally {
       restoreSkillsBinEnv(previousBin);
