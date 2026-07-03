@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { createDoctorReport, doctorExitCode, formatDoctorReport } from "../engine/doctor";
+import { loadConfiguredCatalog, registryRefsFromManifest } from "./registry";
 
 type DoctorCliOptions = {
   dir: string;
@@ -57,7 +58,9 @@ export async function runDoctor(args: string[], usage: () => string): Promise<nu
   }
 
   const targetDir = resolve(options.dir);
-  const report = await createDoctorReport({ targetDir });
+  const requireRefs = await registryRefsFromManifest(targetDir);
+  const catalog = await loadConfiguredCatalog({ targetDir, requireRefs });
+  const report = await createDoctorReport({ targetDir, catalog });
 
   if (options.json) {
     console.log(JSON.stringify(report, null, 2));
