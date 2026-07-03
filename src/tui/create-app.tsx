@@ -9,27 +9,14 @@ import {
   type SkillCreationRequest
 } from "../engine/create-skill";
 import { detectPacks } from "../engine/detect";
-import { evaluatePerAgentSkill, resolvePerAgentSkillWinner, type SkillEvalVerdict, type SkillWinnerResolution } from "../engine/eval-skill";
 import { applyRefinements, generateRefineQuestions } from "../engine/refine-skill";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
-import {
-  eligiblePerAgentEvals,
-  EvalAppliedScreen,
-  EvalConfirmScreen,
-  EvalErrorScreen,
-  EvalProgressScreen,
-  EvalVerdictScreen,
-  type PendingSkillEval
-} from "./create-eval";
+import { eligiblePerAgentEvals, SkillEvalFlow, type PendingSkillEval } from "./create-eval";
 import { CreateDoneScreen, CreateProgressScreen, type RequestStatus } from "./create-progress";
 import { CreateStep } from "./CreateStep";
 import { RefineScreen, RefineWaitScreen, type PendingAnswer, type PendingQuestion } from "./RefineScreen";
 
-type Phase = "form" | "refining" | "questions" | "writing" | "done" | "evaluating" | "evalVerdict" | "evalConfirm" | "evalApplied" | "evalError";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+type Phase = "form" | "refining" | "questions" | "writing" | "done" | "eval";
 
 type CreateAppProps = {
   targetDir: string;
@@ -48,12 +35,7 @@ function CreateApp(props: CreateAppProps) {
   const [questionItems, setQuestionItems] = useState<PendingQuestion[]>([]);
   const [collision, setCollision] = useState<CollisionPrompt | null>(null);
   const [pendingEval, setPendingEval] = useState<PendingSkillEval | null>(null);
-  const [evalVerdict, setEvalVerdict] = useState<SkillEvalVerdict | null>(null);
-  const [evalWinner, setEvalWinner] = useState<CreateAgent | null>(null);
-  const [evalResolution, setEvalResolution] = useState<SkillWinnerResolution | null>(null);
-  const [evalError, setEvalError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const evalAbortRef = useRef<AbortController | null>(null);
   // Concurrent runs can collide at once; prompts are shown one at a time.
   const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -69,12 +51,10 @@ function CreateApp(props: CreateAppProps) {
 
     if (phase === "form" || phase === "refining" || phase === "questions") {
       props.onExit(1, "farrier skill new: cancelled — nothing created.");
-    } else if (phase === "evaluating") {
-      evalAbortRef.current?.abort();
-      setPhase("done");
     } else if (phase === "done") {
       props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0);
     }
+    // "eval" is handled inside SkillEvalFlow (its progress screen cancels on ctrl+c).
   });
 
   useEffect(() => {
@@ -219,77 +199,6 @@ function CreateApp(props: CreateAppProps) {
     };
   }, [phase, props.targetDir, requests]);
 
-  useEffect(() => {
-    if (phase !== "evaluating" || !pendingEval) {
-      return;
-    }
-
-    if (!evalBackend) {
-      setEvalError("No backend CLI is available to run the read-only eval.");
-      setPhase("evalError");
-      return;
-    }
-
-    let cancelled = false;
-    const controller = new AbortController();
-    evalAbortRef.current = controller;
-    setEvalError(null);
-
-    evaluatePerAgentSkill({
-      targetDir: props.targetDir,
-      skillName: pendingEval.skillName,
-      description: pendingEval.description,
-      backend: evalBackend,
-      signal: controller.signal
-    })
-      .then((verdict) => {
-        if (!cancelled) {
-          setEvalVerdict(verdict);
-          setPhase("evalVerdict");
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setEvalError(errorMessage(error));
-          setPhase("evalError");
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [evalBackend, pendingEval, phase, props.targetDir]);
-
-  function startEval(candidate: PendingSkillEval): void {
-    setPendingEval(candidate);
-    setEvalVerdict(null);
-    setEvalWinner(null);
-    setEvalResolution(null);
-    setEvalError(null);
-    setPhase("evaluating");
-  }
-
-  async function applyEvalWinner(): Promise<void> {
-    if (!pendingEval || !evalWinner) {
-      return;
-    }
-
-    try {
-      const resolution = await resolvePerAgentSkillWinner({
-        targetDir: props.targetDir,
-        skillName: pendingEval.skillName,
-        winner: evalWinner,
-        confirmDeleteAndLink: true
-      });
-      setEvalResolution(resolution);
-      setPhase("evalApplied");
-    } catch (error) {
-      setEvalError(errorMessage(error));
-      setPhase("evalError");
-    }
-  }
-
   switch (phase) {
     case "form":
       return (
@@ -354,7 +263,8 @@ function CreateApp(props: CreateAppProps) {
           evalCandidate={evalCandidate}
           onEvaluate={() => {
             if (evalCandidate) {
-              startEval(evalCandidate);
+              setPendingEval(evalCandidate);
+              setPhase("eval");
             }
           }}
           onExit={() => props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0)}
@@ -362,57 +272,22 @@ function CreateApp(props: CreateAppProps) {
       );
     }
 
-    case "evaluating":
+    case "eval":
       return pendingEval ? (
-        <EvalProgressScreen
-          skillName={pendingEval.skillName}
-          onCancel={() => {
-            evalAbortRef.current?.abort();
-            setPhase("done");
-          }}
-        />
-      ) : (
-        <EvalErrorScreen message="No per-agent skill is selected for eval." onBack={() => setPhase("done")} />
-      );
-
-    case "evalVerdict":
-      return evalVerdict ? (
-        <EvalVerdictScreen
-          verdict={evalVerdict}
-          onPick={(winner) => {
-            setEvalWinner(winner);
-            setPhase("evalConfirm");
-          }}
-          onKeepBoth={() => setPhase("done")}
-        />
-      ) : (
-        <EvalErrorScreen message="Eval finished without a verdict." onBack={() => setPhase("done")} />
-      );
-
-    case "evalConfirm":
-      return pendingEval && evalWinner ? (
-        <EvalConfirmScreen
-          skillName={pendingEval.skillName}
-          winner={evalWinner}
-          onConfirm={() => void applyEvalWinner()}
-          onBack={() => setPhase("evalVerdict")}
-        />
-      ) : (
-        <EvalErrorScreen message="No winner is selected." onBack={() => setPhase("done")} />
-      );
-
-    case "evalApplied":
-      return evalResolution ? (
-        <EvalAppliedScreen
-          resolution={evalResolution}
+        <SkillEvalFlow
+          targetDir={props.targetDir}
+          candidate={pendingEval}
+          backend={evalBackend}
+          onClose={() => setPhase("done")}
           onExit={() => props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0)}
         />
       ) : (
-        <EvalErrorScreen message="Winner resolution finished without a report." onBack={() => setPhase("done")} />
+        <CreateDoneScreen
+          outcomes={outcomes}
+          onEvaluate={() => undefined}
+          onExit={() => props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0)}
+        />
       );
-
-    case "evalError":
-      return <EvalErrorScreen message={evalError ?? "Unknown eval error."} onBack={() => setPhase("done")} />;
   }
 }
 

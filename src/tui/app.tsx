@@ -11,6 +11,7 @@ import { searchSkills, type SkillSearchResult } from "../engine/skills";
 import { resolvePack, supportedPackIds } from "../packs/index";
 import type { ResolvedPack } from "../packs/types";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
+import { eligiblePerAgentEvals, SkillEvalFlow, type PendingSkillEval } from "./create-eval";
 import { runForgeWrite } from "./forge";
 import { createInitialWizardState, wizardReducer, type PackDefaults, type WizardState } from "./machine";
 import { StackStep } from "./StackStep";
@@ -83,6 +84,7 @@ function WizardApp(props: WizardAppProps) {
   const [agentAvailability, setAgentAvailability] = useState<AgentAvailability | undefined>(undefined);
   const [createCancelling, setCreateCancelling] = useState(false);
   const [collision, setCollision] = useState<CollisionPrompt | null>(null);
+  const [pendingEval, setPendingEval] = useState<PendingSkillEval | null>(null);
   const createAbortRef = useRef<AbortController | null>(null);
   const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -99,6 +101,10 @@ function WizardApp(props: WizardAppProps) {
       createAbortRef.current?.abort();
       collision?.resolve("keep");
     } else if (state.step === "Done") {
+      if (pendingEval) {
+        // SkillEvalFlow owns ctrl+c while active (its progress screen cancels).
+        return;
+      }
       props.onExit(state.writeStatus?.ok === false ? 1 : 0);
     } else {
       props.onExit(1);
@@ -399,7 +405,20 @@ function WizardApp(props: WizardAppProps) {
     case "Writing":
       return <WritingStep creatingCount={state.createRequests.length} cancelling={createCancelling} collision={collision} />;
 
-    case "Done":
+    case "Done": {
+      if (pendingEval) {
+        return (
+          <SkillEvalFlow
+            targetDir={props.targetDir}
+            candidate={pendingEval}
+            backend={agentAvailability?.claude ? "claude" : agentAvailability?.codex ? "codex" : undefined}
+            onClose={() => setPendingEval(null)}
+            onExit={() => props.onExit(0)}
+          />
+        );
+      }
+
+      const evalCandidate = eligiblePerAgentEvals(state.createOutcomes)[0];
       return (
         <DoneStep
           writeStatus={state.writeStatus}
@@ -409,9 +428,16 @@ function WizardApp(props: WizardAppProps) {
           hookCount={state.selectedHooks.length}
           skillCount={state.selectedSkills.length}
           ruleCount={ruleCount}
+          evalCandidate={evalCandidate}
+          onEvaluate={() => {
+            if (evalCandidate) {
+              setPendingEval(evalCandidate);
+            }
+          }}
           onExit={() => props.onExit(0)}
         />
       );
+    }
   }
 }
 
