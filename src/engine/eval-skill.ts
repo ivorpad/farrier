@@ -8,6 +8,7 @@ import {
   type BackendCommandRunner
 } from "./backend";
 import { nativeSkillRoots, type CreateAgent } from "./create-skill";
+import { maxSkillNameLength, skillNamePattern } from "./skill-validate";
 
 export type SkillEvalWinner = CreateAgent | "tie";
 
@@ -45,6 +46,16 @@ const pinnedEvalFiles = [
   "agents/analyzer.md",
   "references/schemas.md"
 ];
+
+// Skill names become path segments under the native roots, so anything
+// non-kebab-case (separators, dots) could escape them.
+function assertSafeSkillName(skillName: string, context: string): void {
+  if (!skillNamePattern.test(skillName) || skillName.length > maxSkillNameLength) {
+    throw new Error(
+      `${context}: skill name '${skillName}' must be kebab-case ([a-z0-9] and single hyphens), at most ${maxSkillNameLength} chars.`
+    );
+  }
+}
 
 function skillPath(agent: CreateAgent, skillName: string): string {
   return `${nativeSkillRoots[agent]}/${skillName}`;
@@ -94,7 +105,11 @@ function scoreCopy(raw: unknown, field: string, backend: AgentBackend): SkillEva
   };
 }
 
-export function validateSkillEvalVerdict(parsed: unknown, backend: AgentBackend): SkillEvalVerdict {
+export function validateSkillEvalVerdict(
+  parsed: unknown,
+  backend: AgentBackend,
+  expected?: { skillName: string; claudePath: string; codexPath: string }
+): SkillEvalVerdict {
   if (!isRecord(parsed) || !isRecord(parsed.copies)) {
     throw new Error(`${backend} backend JSON must have shape {"skill_name":"...","recommended_winner":"claude|codex|tie","copies":{...}}`);
   }
@@ -112,7 +127,7 @@ export function validateSkillEvalVerdict(parsed: unknown, backend: AgentBackend)
     throw new Error(`${backend} backend JSON field rationale must be a non-empty string`);
   }
 
-  return {
+  const verdict: SkillEvalVerdict = {
     skillName: parsed.skill_name.trim(),
     backend,
     recommendedWinner: winner,
@@ -123,6 +138,22 @@ export function validateSkillEvalVerdict(parsed: unknown, backend: AgentBackend)
     },
     notes: stringArray(parsed.notes ?? [], "notes", backend)
   };
+
+  if (expected) {
+    if (verdict.skillName !== expected.skillName) {
+      throw new Error(`${backend} backend JSON field skill_name must be ${expected.skillName}, got ${verdict.skillName}`);
+    }
+
+    if (verdict.copies.claude.path !== expected.claudePath) {
+      throw new Error(`${backend} backend JSON field copies.claude.path must be ${expected.claudePath}, got ${verdict.copies.claude.path}`);
+    }
+
+    if (verdict.copies.codex.path !== expected.codexPath) {
+      throw new Error(`${backend} backend JSON field copies.codex.path must be ${expected.codexPath}, got ${verdict.copies.codex.path}`);
+    }
+  }
+
+  return verdict;
 }
 
 async function assertFile(path: string, message: string): Promise<void> {
@@ -210,6 +241,7 @@ export async function evaluatePerAgentSkill(input: {
   runner?: BackendCommandRunner;
   signal?: AbortSignal;
 }): Promise<SkillEvalVerdict> {
+  assertSafeSkillName(input.skillName, "Cannot evaluate");
   await assertPinnedCreator(input.targetDir);
   await assertPerAgentSkillPair(input.targetDir, input.skillName);
 
@@ -227,7 +259,11 @@ export async function evaluatePerAgentSkill(input: {
     signal: input.signal
   });
 
-  return validateSkillEvalVerdict(parsed, input.backend);
+  return validateSkillEvalVerdict(parsed, input.backend, {
+    skillName: input.skillName,
+    claudePath: skillPath("claude", input.skillName),
+    codexPath: skillPath("codex", input.skillName)
+  });
 }
 
 async function assertRealSkillDir(targetDir: string, relPath: string): Promise<void> {
@@ -256,6 +292,8 @@ export async function resolvePerAgentSkillWinner(input: {
   winner: CreateAgent;
   confirmDeleteAndLink: boolean;
 }): Promise<SkillWinnerResolution> {
+  assertSafeSkillName(input.skillName, "Cannot resolve winner");
+
   if (!input.confirmDeleteAndLink) {
     throw new Error("Refusing to delete and symlink without explicit confirmation.");
   }
