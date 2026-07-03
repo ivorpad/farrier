@@ -4,6 +4,7 @@ import {
   type AgentBackend,
   type BackendCommandRunner
 } from "./backend";
+import type { ReasoningEffort } from "../config/farrier-config";
 
 /**
  * Before delegating to a vendor skill-creator, farrier asks the backend LLM
@@ -77,11 +78,13 @@ export async function generateRefineQuestions(input: {
   targetDir: string;
   packId?: string;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   runner?: BackendCommandRunner;
 }): Promise<RefineQuestion[]> {
   const parsed = await invokeBackend({
     backend: input.backend,
     model: input.model,
+    reasoningEffort: input.reasoningEffort,
     prompt: buildRefinePrompt({ description: input.description, packId: input.packId }),
     targetDir: input.targetDir,
     runner: input.runner ?? defaultBackendRunner

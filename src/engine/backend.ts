@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from "../config/farrier-config";
+
 export type AgentBackend = "claude" | "codex";
 
 export type BackendCommandRunnerInput = {
@@ -65,6 +67,8 @@ export type BackendCommandOptions = {
    * the filesystem, not parsed from stdout.
    */
   stream?: boolean;
+  /** codex-only reasoning effort; ignored by the claude branch. */
+  reasoningEffort?: ReasoningEffort;
 };
 
 export function backendCommand(
@@ -88,6 +92,7 @@ export function backendCommand(
 
   const sandbox = options.write ? "workspace-write" : "read-only";
   const streamArgs = options.stream ? ["--json"] : [];
+  const effortArgs = options.reasoningEffort ? ["-c", `model_reasoning_effort=${options.reasoningEffort}`] : [];
 
   // No default codex model: an explicit --model for a model the account lacks
   // fails silently, while omitting the flag uses the account's default.
@@ -107,6 +112,7 @@ export function backendCommand(
       sandbox,
       "-c",
       "skills.include_instructions=false",
+      ...effortArgs,
       prompt
     ],
     stdin: undefined
@@ -316,12 +322,15 @@ export function parseBackendJson(stdout: string): unknown {
 export async function invokeBackend(input: {
   backend: AgentBackend;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   prompt: string;
   targetDir: string;
   runner: BackendCommandRunner;
   signal?: AbortSignal;
 }): Promise<unknown> {
-  const command = backendCommand(input.backend, input.model, input.prompt);
+  const command = backendCommand(input.backend, input.model, input.prompt, {
+    reasoningEffort: input.reasoningEffort
+  });
 
   const output = await input.runner({
     cmd: command.cmd,

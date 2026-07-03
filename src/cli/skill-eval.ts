@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { loadFarrierConfig, resolveModelSettings } from "../config/farrier-config";
 import { detectAgentBackend, type AgentBackend } from "../engine/backend";
 import {
   evaluatePerAgentSkill,
@@ -196,13 +197,19 @@ export async function runSkillEval(args: string[]): Promise<number> {
       codex: options.codexName ?? options.skillName
     };
 
+    const models = await loadFarrierConfig({ projectDir: targetDir })
+      .then((loaded) => loaded.config.models)
+      .catch(() => ({}));
+    const evalSettings = resolveModelSettings({ models, backend, role: "eval", explicitModel: options.model });
+
     const verdict = await evaluatePerAgentSkill({
       targetDir,
       skillName: options.skillName,
       names,
       description: options.description,
       backend,
-      model: options.model
+      model: evalSettings.model,
+      reasoningEffort: evalSettings.reasoningEffort
     });
 
     let resolution: SkillWinnerResolution | undefined;

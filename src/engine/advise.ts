@@ -9,6 +9,7 @@ import {
   type BackendCommandRunnerInput,
   type BackendCommandRunnerOutput
 } from "./backend";
+import type { ReasoningEffort } from "../config/farrier-config";
 import { searchSkills, type SkillSearchResult } from "./skills";
 
 export { detectAgentBackend } from "./backend";
@@ -101,6 +102,7 @@ export type AdviseSkillsInput = {
   contextText: string;
   backend: AdviseBackend;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   maxRecommendations?: number;
   runner?: AdviseCommandRunner;
   search?: (query: string) => Promise<SkillSearchResult[]>;
@@ -261,6 +263,7 @@ export async function adviseSkills(input: AdviseSkillsInput): Promise<AdviseResu
   const queriesJson = await invokeBackend({
     backend: input.backend,
     model: input.model,
+    reasoningEffort: input.reasoningEffort,
     prompt: buildQueriesPrompt({ packId: input.packId, contextText: input.contextText }),
     targetDir: input.targetDir,
     runner
@@ -279,6 +282,7 @@ export async function adviseSkills(input: AdviseSkillsInput): Promise<AdviseResu
   const recommendationsJson = await invokeBackend({
     backend: input.backend,
     model: input.model,
+    reasoningEffort: input.reasoningEffort,
     prompt: buildRecommendationsPrompt({
       packId: input.packId,
       contextText: input.contextText,

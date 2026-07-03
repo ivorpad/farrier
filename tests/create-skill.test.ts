@@ -253,6 +253,150 @@ describe("create-skill engine", () => {
     }
   });
 
+  test("createSkill author-claude with no model defaults to opus", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env[skillsBin];
+    process.env[skillsBin] = "skills";
+    await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
+
+    const backend = writingBackendRunner(async (input) => {
+      await writeSkill(dir, rootFromPrompt(input), "opus-skill");
+      const modelIndex = input.cmd.indexOf("--model");
+      expect(modelIndex).toBeGreaterThanOrEqual(0);
+      expect(input.cmd[modelIndex + 1]).toBe("opus");
+    });
+
+    try {
+      const outcome = await createSkill(
+        { description: "Author with default model", agents: ["claude"], mode: "author-claude" },
+        dir,
+        { backendRunner: backend.runner, skillsRunner: recordingSkillsRunner().runner }
+      );
+      expect(outcome.error).toBeUndefined();
+    } finally {
+      restoreEnv(skillsBin, previousBin);
+    }
+  });
+
+  test("createSkill author-codex with no config uses high reasoning effort and still no --model", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env[skillsBin];
+    process.env[skillsBin] = "skills";
+
+    const backend = writingBackendRunner(async (input) => {
+      await writeSkill(dir, rootFromPrompt(input), "codex-effort");
+      expect(input.cmd.join(" ")).toContain("model_reasoning_effort=high");
+      expect(input.cmd).not.toContain("--model");
+    });
+
+    try {
+      const outcome = await createSkill(
+        { description: "Author with codex", agents: ["codex"], mode: "author-codex" },
+        dir,
+        { backendRunner: backend.runner, skillsRunner: recordingSkillsRunner().runner }
+      );
+      expect(outcome.error).toBeUndefined();
+    } finally {
+      restoreEnv(skillsBin, previousBin);
+    }
+  });
+
+  test("createSkill uses deps.modelSettings when the request has no model", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env[skillsBin];
+    process.env[skillsBin] = "skills";
+    await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
+
+    const backend = writingBackendRunner(async (input) => {
+      await writeSkill(dir, rootFromPrompt(input), "configured-skill");
+      const modelIndex = input.cmd.indexOf("--model");
+      expect(input.cmd[modelIndex + 1]).toBe("sonnet");
+    });
+
+    try {
+      const outcome = await createSkill(
+        { description: "Author from config", agents: ["claude"], mode: "author-claude" },
+        dir,
+        {
+          backendRunner: backend.runner,
+          skillsRunner: recordingSkillsRunner().runner,
+          modelSettings: { claude: { model: "sonnet" } }
+        }
+      );
+      expect(outcome.error).toBeUndefined();
+    } finally {
+      restoreEnv(skillsBin, previousBin);
+    }
+  });
+
+  test("createSkill request model beats deps.modelSettings", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env[skillsBin];
+    process.env[skillsBin] = "skills";
+    await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
+
+    const backend = writingBackendRunner(async (input) => {
+      await writeSkill(dir, rootFromPrompt(input), "explicit-skill");
+      const modelIndex = input.cmd.indexOf("--model");
+      expect(input.cmd[modelIndex + 1]).toBe("haiku");
+    });
+
+    try {
+      const outcome = await createSkill(
+        { description: "Author with explicit model", agents: ["claude"], mode: "author-claude", model: "haiku" },
+        dir,
+        {
+          backendRunner: backend.runner,
+          skillsRunner: recordingSkillsRunner().runner,
+          modelSettings: { claude: { model: "sonnet" } }
+        }
+      );
+      expect(outcome.error).toBeUndefined();
+    } finally {
+      restoreEnv(skillsBin, previousBin);
+    }
+  });
+
+  test("createSkill per-agent legs read their own backend's settings", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env[skillsBin];
+    process.env[skillsBin] = "skills";
+    await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
+
+    const backend = writingBackendRunner(async (input) => {
+      await writeSkill(dir, rootFromPrompt(input), "split-skill");
+
+      if (input.cmd[0] === "claude") {
+        const modelIndex = input.cmd.indexOf("--model");
+        expect(input.cmd[modelIndex + 1]).toBe("sonnet");
+        expect(input.cmd.join(" ")).not.toContain("model_reasoning_effort");
+      } else {
+        const modelIndex = input.cmd.indexOf("--model");
+        expect(input.cmd[modelIndex + 1]).toBe("gpt-custom");
+        expect(input.cmd.join(" ")).toContain("model_reasoning_effort=low");
+      }
+    });
+
+    try {
+      const outcome = await createSkill(
+        { description: "Per-agent split settings", agents: ["claude", "codex"], mode: "per-agent" },
+        dir,
+        {
+          backendRunner: backend.runner,
+          skillsRunner: recordingSkillsRunner().runner,
+          modelSettings: {
+            claude: { model: "sonnet" },
+            codex: { model: "gpt-custom", reasoningEffort: "low" }
+          }
+        }
+      );
+      expect(outcome.error).toBeUndefined();
+      expect(backend.calls).toHaveLength(2);
+    } finally {
+      restoreEnv(skillsBin, previousBin);
+    }
+  });
+
   test("createSkill per-agent authors one copy per agent in its native root and skips install", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];

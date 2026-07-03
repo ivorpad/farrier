@@ -1,7 +1,15 @@
-import { createSkills, type CollisionDecision, type SkillCreationOutcome, type SkillCreationRequest } from "../engine/create-skill";
+import {
+  createSkills,
+  type CollisionDecision,
+  type CreateAgent,
+  type CreateSkillDeps,
+  type SkillCreationOutcome,
+  type SkillCreationRequest
+} from "../engine/create-skill";
 import { installSkills, type InstallSkillResult } from "../engine/skills";
 import { writeRenderPlan, type RenderPlan } from "../engine/render";
 import type { SkillRef } from "../packs/types";
+import type { ResolvedModelSettings } from "../config/farrier-config";
 
 export type ForgeWriteResult = {
   message: string;
@@ -23,6 +31,7 @@ export async function runForgeWrite(
     targetDir: string;
     signal: AbortSignal;
     onCollision?: (info: { path: string; stagingPath: string }) => Promise<CollisionDecision>;
+    modelSettings?: Partial<Record<CreateAgent, ResolvedModelSettings>>;
   },
   deps: ForgeWriteDeps = {}
 ): Promise<ForgeWriteResult> {
@@ -41,10 +50,12 @@ export async function runForgeWrite(
 
   // Concurrent authoring (staging roots isolate the runs); lock-touching
   // installs are serialized inside createSkills.
-  const createOutcomes = await create(input.createRequests, input.targetDir, {
+  const createDeps: CreateSkillDeps = {
     signal: input.signal,
-    onCollision: input.onCollision
-  });
+    onCollision: input.onCollision,
+    modelSettings: input.modelSettings
+  };
+  const createOutcomes = await create(input.createRequests, input.targetDir, createDeps);
 
   const failedCreates = createOutcomes.filter((outcome) => outcome.error).length;
   const createSummary =

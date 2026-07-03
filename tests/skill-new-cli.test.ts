@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSkillEvalArgs } from "../src/cli/skill-eval";
 import { parseSkillNewArgs, resolveRefineAnswer } from "../src/cli/skill-new";
+import { loadFarrierConfig, resolveModelSettings } from "../src/config/farrier-config";
+import { createSkill } from "../src/engine/create-skill";
+import type { BackendCommandRunner, BackendCommandRunnerInput } from "../src/engine/backend";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-skill-new-"));
@@ -237,5 +240,52 @@ describe("farrier skill new e2e (scaffold paths)", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("--apply-winner requires --delete-loser-and-link");
+  });
+});
+
+// The e2e CLI subprocess spawns real claude/codex, so the LLM authoring path has
+// no runner injection point. This exercises the exact config→cmd wiring the CLI
+// uses (loadFarrierConfig → resolveModelSettings → createSkills deps) while
+// injecting a fake backend runner, proving a farrier.config.json on disk drives
+// the authoring model.
+describe("farrier skill new model config wiring", () => {
+  test("a farrier.config.json models entry drives the authoring backend model", async () => {
+    const dir = await tempDir();
+    await writeFile(
+      join(dir, "farrier.config.json"),
+      `${JSON.stringify({ models: { claude: { skillCreation: "opus-4-1" } } }, null, 2)}\n`,
+      "utf8"
+    );
+    await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
+
+    const models = (await loadFarrierConfig({ projectDir: dir, env: { HOME: await tempDir() } })).config.models;
+    const modelSettings = {
+      claude: resolveModelSettings({ models, backend: "claude", role: "skillCreation" }),
+      codex: resolveModelSettings({ models, backend: "codex", role: "skillCreation" })
+    };
+
+    const calls: BackendCommandRunnerInput[] = [];
+    const runner: BackendCommandRunner = async (input) => {
+      calls.push(input);
+      const match = `${input.stdin ?? ""} ${input.cmd.join(" ")}`.match(/under (\S+)\/ only/);
+      const root = match![1]!;
+      await mkdir(join(dir, root, "config-skill"), { recursive: true });
+      await writeFile(
+        join(dir, root, "config-skill", "SKILL.md"),
+        "---\nname: config-skill\ndescription: Does a thing. Use when testing.\n---\n\nBody.\n",
+        "utf8"
+      );
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+
+    const outcome = await createSkill(
+      { description: "Author from config file", agents: ["claude"], mode: "author-claude" },
+      dir,
+      { backendRunner: runner, skillsRunner: async () => ({ exitCode: 0, stdout: "", stderr: "" }), install: false, modelSettings }
+    );
+
+    expect(outcome.error).toBeUndefined();
+    const modelIndex = calls[0]!.cmd.indexOf("--model");
+    expect(calls[0]!.cmd[modelIndex + 1]).toBe("opus-4-1");
   });
 });

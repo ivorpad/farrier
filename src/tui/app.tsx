@@ -9,7 +9,7 @@ import { detectPacks } from "../engine/detect";
 import { agentsHardRules, createRenderPlan, type RenderPlan } from "../engine/render";
 import { searchSkills, type SkillSearchResult } from "../engine/skills";
 import type { ResolvedPack } from "../packs/types";
-import { loadFarrierConfig } from "../config/farrier-config";
+import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
 import { builtinCatalog, loadPackCatalog, type PackCatalog } from "../registry/catalog";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
 import { nextEvalPolicy, type SkillEvalPolicy } from "./create-eval";
@@ -32,6 +32,7 @@ type WizardAppProps = {
   adviseAutoStart?: boolean;
   catalog: PackCatalog;
   registryWarnings: string[];
+  models: ModelsConfig;
   onExit: (code: number) => void;
 };
 
@@ -194,11 +195,16 @@ function WizardApp(props: WizardAppProps) {
 
     dispatch({ type: "ADVISE_STARTED" });
 
+    const adviseBackend = state.adviseBackend ?? "claude";
+    const adviseSettings = resolveModelSettings({ models: props.models, backend: adviseBackend, role: "advise" });
+
     adviseSkills({
       targetDir: props.targetDir,
       packId: state.packId,
       contextText: state.contextText ?? "",
-      backend: state.adviseBackend ?? "claude"
+      backend: adviseBackend,
+      model: adviseSettings.model,
+      reasoningEffort: adviseSettings.reasoningEffort
     })
       .then((result) => {
         if (!cancelled) {
@@ -293,7 +299,11 @@ function WizardApp(props: WizardAppProps) {
         createRequests: state.createRequests,
         targetDir: props.targetDir,
         signal: controller.signal,
-        onCollision
+        onCollision,
+        modelSettings: {
+          claude: resolveModelSettings({ models: props.models, backend: "claude", role: "skillCreation" }),
+          codex: resolveModelSettings({ models: props.models, backend: "codex", role: "skillCreation" })
+        }
       });
 
       dispatch({
@@ -444,9 +454,11 @@ export async function runWizard(targetDir: string, options?: { context?: string 
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
   let catalog: PackCatalog = builtinCatalog();
   let registryWarnings: string[] = [];
+  let models: ModelsConfig = {};
 
   try {
     const config = await loadFarrierConfig({ projectDir: targetDir });
+    models = config.config.models;
     if (Object.keys(config.config.registries).length > 0) {
       console.error("Loading registries...");
     }
@@ -499,6 +511,7 @@ export async function runWizard(targetDir: string, options?: { context?: string 
           adviseAutoStart={options?.context !== undefined}
           catalog={catalog}
           registryWarnings={registryWarnings}
+          models={models}
           onExit={finish}
         />
       );

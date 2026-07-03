@@ -32,6 +32,8 @@ Namespace keys must match `^@[a-z0-9][a-z0-9-]*$`. `useDefaultPacks` defaults to
 
 Header values may contain `${ENV_VAR}` placeholders. Expansion happens only at fetch time. Missing variables in explicit headers are hard errors that name the variable, not the value.
 
+The same `farrier.config.json` / user config also holds a `models` key for per-backend, per-role model and reasoning-effort selection — see the [Model configuration](../README.md#model-configuration) section of the README.
+
 ## Hosting on private GitHub
 
 Create a private repository with one `registry.json` index and one JSON file per item:

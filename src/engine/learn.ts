@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { readManifest } from "./update";
 import type { ToolPolicyRule } from "../packs/types";
+import type { ReasoningEffort } from "../config/farrier-config";
 
 export type CandidateEvent = {
   command: string;
@@ -39,6 +40,7 @@ export type LearnOptions = {
   noLlm?: boolean;
   backend?: LearnBackend;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   runner?: LearnCommandRunner;
 };
 
@@ -874,6 +876,7 @@ async function llmRuleProposals(input: {
   existingIds: Set<string>;
   backend: LearnBackend;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   runner: LearnCommandRunner;
 }): Promise<unknown[]> {
   const model = input.model ?? (input.backend === "claude" ? "haiku" : "gpt-5.5");
@@ -882,6 +885,7 @@ async function llmRuleProposals(input: {
     existingIds: Array.from(input.existingIds).sort()
   });
 
+  const effortArgs = input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : [];
   const command =
     input.backend === "claude"
       ? {
@@ -889,7 +893,7 @@ async function llmRuleProposals(input: {
           stdin: prompt
         }
       : {
-          cmd: ["codex", "exec", "--model", model, prompt],
+          cmd: ["codex", "exec", "--model", model, ...effortArgs, prompt],
           stdin: undefined
         };
 
@@ -997,6 +1001,7 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
           existingIds: existingRules.existingIds,
           backend,
           model: options.model,
+          reasoningEffort: options.reasoningEffort,
           runner: options.runner ?? defaultRunner
         });
         notes.push(`Used ${backend} backend to propose rule data.`);

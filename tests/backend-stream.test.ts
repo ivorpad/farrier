@@ -23,6 +23,18 @@ describe("backend streaming", () => {
     expect(backendCommand("codex", undefined, "prompt").cmd).not.toContain("--json");
   });
 
+  test("backendCommand reasoningEffort adds -c model_reasoning_effort for codex only", () => {
+    const codex = backendCommand("codex", undefined, "prompt", { write: true, stream: true, reasoningEffort: "high" });
+    expect(codex.cmd.join(" ")).toContain("-c model_reasoning_effort=high");
+
+    // Claude ignores reasoning effort entirely.
+    const claude = backendCommand("claude", undefined, "prompt", { reasoningEffort: "high" });
+    expect(claude.cmd.join(" ")).not.toContain("model_reasoning_effort");
+
+    // No effort configured -> no flag.
+    expect(backendCommand("codex", undefined, "prompt").cmd.join(" ")).not.toContain("model_reasoning_effort");
+  });
+
   test("formatBackendStreamActivity summarizes claude tool_use and text blocks", () => {
     expect(
       formatBackendStreamActivity(
