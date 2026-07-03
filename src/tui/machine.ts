@@ -1,7 +1,7 @@
 import type { AdviseBackend, SkillRecommendation } from "../engine/advise";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult, SkillSearchResult } from "../engine/skills";
-import type { HookId, SkillRef } from "../packs/types";
+import type { PackHookRef, SkillRef } from "../packs/types";
 
 export type WizardStep = "Stack" | "Skills" | "Create" | "Hooks" | "Learn" | "Review" | "Writing" | "Done";
 
@@ -13,7 +13,7 @@ export type PackDefaults = Record<
   string,
   {
     skills: SkillRef[];
-    hooks: HookId[];
+    hooks: PackHookRef[];
   }
 >;
 
@@ -32,8 +32,8 @@ export type WizardState = {
   createRequests: SkillCreationRequest[];
   createOutcomes: SkillCreationOutcome[];
 
-  availableHooks: HookId[];
-  selectedHooks: HookId[];
+  availableHooks: PackHookRef[];
+  selectedHooks: PackHookRef[];
 
   learnEnabled: boolean;
 
@@ -54,7 +54,7 @@ export type WizardState = {
 };
 
 export type WizardEvent =
-  | { type: "SELECT_PACK"; packId: string; skills: SkillRef[]; hooks: HookId[] }
+  | { type: "SELECT_PACK"; packId: string; skills: SkillRef[]; hooks: PackHookRef[] }
   | { type: "SET_SKILL_QUERY"; query: string }
   | { type: "SKILL_SEARCH_STARTED"; query: string }
   | { type: "SKILL_SEARCH_SUCCEEDED"; query: string; results: SkillSearchResult[] }
@@ -62,7 +62,7 @@ export type WizardEvent =
   | { type: "TOGGLE_SKILL"; ref: SkillRef }
   | { type: "ADD_CREATE_REQUEST"; request: SkillCreationRequest }
   | { type: "REMOVE_CREATE_REQUEST"; index: number }
-  | { type: "TOGGLE_HOOK"; hook: HookId }
+  | { type: "TOGGLE_HOOK"; hook: PackHookRef }
   | { type: "TOGGLE_LEARN" }
   | { type: "TOGGLE_ADVISE" }
   | { type: "ADVISE_STARTED" }
@@ -80,7 +80,7 @@ export type CreateInitialWizardStateInput = {
   fallbackPackId?: string;
   detectedPackId?: string;
   defaultSkills?: SkillRef[];
-  defaultHooks?: HookId[];
+  defaultHooks?: PackHookRef[];
   packDefaults?: PackDefaults;
   contextText?: string;
   contextSource?: string;
@@ -88,7 +88,7 @@ export type CreateInitialWizardStateInput = {
   adviseAutoStart?: boolean;
 };
 
-function packDefaultFor(input: CreateInitialWizardStateInput, packId: string): { skills: SkillRef[]; hooks: HookId[] } {
+function packDefaultFor(input: CreateInitialWizardStateInput, packId: string): { skills: SkillRef[]; hooks: PackHookRef[] } {
   const explicit = input.packDefaults?.[packId];
 
   if (explicit) {

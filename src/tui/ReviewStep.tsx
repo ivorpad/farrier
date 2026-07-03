@@ -2,7 +2,7 @@ import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
-import type { HookId, PackVerbs, SkillRef } from "../packs/types";
+import type { PackHookRef, PackVerbs, SkillRef } from "../packs/types";
 import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { DetailPane, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
 import { CollisionPromptView, type CollisionPrompt } from "./collision";
@@ -45,7 +45,7 @@ type ReviewStepProps = {
   verbs: PackVerbs;
   ruleCount: number;
   selectedSkills: SkillRef[];
-  selectedHooks: HookId[];
+  selectedHooks: PackHookRef[];
   createRequests: SkillCreationRequest[];
   learnEnabled: boolean;
   files: ReviewFile[];

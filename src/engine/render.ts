@@ -1,7 +1,7 @@
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import type { HookId, KonsistentTemplate, ResolvedPack, SkillRef } from "../packs/types";
+import type { HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef } from "../packs/types";
 import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
 
 export type RenderedFile = {
@@ -41,7 +41,7 @@ export type CreateRenderPlanOptions = {
 
 export type FarrierManifestVersions = {
   farrierManifest: number;
-  hooks: Partial<Record<HookId, number>>;
+  hooks: Record<string, number>;
   prompts: {
     qualityJudge: string;
     stopJudge: string;
@@ -51,7 +51,7 @@ export type FarrierManifestVersions = {
 export type FarrierManifest = {
   farrierVersion: string;
   packIds: string[];
-  hookIds: HookId[];
+  hookIds: PackHookRef[];
   skills: SkillRef[];
   secondaryAcknowledged: string[];
   learn: {
@@ -101,6 +101,10 @@ export const hookTemplateFiles: Record<HookId, string[]> = {
   "quality-judge": ["quality-judge.py", "test_quality_judge.py"],
   "stop-judge": ["stop-judge.py", "test_stop_judge.py"]
 };
+
+function isBuiltinHookId(value: PackHookRef): value is HookId {
+  return value in hookTemplateFiles;
+}
 
 // .farrier-staging/ holds failed skill-authoring runs kept for inspection;
 // they should never be committed.
@@ -418,7 +422,7 @@ async function renderManifest(
     quality: manifestRecord(options.existingManifest?.quality, defaultQualityConfig()),
     versions: {
       farrierManifest: farrierManifestVersion,
-      hooks: Object.fromEntries(pack.hooks.map((hook) => [hook, hookCatalogVersions[hook]])),
+      hooks: Object.fromEntries(pack.hooks.filter(isBuiltinHookId).map((hook) => [hook, hookCatalogVersions[hook]])),
       prompts: {
         qualityJudge: "v1",
         stopJudge: "v1"
@@ -509,7 +513,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     }
   ];
 
-  for (const hookId of options.pack.hooks) {
+  for (const hookId of options.pack.hooks.filter(isBuiltinHookId)) {
     for (const fileName of hookTemplateFiles[hookId]) {
       files.push({
         path: posixPath(join(".claude", "hooks", fileName)),

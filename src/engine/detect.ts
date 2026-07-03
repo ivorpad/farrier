@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getPack } from "../packs/index";
 import type { PackDetect, ResolvedPack, SecondaryDetectionFinding } from "../packs/types";
+import type { PackCatalog } from "../registry/catalog";
 
 type PackageJsonSignals = {
   dependencies: Set<string>;
@@ -344,9 +345,10 @@ function matchesDetect(signals: ProjectSignals, detect: PackDetect): boolean {
   return true;
 }
 
-export async function detectPacks(dir: string): Promise<string[]> {
-  const packs = autoDetectOrder
-    .map((id) => getPack(id))
+export async function detectPacks(dir: string, catalog?: PackCatalog): Promise<string[]> {
+  const packIds = catalog ? catalog.detectablePackIds() : autoDetectOrder;
+  const packs = packIds
+    .map((id) => (catalog ? catalog.getPack(id) : getPack(id)))
     .filter((pack): pack is NonNullable<typeof pack> => pack !== undefined);
 
   const signals = await scanProject(
