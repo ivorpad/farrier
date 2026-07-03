@@ -301,16 +301,19 @@ async function loadRegistry(
 export async function loadPackCatalog(input: {
   config: FarrierConfig;
   client?: RegistryCatalogClient;
-  requireNamespaces?: Iterable<string>;
+  requireNamespaces?: Iterable<string> | Map<string, string>;
 }): Promise<PackCatalog> {
   const registryEntries = Object.entries(input.config.registries);
+  const required = input.requireNamespaces instanceof Map
+    ? new Map(input.requireNamespaces)
+    : new Map(Array.from(input.requireNamespaces ?? []).map((namespace) => [namespace, namespace]));
 
-  if (registryEntries.length === 0 && input.config.useDefaultPacks) {
+  if (registryEntries.length === 0 && input.config.useDefaultPacks && required.size === 0) {
     return builtinCatalog();
   }
 
   const client = input.client ?? new RegistryClient();
-  const required = new Set(input.requireNamespaces ?? []);
+  const seenNamespaces = new Set<string>();
   const warnings: PackCatalogWarning[] = [];
   const remotePackOrder: string[] = [];
   const remotePacks = new Map<string, RemotePackRecord>();
@@ -319,13 +322,15 @@ export async function loadPackCatalog(input: {
   const pins: Record<string, RegistryPin> = {};
 
   for (const [namespace, entry] of registryEntries) {
+    seenNamespaces.add(namespace);
     let loaded: LoadedRegistry;
     try {
       loaded = await loadRegistry(namespace, entry, client);
     } catch (error) {
       const message = registryErrorMessage(error);
-      if (required.has(namespace)) {
-        throw new Error(`cannot resolve ${namespace}: registry ${namespace} unreachable and no local cache`);
+      const requiredRef = required.get(namespace);
+      if (requiredRef) {
+        throw new Error(`cannot resolve ${requiredRef}: registry ${namespace} unreachable and no local cache`);
       }
       warnings.push({ namespace, message });
       continue;
@@ -353,8 +358,14 @@ export async function loadPackCatalog(input: {
     if (loaded.index.fromCache || loaded.items.some((item) => item.fromCache)) {
       warnings.push({
         namespace,
-        message: `registry ${namespace} loaded from cache`
+        message: `registry ${namespace} loaded from cache (cached)`
       });
+    }
+  }
+
+  for (const [namespace, ref] of required) {
+    if (!seenNamespaces.has(namespace)) {
+      throw new Error(`cannot resolve ${ref}: registry ${namespace} unreachable and no local cache`);
     }
   }
 
