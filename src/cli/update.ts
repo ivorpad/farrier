@@ -5,6 +5,7 @@ import {
   formatUpdateApplyResult,
   formatUpdateReport
 } from "../engine/update";
+import { loadConfiguredCatalog, registryRefsFromManifest } from "./registry";
 
 type UpdateCliOptions = {
   dir: string;
@@ -69,9 +70,11 @@ export async function runUpdate(args: string[], usage: () => string): Promise<nu
   }
 
   const targetDir = resolve(options.dir);
+  const requireRefs = await registryRefsFromManifest(targetDir);
+  const catalog = await loadConfiguredCatalog({ targetDir, requireRefs });
 
   if (options.yes) {
-    const result = await applyUpdate({ targetDir });
+    const result = await applyUpdate({ targetDir, catalog });
 
     if (options.json) {
       console.log(
@@ -95,7 +98,7 @@ export async function runUpdate(args: string[], usage: () => string): Promise<nu
     return 0;
   }
 
-  const report = await createUpdateReport({ targetDir });
+  const report = await createUpdateReport({ targetDir, catalog });
 
   if (options.json) {
     console.log(JSON.stringify(report, null, 2));

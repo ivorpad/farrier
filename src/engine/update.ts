@@ -624,6 +624,7 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     outdatedUserFiles: inventoryDrift.outdatedUserFiles,
     suggestedSkills
   });
+  notes.push(...catalog.warnings.map((warning) => `${warning.namespace}: ${warning.message}`));
 
   return {
     targetDir,
