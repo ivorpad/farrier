@@ -1,27 +1,117 @@
 {
+  "$schema": "node_modules/konsistent/konsistent.schema.json",
   "version": "v1",
   "conventions": [
     {
-      "name": "packages-have-init",
-      "description": "Every source package is a regular package.",
+      "name": "top-level-project-directories",
+      "description": "Farrier keeps runtime TypeScript under src and tests under tests.",
       "paths": [
-        "src/app_2026_07_02_farrier"
+        "src",
+        "tests"
       ],
       "must": {
-        "haveType": "directory",
-        "haveFiles": [
-          "__init__.py"
+        "haveType": "directory"
+      }
+    },
+    {
+      "name": "source-subsystems-exist",
+      "description": "The main source tree is split into CLI, engine, packs, and TUI subsystems.",
+      "paths": [
+        "src/cli",
+        "src/engine",
+        "src/packs",
+        "src/tui"
+      ],
+      "must": {
+        "haveType": "directory"
+      }
+    },
+    {
+      "name": "pack-modules-export-pack",
+      "description": "Each stack pack module exports a Pack named after the file.",
+      "paths": [
+        "src/packs/{packId}.ts",
+        "!src/packs/index.ts",
+        "!src/packs/types.ts"
+      ],
+      "must": {
+        "importTypes": [
+          {
+            "name": "Pack",
+            "from": "./types"
+          }
+        ],
+        "export": [
+          "${packId.toCamelCase()}Pack"
         ]
       }
     },
     {
-      "name": "core-independent-of-api",
-      "description": "Domain/core modules never import the FastAPI layer.",
-      "paths": [
-        "src/app_2026_07_02_farrier/core/*.py"
-      ],
+      "name": "engine-modules-should-have-direct-tests",
+      "description": "Engine modules should have a direct tests/<module>.test.ts file so structural coverage is easy to find.",
+      "paths": "tests",
+      "must": {
+        "haveFiles": [
+          "advise.test.ts",
+          "backend.test.ts",
+          "create-skill.test.ts",
+          "detect.test.ts",
+          "doctor.test.ts",
+          "eval-skill.test.ts",
+          "learn.test.ts",
+          "refine-skill.test.ts",
+          "render.test.ts",
+          "skill-validate.test.ts",
+          "skills.test.ts",
+          "update.test.ts"
+        ]
+      }
+    },
+    {
+      "name": "cli-subcommands-export-runner",
+      "description": "Each CLI subcommand module exports its run function.",
+      "paths": "src/cli/{commandName}.ts",
+      "must": {
+        "exportFunctions": [
+          "run${commandName.toPascalCase()}"
+        ]
+      }
+    },
+    {
+      "name": "engine-does-not-depend-on-tui",
+      "description": "Engine code must stay independent of terminal UI components.",
+      "paths": "src/engine/*.ts",
       "mustNot": {
-        "importFrom": "app_2026_07_02_farrier.api"
+        "importFrom": "../tui"
+      }
+    },
+    {
+      "name": "packs-do-not-depend-on-engine-or-tui",
+      "description": "Pack declarations stay as static data and must not import runtime engine or TUI modules.",
+      "paths": "src/packs/*.ts",
+      "mustNot": {
+        "importFrom": "../engine"
+      }
+    },
+    {
+      "name": "cli-does-not-depend-on-tui",
+      "description": "CLI subcommands stay non-interactive and do not import TUI components.",
+      "paths": "src/cli/*.ts",
+      "mustNot": {
+        "importFrom": "../tui"
+      }
+    },
+    {
+      "name": "tests-use-bun-test",
+      "description": "TypeScript tests use Bun's test runner API.",
+      "paths": "tests/*.test.ts",
+      "must": {
+        "import": [
+          {
+            "name": "test",
+            "from": "bun:test"
+          }
+        ]
       }
     }
   ]
