@@ -2,6 +2,7 @@
 
 import { resolve } from "node:path";
 import { runAdvise } from "./cli/advise";
+import { runSkillEval } from "./cli/skill-eval";
 import { runSkillNew } from "./cli/skill-new";
 import { detectPacks } from "./engine/detect";
 import { createDoctorReport, doctorExitCode, formatDoctorReport } from "./engine/doctor";
@@ -69,6 +70,7 @@ Usage:
   farrier doctor --dir <target> [--json]
   farrier advise --dir <target> [--context <path|text>] [--backend claude|codex] [--model <name>] [--json]
   farrier skill new "<description>" --yes [--dir <target>] [--agents claude,codex] [--mode author-claude|author-codex|per-agent] [--name <kebab>] [--no-llm] [--json]
+  farrier skill eval <skill-name> [--dir <target>] [--backend claude|codex] [--json]
 
 Options:
   --stack <id>        Stack pack to render. Supported: ${supportedPackIds().join(", ")}
@@ -581,7 +583,11 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
         return await runSkillNew(args.slice(2));
       }
 
-      console.error('farrier: unknown skill subcommand. Usage: farrier skill new "<description>" [--help]');
+      if (args[1] === "eval") {
+        return await runSkillEval(args.slice(2));
+      }
+
+      console.error('farrier: unknown skill subcommand. Usage: farrier skill new "<description>" [--help] or farrier skill eval <name> [--help]');
       return 1;
     }
 
