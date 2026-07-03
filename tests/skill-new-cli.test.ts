@@ -4,6 +4,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseSkillEvalArgs } from "../src/cli/skill-eval";
 import { parseSkillNewArgs, resolveRefineAnswer } from "../src/cli/skill-new";
 
 async function tempDir(): Promise<string> {
@@ -83,6 +84,41 @@ describe("parseSkillNewArgs", () => {
     expect(() => parseSkillNewArgs(["desc", "--mode", "freestyle"])).toThrow("--mode must be");
     expect(() => parseSkillNewArgs(["desc", "--agents", "claude,cursor"])).toThrow("--agents accepts");
     expect(() => parseSkillNewArgs(["desc", "--dir"])).toThrow("--dir requires a value");
+  });
+});
+
+describe("parseSkillEvalArgs", () => {
+  test("takes a skill name and both flag forms", () => {
+    const options = parseSkillEvalArgs([
+      "pii-masker",
+      "--dir",
+      "/tmp/x",
+      "--backend=codex",
+      "--model",
+      "gpt-5",
+      "--description=Mask PII",
+      "--apply-winner",
+      "claude",
+      "--delete-loser-and-link",
+      "--json"
+    ]);
+
+    expect(options.skillName).toBe("pii-masker");
+    expect(options.dir).toBe("/tmp/x");
+    expect(options.backend).toBe("codex");
+    expect(options.model).toBe("gpt-5");
+    expect(options.description).toBe("Mask PII");
+    expect(options.applyWinner).toBe("claude");
+    expect(options.deleteLoserAndLink).toBe(true);
+    expect(options.json).toBe(true);
+  });
+
+  test("rejects unknown flags, second names, and bad enum values", () => {
+    expect(() => parseSkillEvalArgs(["pii-masker", "--wat"])).toThrow("Unknown skill eval argument: --wat");
+    expect(() => parseSkillEvalArgs(["one", "two"])).toThrow("single skill name");
+    expect(() => parseSkillEvalArgs(["pii-masker", "--backend", "cursor"])).toThrow("--backend must be");
+    expect(() => parseSkillEvalArgs(["pii-masker", "--apply-winner", "tie"])).toThrow("--apply-winner must be");
+    expect(() => parseSkillEvalArgs(["pii-masker", "--dir"])).toThrow("--dir requires a value");
   });
 });
 
@@ -168,5 +204,13 @@ describe("farrier skill new e2e (scaffold paths)", () => {
     const help = await runCli(["skill", "new", "--help"]);
     expect(help.exitCode).toBe(0);
     expect(help.stdout).toContain("farrier skill new");
+  });
+
+  test("skill eval refuses destructive apply without the explicit delete+link flag before backend work", async () => {
+    const dir = await tempDir();
+    const result = await runCli(["skill", "eval", "pii-masker", "--apply-winner", "claude", "--dir", dir]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--apply-winner requires --delete-loser-and-link");
   });
 });
