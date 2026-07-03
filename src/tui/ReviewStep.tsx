@@ -5,6 +5,7 @@ import type { InstallSkillResult } from "../engine/skills";
 import type { HookId, PackVerbs, SkillRef } from "../packs/types";
 import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { DetailPane, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
+import { CollisionPromptView, type CollisionPrompt } from "./collision";
 
 type Zone = "content" | "buttons";
 
@@ -269,9 +270,21 @@ export function ReviewStep(props: ReviewStepProps) {
   );
 }
 
-export function WritingStep(props: { creatingCount?: number; cancelling?: boolean }) {
+export function WritingStep(props: { creatingCount?: number; cancelling?: boolean; collision?: CollisionPrompt | null }) {
   const spinner = useSpinner(true);
   const creating = props.creatingCount ?? 0;
+
+  useKeyboard((key) => {
+    if (!props.collision) {
+      return;
+    }
+
+    if (key.name === "r") {
+      props.collision.resolve("replace");
+    } else if (key.name === "k" || key.name === "escape") {
+      props.collision.resolve("keep");
+    }
+  });
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
@@ -281,6 +294,7 @@ export function WritingStep(props: { creatingCount?: number; cancelling?: boolea
         <text fg={palette.accent}>{`${spinner}  Forging the harness — writing files, installing skills${creating > 0 ? `, authoring ${creating} skill(s)` : ""}…`}</text>
       )}
       {creating > 0 ? <text fg={palette.muted}>Skill authoring runs a full agent per skill — expect minutes, not seconds.</text> : null}
+      {props.collision ? <CollisionPromptView collision={props.collision} /> : null}
       <text fg={palette.muted}>{creating > 0 ? "ctrl+c cancels skill authoring and kills the agent runs." : "Escape is ignored while forging."}</text>
     </box>
   );

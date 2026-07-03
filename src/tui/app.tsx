@@ -5,12 +5,13 @@ import { createRoot, useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { adviseSkills, detectAgentBackend, resolveContext, type AdviseBackend } from "../engine/advise";
 import { probeAgents, type AgentAvailability } from "../engine/backend";
-import { createSkills, type SkillCreationOutcome } from "../engine/create-skill";
 import { detectPacks } from "../engine/detect";
-import { agentsHardRules, createRenderPlan, writeRenderPlan, type RenderPlan } from "../engine/render";
-import { installSkills, searchSkills, type SkillSearchResult } from "../engine/skills";
+import { agentsHardRules, createRenderPlan, type RenderPlan } from "../engine/render";
+import { searchSkills, type SkillSearchResult } from "../engine/skills";
 import { resolvePack, supportedPackIds } from "../packs/index";
 import type { ResolvedPack } from "../packs/types";
+import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
+import { runForgeWrite } from "./forge";
 import { createInitialWizardState, wizardReducer, type PackDefaults, type WizardState } from "./machine";
 import { StackStep } from "./StackStep";
 import { SkillsStep } from "./SkillsStep";
@@ -81,7 +82,9 @@ function WizardApp(props: WizardAppProps) {
   const [reviewError, setReviewError] = useState<string | undefined>(undefined);
   const [agentAvailability, setAgentAvailability] = useState<AgentAvailability | undefined>(undefined);
   const [createCancelling, setCreateCancelling] = useState(false);
+  const [collision, setCollision] = useState<CollisionPrompt | null>(null);
   const createAbortRef = useRef<AbortController | null>(null);
+  const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
 
   // exitOnCtrlC is off (the default handler destroys the renderer and orphans
   // spawned agent runs), so ctrl+c is handled here: quit on ordinary steps,
@@ -94,6 +97,7 @@ function WizardApp(props: WizardAppProps) {
     if (state.step === "Writing") {
       setCreateCancelling(true);
       createAbortRef.current?.abort();
+      collision?.resolve("keep");
     } else if (state.step === "Done") {
       props.onExit(state.writeStatus?.ok === false ? 1 : 0);
     } else {
@@ -268,40 +272,26 @@ function WizardApp(props: WizardAppProps) {
 
     dispatch({ type: "START_WRITING" });
     setCreateCancelling(false);
+    setCollision(null);
     const controller = new AbortController();
     createAbortRef.current = controller;
+    const onCollision = createQueuedCollisionHandler({ signal: controller.signal, chainRef: collisionChainRef, setCollision });
 
     try {
-      await writeRenderPlan(reviewPlan);
-
-      const installResults = await installSkills(state.selectedSkills, props.targetDir);
-      const failedInstalls = installResults.filter((result) => !result.ok).length;
-      const installed = installResults.length - failedInstalls;
-
-      const installSummary =
-        installResults.length === 0
-          ? "No skills selected for install."
-          : `Installed ${installed} skill(s); ${failedInstalls} failed.`;
-
-      // Concurrent authoring (staging roots isolate the runs); lock-touching
-      // installs are serialized inside createSkills.
-      const createOutcomes: SkillCreationOutcome[] = await createSkills(state.createRequests, props.targetDir, {
-        signal: controller.signal
+      const result = await runForgeWrite({
+        reviewPlan,
+        selectedSkills: state.selectedSkills,
+        createRequests: state.createRequests,
+        targetDir: props.targetDir,
+        signal: controller.signal,
+        onCollision
       });
-
-      const failedCreates = createOutcomes.filter((outcome) => outcome.error).length;
-      const createSummary =
-        createOutcomes.length === 0
-          ? ""
-          : controller.signal.aborted
-            ? ` Skill authoring cancelled (${createOutcomes.length - failedCreates} finished before the abort).`
-            : ` Created ${createOutcomes.length - failedCreates} skill(s); ${failedCreates} failed.`;
 
       dispatch({
         type: "WRITE_DONE",
-        message: `Wrote ${reviewPlan.files.length} farrier harness files. ${installSummary}${createSummary}`,
-        installResults,
-        createOutcomes
+        message: result.message,
+        installResults: result.installResults,
+        createOutcomes: result.createOutcomes
       });
     } catch (error) {
       dispatch({
@@ -407,7 +397,7 @@ function WizardApp(props: WizardAppProps) {
       );
 
     case "Writing":
-      return <WritingStep creatingCount={state.createRequests.length} cancelling={createCancelling} />;
+      return <WritingStep creatingCount={state.createRequests.length} cancelling={createCancelling} collision={collision} />;
 
     case "Done":
       return (

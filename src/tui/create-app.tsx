@@ -4,19 +4,29 @@ import { useEffect, useRef, useState } from "react";
 import { probeAgents, type AgentAvailability } from "../engine/backend";
 import {
   createSkills,
-  type CollisionDecision,
   type CreateAgent,
   type SkillCreationOutcome,
   type SkillCreationPhase,
   type SkillCreationRequest
 } from "../engine/create-skill";
 import { detectPacks } from "../engine/detect";
+import { evaluatePerAgentSkill, resolvePerAgentSkillWinner, type SkillEvalVerdict, type SkillWinnerResolution } from "../engine/eval-skill";
 import { applyRefinements, generateRefineQuestions } from "../engine/refine-skill";
 import { palette, truncateTo, useSpinner } from "./chrome";
+import { CollisionPromptView, createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
+import {
+  eligiblePerAgentEvals,
+  EvalAppliedScreen,
+  EvalConfirmScreen,
+  EvalErrorScreen,
+  EvalProgressScreen,
+  EvalVerdictScreen,
+  type PendingSkillEval
+} from "./create-eval";
 import { CreateStep } from "./CreateStep";
 import { RefineScreen, RefineWaitScreen, type PendingAnswer, type PendingQuestion } from "./RefineScreen";
 
-type Phase = "form" | "refining" | "questions" | "writing" | "done";
+type Phase = "form" | "refining" | "questions" | "writing" | "done" | "evaluating" | "evalVerdict" | "evalConfirm" | "evalApplied" | "evalError";
 
 type RequestStatus =
   | { kind: "pending" }
@@ -51,11 +61,6 @@ function statusText(status: RequestStatus, request: SkillCreationRequest): { fg:
   };
   return { fg: palette.gold, text: phases[status.phase] };
 }
-
-export type CollisionPrompt = {
-  path: string;
-  resolve: (decision: CollisionDecision) => void;
-};
 
 function CreateProgressScreen(props: {
   requests: SkillCreationRequest[];
@@ -105,20 +110,7 @@ function CreateProgressScreen(props: {
           );
         })}
       </box>
-      {props.collision ? (
-        <box style={{ flexDirection: "column", gap: 0 }}>
-          <text>
-            <span fg={palette.warn}>{"! "}</span>
-            <span fg={palette.text}>{`${props.collision.path} already exists.`}</span>
-          </text>
-          <text>
-            <span fg={palette.gold}>{"r"}</span>
-            <span fg={palette.muted}>{" replace it with the new copy  ·  "}</span>
-            <span fg={palette.gold}>{"k"}</span>
-            <span fg={palette.muted}>{" keep the existing one (new copy stays in staging)"}</span>
-          </text>
-        </box>
-      ) : null}
+      {props.collision ? <CollisionPromptView collision={props.collision} /> : null}
       <text fg={palette.muted}>Each skill is a full agent run — expect minutes. ctrl+c cancels and kills the agent runs.</text>
     </box>
   );
@@ -129,8 +121,13 @@ type CreateAppProps = {
   onExit: (code: number, message?: string) => void;
 };
 
-function CreateDoneScreen(props: { outcomes: SkillCreationOutcome[]; onExit: () => void }) {
+function CreateDoneScreen(props: { outcomes: SkillCreationOutcome[]; evalCandidate?: PendingSkillEval; onEvaluate: () => void; onExit: () => void }) {
   useKeyboard((key) => {
+    if (key.name === "e" && props.evalCandidate) {
+      props.onEvaluate();
+      return;
+    }
+
     if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q") {
       props.onExit();
     }
@@ -161,10 +158,17 @@ function CreateDoneScreen(props: { outcomes: SkillCreationOutcome[]; onExit: () 
           </box>
         ))}
       </box>
-      <text fg={palette.gold}>
-        {"enter "}
-        <span fg={palette.muted}>close</span>
-      </text>
+      {props.evalCandidate ? (
+        <text fg={palette.gold}>
+          {"e "}
+          <span fg={palette.muted}>{`evaluate ${props.evalCandidate.skillName} copies · enter close`}</span>
+        </text>
+      ) : (
+        <text fg={palette.gold}>
+          {"enter "}
+          <span fg={palette.muted}>close</span>
+        </text>
+      )}
     </box>
   );
 }
@@ -180,11 +184,18 @@ function CreateApp(props: CreateAppProps) {
   const [packId, setPackId] = useState<string | undefined>(undefined);
   const [questionItems, setQuestionItems] = useState<PendingQuestion[]>([]);
   const [collision, setCollision] = useState<CollisionPrompt | null>(null);
+  const [pendingEval, setPendingEval] = useState<PendingSkillEval | null>(null);
+  const [evalVerdict, setEvalVerdict] = useState<SkillEvalVerdict | null>(null);
+  const [evalWinner, setEvalWinner] = useState<CreateAgent | null>(null);
+  const [evalResolution, setEvalResolution] = useState<SkillWinnerResolution | null>(null);
+  const [evalError, setEvalError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const evalAbortRef = useRef<AbortController | null>(null);
   // Concurrent runs can collide at once; prompts are shown one at a time.
   const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const refineBackend: CreateAgent | undefined = availability?.claude ? "claude" : availability?.codex ? "codex" : undefined;
+  const evalBackend = refineBackend;
 
   // exitOnCtrlC is off (it would orphan the spawned agent runs), so ctrl+c is
   // handled here for the phases that don't handle it themselves.
@@ -298,28 +309,7 @@ function CreateApp(props: CreateAppProps) {
 
     setStatuses(requests.map(() => ({ kind: "pending" })));
 
-    const onCollision = (info: { path: string }): Promise<CollisionDecision> =>
-      new Promise((resolve) => {
-        collisionChainRef.current = collisionChainRef.current.then(
-          () =>
-            new Promise<void>((release) => {
-              if (controller.signal.aborted) {
-                resolve("keep");
-                release();
-                return;
-              }
-
-              setCollision({
-                path: info.path,
-                resolve: (decision) => {
-                  setCollision(null);
-                  resolve(decision);
-                  release();
-                }
-              });
-            })
-        );
-      });
+    const onCollision = createQueuedCollisionHandler({ signal: controller.signal, chainRef: collisionChainRef, setCollision });
 
     // Concurrent authoring (each run has its own staging root); lock-touching
     // installs are serialized inside createSkills.
