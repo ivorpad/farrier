@@ -2,6 +2,7 @@
 
 import { resolve } from "node:path";
 import { runAdvise } from "./cli/advise";
+import { runSkillNew } from "./cli/skill-new";
 import { detectPacks } from "./engine/detect";
 import { createDoctorReport, doctorExitCode, formatDoctorReport } from "./engine/doctor";
 import {
@@ -67,6 +68,7 @@ Usage:
   farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
   farrier doctor --dir <target> [--json]
   farrier advise --dir <target> [--context <path|text>] [--backend claude|codex] [--model <name>] [--json]
+  farrier skill new "<description>" --yes [--dir <target>] [--agents claude,codex] [--mode author-claude|author-codex|per-agent] [--name <kebab>] [--no-llm] [--json]
 
 Options:
   --stack <id>        Stack pack to render. Supported: ${supportedPackIds().join(", ")}
@@ -574,12 +576,34 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
       return await runAdvise(args.slice(1));
     }
 
+    if (args[0] === "skill") {
+      if (args[1] === "new") {
+        return await runSkillNew(args.slice(2));
+      }
+
+      console.error('farrier: unknown skill subcommand. Usage: farrier skill new "<description>" [--help]');
+      return 1;
+    }
+
     if (process.stdout.isTTY === true) {
       const renderOptions = parseRenderArgs(args);
 
       if (!renderOptions.help && !renderOptions.stack && !renderOptions.detect && !renderOptions.yes && !renderOptions.dryRun) {
-        const { runWizard } = await import("./tui/app");
-        return await runWizard(resolve(renderOptions.dir), { context: renderOptions.context });
+        const { runLauncher } = await import("./tui/launcher");
+        const choice = await runLauncher();
+
+        if (choice === "create") {
+          const { runCreateWizard } = await import("./tui/create-app");
+          return await runCreateWizard(resolve(renderOptions.dir));
+        }
+
+        if (choice === "forge") {
+          const { runWizard } = await import("./tui/app");
+          return await runWizard(resolve(renderOptions.dir), { context: renderOptions.context });
+        }
+
+        console.error("farrier: cancelled.");
+        return 1;
       }
     }
 
