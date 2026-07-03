@@ -6,6 +6,7 @@ import type { HookId, PackVerbs, SkillRef } from "../packs/types";
 import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { DetailPane, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
 import { CollisionPromptView, type CollisionPrompt } from "./collision";
+import type { PendingSkillEval } from "./create-eval";
 
 type Zone = "content" | "buttons";
 
@@ -66,6 +67,8 @@ type DoneStepProps = {
   hookCount: number;
   skillCount: number;
   ruleCount: number;
+  evalCandidate?: PendingSkillEval;
+  onEvaluate?: () => void;
   onExit: () => void;
 };
 
@@ -306,6 +309,11 @@ export function DoneStep(props: DoneStepProps) {
   const ok = props.writeStatus?.ok !== false;
 
   useKeyboard((key) => {
+    if (key.name === "e" && props.evalCandidate && props.onEvaluate) {
+      props.onEvaluate();
+      return;
+    }
+
     if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q") {
       props.onExit();
     }
@@ -383,10 +391,17 @@ export function DoneStep(props: DoneStepProps) {
         </text>
       ))}
 
-      <text fg={palette.gold}>
-        {"enter "}
-        <span fg={palette.muted}>close</span>
-      </text>
+      {props.evalCandidate ? (
+        <text fg={palette.gold}>
+          {"e "}
+          <span fg={palette.muted}>{`evaluate ${props.evalCandidate.skillName} copies & pick a winner · enter close`}</span>
+        </text>
+      ) : (
+        <text fg={palette.gold}>
+          {"enter "}
+          <span fg={palette.muted}>close</span>
+        </text>
+      )}
     </box>
   );
 }

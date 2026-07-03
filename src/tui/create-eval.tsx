@@ -1,6 +1,7 @@
 import { useKeyboard } from "@opentui/react";
+import { useEffect, useRef, useState } from "react";
 import type { CreateAgent, SkillCreationOutcome } from "../engine/create-skill";
-import type { SkillEvalVerdict, SkillWinnerResolution } from "../engine/eval-skill";
+import { evaluatePerAgentSkill, resolvePerAgentSkillWinner, type SkillEvalVerdict, type SkillWinnerResolution } from "../engine/eval-skill";
 import { nativeSkillRoots } from "../engine/create-skill";
 import { palette, truncateTo, useSpinner } from "./chrome";
 
@@ -132,6 +133,136 @@ export function EvalConfirmScreen(props: { skillName: string; winner: CreateAgen
       </text>
     </box>
   );
+}
+
+type EvalFlowPhase = "evaluating" | "verdict" | "confirm" | "applied" | "error";
+
+/**
+ * The full opt-in eval flow for one per-agent skill pair: run the read-only
+ * eval, show the verdict, and only delete+symlink after the user picks a
+ * winner AND confirms. "Keep both" (or any cancel) calls onClose unchanged.
+ */
+export function SkillEvalFlow(props: {
+  targetDir: string;
+  candidate: PendingSkillEval;
+  backend?: CreateAgent;
+  onClose: () => void;
+  onExit: () => void;
+}) {
+  const [phase, setPhase] = useState<EvalFlowPhase>("evaluating");
+  const [verdict, setVerdict] = useState<SkillEvalVerdict | null>(null);
+  const [winner, setWinner] = useState<CreateAgent | null>(null);
+  const [resolution, setResolution] = useState<SkillWinnerResolution | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const backend = props.backend;
+
+  useEffect(() => {
+    if (phase !== "evaluating") {
+      return;
+    }
+
+    if (!backend) {
+      setError("No backend CLI is available to run the read-only eval.");
+      setPhase("error");
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    evaluatePerAgentSkill({
+      targetDir: props.targetDir,
+      skillName: props.candidate.skillName,
+      description: props.candidate.description,
+      backend,
+      signal: controller.signal
+    })
+      .then((result) => {
+        if (!cancelled) {
+          setVerdict(result);
+          setPhase("verdict");
+        }
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+          setPhase("error");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [backend, phase, props.candidate, props.targetDir]);
+
+  async function applyWinner(picked: CreateAgent): Promise<void> {
+    try {
+      const applied = await resolvePerAgentSkillWinner({
+        targetDir: props.targetDir,
+        skillName: props.candidate.skillName,
+        winner: picked,
+        confirmDeleteAndLink: true
+      });
+      setResolution(applied);
+      setPhase("applied");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setPhase("error");
+    }
+  }
+
+  switch (phase) {
+    case "evaluating":
+      return (
+        <EvalProgressScreen
+          skillName={props.candidate.skillName}
+          onCancel={() => {
+            abortRef.current?.abort();
+            props.onClose();
+          }}
+        />
+      );
+
+    case "verdict":
+      return verdict ? (
+        <EvalVerdictScreen
+          verdict={verdict}
+          onPick={(picked) => {
+            setWinner(picked);
+            setPhase("confirm");
+          }}
+          onKeepBoth={props.onClose}
+        />
+      ) : (
+        <EvalErrorScreen message="Eval finished without a verdict." onBack={props.onClose} />
+      );
+
+    case "confirm":
+      return winner ? (
+        <EvalConfirmScreen
+          skillName={props.candidate.skillName}
+          winner={winner}
+          onConfirm={() => void applyWinner(winner)}
+          onBack={() => setPhase("verdict")}
+        />
+      ) : (
+        <EvalErrorScreen message="No winner is selected." onBack={props.onClose} />
+      );
+
+    case "applied":
+      return resolution ? (
+        <EvalAppliedScreen resolution={resolution} onExit={props.onExit} />
+      ) : (
+        <EvalErrorScreen message="Winner resolution finished without a report." onBack={props.onClose} />
+      );
+
+    case "error":
+      return <EvalErrorScreen message={error ?? "Unknown eval error."} onBack={props.onClose} />;
+  }
 }
 
 export function EvalAppliedScreen(props: { resolution: SkillWinnerResolution; onExit: () => void }) {
