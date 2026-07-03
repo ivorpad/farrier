@@ -148,13 +148,15 @@ export async function invokeBackend(input: {
   prompt: string;
   targetDir: string;
   runner: BackendCommandRunner;
+  signal?: AbortSignal;
 }): Promise<unknown> {
   const command = backendCommand(input.backend, input.model, input.prompt);
 
   const output = await input.runner({
     cmd: command.cmd,
     cwd: input.targetDir,
-    stdin: command.stdin
+    stdin: command.stdin,
+    signal: input.signal
   });
 
   if (output.exitCode !== 0) {
