@@ -1,18 +1,23 @@
+import { access } from "node:fs/promises";
+import { join } from "node:path";
 import { createCliRenderer } from "@opentui/core";
-import { createRoot } from "@opentui/react";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { createRoot, useKeyboard } from "@opentui/react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { adviseSkills, detectAgentBackend, resolveContext, type AdviseBackend } from "../engine/advise";
+import { probeAgents, type AgentAvailability } from "../engine/backend";
+import { createSkills, type SkillCreationOutcome } from "../engine/create-skill";
 import { detectPacks } from "../engine/detect";
-import { createRenderPlan, writeRenderPlan, type RenderPlan } from "../engine/render";
-import { installSkills, searchSkills } from "../engine/skills";
+import { agentsHardRules, createRenderPlan, writeRenderPlan, type RenderPlan } from "../engine/render";
+import { installSkills, searchSkills, type SkillSearchResult } from "../engine/skills";
 import { resolvePack, supportedPackIds } from "../packs/index";
 import type { ResolvedPack } from "../packs/types";
 import { createInitialWizardState, wizardReducer, type PackDefaults, type WizardState } from "./machine";
 import { StackStep } from "./StackStep";
 import { SkillsStep } from "./SkillsStep";
+import { WizardCreate } from "./wizard-create";
 import { HooksStep } from "./HooksStep";
 import { LearnStep } from "./LearnStep";
-import { DoneStep, ReviewStep, WritingStep } from "./ReviewStep";
+import { DoneStep, ReviewStep, WritingStep, type ReviewFile } from "./ReviewStep";
 
 type WizardAppProps = {
   targetDir: string;
@@ -72,9 +77,54 @@ function WizardApp(props: WizardAppProps) {
 
   const [state, dispatch] = useReducer(wizardReducer, initialState);
   const [reviewPlan, setReviewPlan] = useState<RenderPlan | null>(null);
+  const [reviewFiles, setReviewFiles] = useState<ReviewFile[]>([]);
   const [reviewError, setReviewError] = useState<string | undefined>(undefined);
+  const [agentAvailability, setAgentAvailability] = useState<AgentAvailability | undefined>(undefined);
+  const [createCancelling, setCreateCancelling] = useState(false);
+  const createAbortRef = useRef<AbortController | null>(null);
+
+  // exitOnCtrlC is off (the default handler destroys the renderer and orphans
+  // spawned agent runs), so ctrl+c is handled here: quit on ordinary steps,
+  // abort-and-kill skill authoring while forging.
+  useKeyboard((key) => {
+    if (!(key.ctrl && key.name === "c")) {
+      return;
+    }
+
+    if (state.step === "Writing") {
+      setCreateCancelling(true);
+      createAbortRef.current?.abort();
+    } else if (state.step === "Done") {
+      props.onExit(state.writeStatus?.ok === false ? 1 : 0);
+    } else {
+      props.onExit(1);
+    }
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    probeAgents()
+      .then((availability) => {
+        if (!cancelled) {
+          setAgentAvailability(availability);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAgentAvailability({ claude: false, codex: false });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedPack = useMemo(() => selectedPackFromState(state), [state.packId, state.selectedHooks]);
+  const ruleCount = useMemo(() => agentsHardRules(selectedPack).length, [selectedPack]);
+
+  const searchCache = useRef(new Map<string, SkillSearchResult[]>());
 
   useEffect(() => {
     if (state.step !== "Skills") {
@@ -82,24 +132,42 @@ function WizardApp(props: WizardAppProps) {
     }
 
     const query = state.skillQuery;
+    const trimmed = query.trim();
 
-    if (query.trim().length === 0) {
+    if (trimmed.length === 0) {
       return;
     }
+
+    const cached = searchCache.current.get(trimmed);
+
+    if (cached) {
+      dispatch({ type: "SKILL_SEARCH_SUCCEEDED", query, results: cached });
+      return;
+    }
+
+    const controller = new AbortController();
 
     const timeout = setTimeout(() => {
       dispatch({ type: "SKILL_SEARCH_STARTED", query });
 
-      searchSkills(query)
+      searchSkills(query, { signal: controller.signal })
         .then((results) => {
+          searchCache.current.set(trimmed, results);
           dispatch({ type: "SKILL_SEARCH_SUCCEEDED", query, results });
         })
         .catch((error) => {
+          if (controller.signal.aborted) {
+            return;
+          }
+
           dispatch({ type: "SKILL_SEARCH_FAILED", query, error: errorMessage(error) });
         });
     }, 300);
 
-    return () => clearTimeout(timeout);
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
   }, [state.skillQuery, state.step]);
 
   useEffect(() => {
@@ -144,6 +212,7 @@ function WizardApp(props: WizardAppProps) {
     let cancelled = false;
 
     setReviewPlan(null);
+    setReviewFiles([]);
     setReviewError(undefined);
 
     createRenderPlan({
@@ -152,9 +221,23 @@ function WizardApp(props: WizardAppProps) {
       skills: state.selectedSkills,
       learnEnabled: state.learnEnabled
     })
-      .then((plan) => {
+      .then(async (plan) => {
+        // A/M markers for the manifest: A = new file, M = overwrites one
+        // already on disk.
+        const files = await Promise.all(
+          plan.files.map(async (file) => ({
+            path: file.path,
+            content: file.content,
+            exists: await access(join(plan.targetDir, file.path)).then(
+              () => true,
+              () => false
+            )
+          }))
+        );
+
         if (!cancelled) {
           setReviewPlan(plan);
+          setReviewFiles(files);
         }
       })
       .catch((error) => {
@@ -184,6 +267,9 @@ function WizardApp(props: WizardAppProps) {
     }
 
     dispatch({ type: "START_WRITING" });
+    setCreateCancelling(false);
+    const controller = new AbortController();
+    createAbortRef.current = controller;
 
     try {
       await writeRenderPlan(reviewPlan);
@@ -197,16 +283,33 @@ function WizardApp(props: WizardAppProps) {
           ? "No skills selected for install."
           : `Installed ${installed} skill(s); ${failedInstalls} failed.`;
 
+      // Concurrent authoring (staging roots isolate the runs); lock-touching
+      // installs are serialized inside createSkills.
+      const createOutcomes: SkillCreationOutcome[] = await createSkills(state.createRequests, props.targetDir, {
+        signal: controller.signal
+      });
+
+      const failedCreates = createOutcomes.filter((outcome) => outcome.error).length;
+      const createSummary =
+        createOutcomes.length === 0
+          ? ""
+          : controller.signal.aborted
+            ? ` Skill authoring cancelled (${createOutcomes.length - failedCreates} finished before the abort).`
+            : ` Created ${createOutcomes.length - failedCreates} skill(s); ${failedCreates} failed.`;
+
       dispatch({
         type: "WRITE_DONE",
-        message: `Wrote ${reviewPlan.files.length} farrier harness files. ${installSummary}`,
-        installResults
+        message: `Wrote ${reviewPlan.files.length} farrier harness files. ${installSummary}${createSummary}`,
+        installResults,
+        createOutcomes
       });
     } catch (error) {
       dispatch({
         type: "WRITE_FAILED",
         message: `Write failed: ${errorMessage(error)}`
       });
+    } finally {
+      createAbortRef.current = null;
     }
   }
 
@@ -227,6 +330,7 @@ function WizardApp(props: WizardAppProps) {
       return (
         <SkillsStep
           query={state.skillQuery}
+          packId={state.packId}
           results={state.skillResults}
           selectedSkills={state.selectedSkills}
           status={state.skillSearchStatus}
@@ -245,11 +349,26 @@ function WizardApp(props: WizardAppProps) {
         />
       );
 
+    case "Create":
+      return (
+        <WizardCreate
+          requests={state.createRequests}
+          availability={agentAvailability}
+          targetDir={props.targetDir}
+          packId={state.packId}
+          onAdd={(request) => dispatch({ type: "ADD_CREATE_REQUEST", request })}
+          onRemove={(index) => dispatch({ type: "REMOVE_CREATE_REQUEST", index })}
+          onNext={() => dispatch({ type: "NEXT" })}
+          onBack={() => dispatch({ type: "BACK" })}
+        />
+      );
+
     case "Hooks":
       return (
         <HooksStep
           availableHooks={state.availableHooks}
           selectedHooks={state.selectedHooks}
+          toolPolicyRules={selectedPack.toolPolicyRules}
           onToggleHook={(hook) => dispatch({ type: "TOGGLE_HOOK", hook })}
           onNext={() => dispatch({ type: "NEXT" })}
           onBack={() => dispatch({ type: "BACK" })}
@@ -260,6 +379,7 @@ function WizardApp(props: WizardAppProps) {
       return (
         <LearnStep
           learnEnabled={state.learnEnabled}
+          toolPolicyRules={selectedPack.toolPolicyRules}
           onToggleLearn={() => dispatch({ type: "TOGGLE_LEARN" })}
           onNext={() => dispatch({ type: "NEXT" })}
           onBack={() => dispatch({ type: "BACK" })}
@@ -271,10 +391,13 @@ function WizardApp(props: WizardAppProps) {
         <ReviewStep
           targetDir={props.targetDir}
           packId={state.packId}
+          verbs={selectedPack.verbs}
+          ruleCount={ruleCount}
           selectedSkills={state.selectedSkills}
           selectedHooks={state.selectedHooks}
+          createRequests={state.createRequests}
           learnEnabled={state.learnEnabled}
-          files={reviewPlan?.files.map((file) => file.path) ?? []}
+          files={reviewFiles}
           loading={!reviewPlan && !reviewError}
           error={reviewError}
           canConfirm={Boolean(reviewPlan && !reviewError)}
@@ -284,10 +407,21 @@ function WizardApp(props: WizardAppProps) {
       );
 
     case "Writing":
-      return <WritingStep />;
+      return <WritingStep creatingCount={state.createRequests.length} cancelling={createCancelling} />;
 
     case "Done":
-      return <DoneStep writeStatus={state.writeStatus} installResults={state.installResults} onExit={() => props.onExit(0)} />;
+      return (
+        <DoneStep
+          writeStatus={state.writeStatus}
+          installResults={state.installResults}
+          createOutcomes={state.createOutcomes}
+          fileCount={reviewPlan?.files.length ?? 0}
+          hookCount={state.selectedHooks.length}
+          skillCount={state.selectedSkills.length}
+          ruleCount={ruleCount}
+          onExit={() => props.onExit(0)}
+        />
+      );
   }
 }
 
@@ -308,7 +442,9 @@ export async function runWizard(targetDir: string, options?: { context?: string 
   })();
 
   try {
-    renderer = await createCliRenderer();
+    // Default ctrl+c would destroy the renderer and orphan spawned agent
+    // runs mid-forge; WizardApp handles ctrl+c itself.
+    renderer = await createCliRenderer({ exitOnCtrlC: false });
     const cliRenderer = renderer;
 
     return await new Promise<number>((resolve) => {

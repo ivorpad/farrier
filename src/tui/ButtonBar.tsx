@@ -1,35 +1,30 @@
+import { KeyHints } from "./chrome";
+
 export type ButtonSpec = {
   id: string;
   label: string;
 };
 
 type ButtonBarProps = {
-  buttons: ButtonSpec[];
+  // Retained so steps can keep their tab-zone / left-right focus state and the
+  // keyboard handlers that drive it, even though the bar no longer draws chips.
+  buttons?: ButtonSpec[];
   focusedId?: string;
   hint: string;
+  emberActions?: string[];
 };
 
 /**
- * Presentational bottom bar shown on every wizard step. Steps own their own
- * focus/zone state and dispatch the same machine events their keyboard
- * shortcuts already dispatch — this component only renders the buttons and
- * the trailing hint line, it never calls into the machine itself.
+ * The single interaction line shown on every wizard step. The spec's grammar is
+ * one keymap line — `key action · key action` — not a row of focusable chips, so
+ * the bar renders only that line (see KeyHints). Steps still own their tab-zone
+ * focus state and dispatch the same machine events their shortcuts already do;
+ * this component just draws the keymap, it never calls into the machine.
  */
 export function ButtonBar(props: ButtonBarProps) {
   return (
     <box style={{ flexDirection: "column", gap: 0, width: "100%" }}>
-      <box style={{ flexDirection: "row", gap: 2 }}>
-        {props.buttons.map((button) => {
-          const isFocused = button.id === props.focusedId;
-
-          return (
-            <text key={button.id} fg={isFocused ? "#0a0a0a" : "#e4e4e7"} bg={isFocused ? "#93c5fd" : undefined}>
-              {isFocused ? ` ▶ ${button.label} ` : `   ${button.label} `}
-            </text>
-          );
-        })}
-      </box>
-      <text fg="#a1a1aa">{props.hint}</text>
+      <KeyHints hint={props.hint} emberActions={props.emberActions} />
     </box>
   );
 }

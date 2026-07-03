@@ -1,8 +1,9 @@
 import type { AdviseBackend, SkillRecommendation } from "../engine/advise";
+import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult, SkillSearchResult } from "../engine/skills";
 import type { HookId, SkillRef } from "../packs/types";
 
-export type WizardStep = "Stack" | "Skills" | "Hooks" | "Learn" | "Review" | "Writing" | "Done";
+export type WizardStep = "Stack" | "Skills" | "Create" | "Hooks" | "Learn" | "Review" | "Writing" | "Done";
 
 export type SkillSearchStatus = "idle" | "loading" | "ready" | "error";
 
@@ -27,6 +28,9 @@ export type WizardState = {
   selectedSkills: SkillRef[];
   skillSearchStatus: SkillSearchStatus;
   skillSearchError?: string;
+
+  createRequests: SkillCreationRequest[];
+  createOutcomes: SkillCreationOutcome[];
 
   availableHooks: HookId[];
   selectedHooks: HookId[];
@@ -56,6 +60,8 @@ export type WizardEvent =
   | { type: "SKILL_SEARCH_SUCCEEDED"; query: string; results: SkillSearchResult[] }
   | { type: "SKILL_SEARCH_FAILED"; query: string; error: string }
   | { type: "TOGGLE_SKILL"; ref: SkillRef }
+  | { type: "ADD_CREATE_REQUEST"; request: SkillCreationRequest }
+  | { type: "REMOVE_CREATE_REQUEST"; index: number }
   | { type: "TOGGLE_HOOK"; hook: HookId }
   | { type: "TOGGLE_LEARN" }
   | { type: "TOGGLE_ADVISE" }
@@ -65,8 +71,8 @@ export type WizardEvent =
   | { type: "NEXT" }
   | { type: "BACK" }
   | { type: "START_WRITING" }
-  | { type: "WRITE_DONE"; message: string; installResults: InstallSkillResult[] }
-  | { type: "WRITE_FAILED"; message: string; installResults?: InstallSkillResult[] };
+  | { type: "WRITE_DONE"; message: string; installResults: InstallSkillResult[]; createOutcomes?: SkillCreationOutcome[] }
+  | { type: "WRITE_FAILED"; message: string; installResults?: InstallSkillResult[]; createOutcomes?: SkillCreationOutcome[] };
 
 export type CreateInitialWizardStateInput = {
   availablePackIds: string[];
@@ -125,6 +131,8 @@ export function createInitialWizardState(input: CreateInitialWizardStateInput): 
     selectedSkills: defaults.skills,
     skillSearchStatus: "idle",
     skillSearchError: undefined,
+    createRequests: [],
+    createOutcomes: [],
     availableHooks: defaults.hooks,
     selectedHooks: defaults.hooks,
     learnEnabled: false,
@@ -149,6 +157,8 @@ function nextStep(step: WizardStep): WizardStep {
     case "Stack":
       return "Skills";
     case "Skills":
+      return "Create";
+    case "Create":
       return "Hooks";
     case "Hooks":
       return "Learn";
@@ -165,8 +175,10 @@ function previousStep(step: WizardStep): WizardStep {
   switch (step) {
     case "Skills":
       return "Stack";
-    case "Hooks":
+    case "Create":
       return "Skills";
+    case "Hooks":
+      return "Create";
     case "Learn":
       return "Hooks";
     case "Review":
@@ -248,6 +260,18 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
       return {
         ...state,
         selectedSkills: toggle(state.selectedSkills, event.ref)
+      };
+
+    case "ADD_CREATE_REQUEST":
+      return {
+        ...state,
+        createRequests: [...state.createRequests, event.request]
+      };
+
+    case "REMOVE_CREATE_REQUEST":
+      return {
+        ...state,
+        createRequests: state.createRequests.filter((_, index) => index !== event.index)
       };
 
     case "TOGGLE_HOOK":
@@ -332,7 +356,8 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         ...state,
         step: "Writing",
         writeStatus: undefined,
-        installResults: []
+        installResults: [],
+        createOutcomes: []
       };
 
     case "WRITE_DONE":
@@ -347,7 +372,8 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
           ok: true,
           message: event.message
         },
-        installResults: [...event.installResults]
+        installResults: [...event.installResults],
+        createOutcomes: [...(event.createOutcomes ?? [])]
       };
 
     case "WRITE_FAILED":
@@ -362,7 +388,8 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
           ok: false,
           message: event.message
         },
-        installResults: [...(event.installResults ?? [])]
+        installResults: [...(event.installResults ?? [])],
+        createOutcomes: [...(event.createOutcomes ?? [])]
       };
   }
 }

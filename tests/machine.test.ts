@@ -96,6 +96,9 @@ describe("wizard machine", () => {
     expect(state.step).toBe("Skills");
 
     state = wizardReducer(state, { type: "NEXT" });
+    expect(state.step).toBe("Create");
+
+    state = wizardReducer(state, { type: "NEXT" });
     expect(state.step).toBe("Hooks");
 
     state = wizardReducer(state, { type: "NEXT" });
@@ -126,6 +129,7 @@ describe("wizard machine", () => {
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
+    state = wizardReducer(state, { type: "NEXT" });
     expect(state.step).toBe("Review");
 
     state = wizardReducer(state, { type: "BACK" });
@@ -133,6 +137,9 @@ describe("wizard machine", () => {
 
     state = wizardReducer(state, { type: "BACK" });
     expect(state.step).toBe("Hooks");
+
+    state = wizardReducer(state, { type: "BACK" });
+    expect(state.step).toBe("Create");
 
     state = wizardReducer(state, { type: "BACK" });
     expect(state.step).toBe("Skills");
@@ -151,6 +158,7 @@ describe("wizard machine", () => {
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
+    state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "START_WRITING" });
     state = wizardReducer(state, { type: "BACK" });
 
@@ -164,6 +172,46 @@ describe("wizard machine", () => {
     state = wizardReducer(state, { type: "BACK" });
 
     expect(state.step).toBe("Done");
+  });
+
+  test("queues and removes create requests, and write-done carries outcomes", () => {
+    let state = initialState();
+    expect(state.createRequests).toEqual([]);
+    expect(state.createOutcomes).toEqual([]);
+
+    const request = {
+      description: "Mask PII before sending text out",
+      agents: ["claude" as const, "codex" as const],
+      mode: "author-claude" as const
+    };
+
+    state = wizardReducer(state, { type: "ADD_CREATE_REQUEST", request });
+    state = wizardReducer(state, {
+      type: "ADD_CREATE_REQUEST",
+      request: { ...request, description: "Second skill", mode: "per-agent" as const }
+    });
+    expect(state.createRequests).toHaveLength(2);
+
+    state = wizardReducer(state, { type: "REMOVE_CREATE_REQUEST", index: 0 });
+    expect(state.createRequests).toHaveLength(1);
+    expect(state.createRequests[0]?.description).toBe("Second skill");
+
+    for (let i = 0; i < 5; i += 1) {
+      state = wizardReducer(state, { type: "NEXT" });
+    }
+    state = wizardReducer(state, { type: "START_WRITING" });
+
+    const outcome = {
+      request: state.createRequests[0]!,
+      name: "second-skill",
+      files: ["skills/second-skill/SKILL.md"],
+      installed: true,
+      notes: []
+    };
+
+    state = wizardReducer(state, { type: "WRITE_DONE", message: "done", installResults: [], createOutcomes: [outcome] });
+    expect(state.step).toBe("Done");
+    expect(state.createOutcomes).toEqual([outcome]);
   });
 
   test("toggles skills", () => {
@@ -408,6 +456,7 @@ describe("wizard machine", () => {
   test("write failure transitions to done with failure status", () => {
     let state = initialState();
 
+    state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
