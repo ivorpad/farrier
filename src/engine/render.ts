@@ -102,7 +102,9 @@ export const hookTemplateFiles: Record<HookId, string[]> = {
   "stop-judge": ["stop-judge.py", "test_stop_judge.py"]
 };
 
-const requiredGitignoreLines = [".env", ".env.*", "!.env.example"];
+// .farrier-staging/ holds failed skill-authoring runs kept for inspection;
+// they should never be committed.
+const requiredGitignoreLines = [".env", ".env.*", "!.env.example", ".farrier-staging/"];
 
 function posixPath(path: string): string {
   return path.replaceAll("\\", "/");
@@ -150,6 +152,24 @@ function bulletList(values: string[]): string {
   return values.map((value) => `- ${value}`).join("\n");
 }
 
+/**
+ * The AGENTS.md "Hard Rules" list. Exported so the wizard can honestly count
+ * the rules it is about to write ("N rules") without duplicating the list.
+ */
+export function agentsHardRules(pack: ResolvedPack): string[] {
+  return [
+    "Do not read real `.env*` files or private key material; tracked examples such as `.env.example` are allowed.",
+    ...pack.agentsRules,
+    "Do not directly edit protected generated/owned files: lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`.",
+    "Run `just check` after edits.",
+    ...(pack.verbs.konsistent ? ["Run `just konsistent` before stopping."] : []),
+    "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
+    "Keep generated hook scripts and their tests together.",
+    "LLM semantic judge hooks are present but disabled by default in `.farrier.json`; deterministic checks still run where configured.",
+    "Do not bypass Claude hooks; Codex and other agents must follow these rules from AGENTS.md and the justfile."
+  ];
+}
+
 function renderAgentsMd(pack: ResolvedPack): string {
   const commandLines = [
     `- Check: \`${pack.verbs.check}\``,
@@ -161,17 +181,7 @@ function renderAgentsMd(pack: ResolvedPack): string {
     commandLines.push(`- Konsistent: \`${pack.verbs.konsistent}\``);
   }
 
-  const hardRules = [
-    "Do not read real `.env*` files or private key material; tracked examples such as `.env.example` are allowed.",
-    ...pack.agentsRules,
-    "Do not directly edit protected generated/owned files: lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`.",
-    "Run `just check` after edits.",
-    ...(pack.verbs.konsistent ? ["Run `just konsistent` before stopping."] : []),
-    "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
-    "Keep generated hook scripts and their tests together.",
-    "LLM semantic judge hooks are present but disabled by default in `.farrier.json`; deterministic checks still run where configured.",
-    "Do not bypass Claude hooks; Codex and other agents must follow these rules from AGENTS.md and the justfile."
-  ];
+  const hardRules = agentsHardRules(pack);
 
   const acceptedRisks = pack.packIds.includes("python-uv") && pack.verbs.konsistent
     ? [
