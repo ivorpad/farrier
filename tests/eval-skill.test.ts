@@ -11,6 +11,7 @@ import {
 } from "../src/engine/eval-skill";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../src/engine/create-skill";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "../src/tui/collision";
+import { eligiblePerAgentEvals } from "../src/tui/create-eval";
 import { runForgeWrite } from "../src/tui/forge";
 
 async function tempDir(): Promise<string> {
@@ -105,6 +106,52 @@ describe("per-agent skill eval engine", () => {
     expect(() => validateSkillEvalVerdict(malformed, "codex")).toThrow("codex backend JSON field copies.claude.score");
   });
 
+  test("eval and winner resolution reject non-kebab-case skill names before touching any path", async () => {
+    const dir = await tempDir();
+    let runnerCalls = 0;
+    const runner: BackendCommandRunner = async () => {
+      runnerCalls += 1;
+      return { exitCode: 0, stdout: verdictJson(), stderr: "" };
+    };
+
+    await expect(
+      evaluatePerAgentSkill({ targetDir: dir, skillName: "../pii-masker", backend: "codex", runner })
+    ).rejects.toThrow("must be kebab-case");
+    expect(runnerCalls).toBe(0);
+
+    await writeSkill(dir, ".claude/skills", "pii-masker");
+    await writeSkill(dir, ".agents/skills", "pii-masker");
+    await expect(
+      resolvePerAgentSkillWinner({ targetDir: dir, skillName: "../../etc", winner: "claude", confirmDeleteAndLink: true })
+    ).rejects.toThrow("must be kebab-case");
+    expect((await lstat(join(dir, ".agents/skills/pii-masker"))).isDirectory()).toBe(true);
+  });
+
+  test("verdicts for the wrong skill or wrong copy paths are rejected", async () => {
+    const dir = await tempDir();
+    await writePinnedCreator(dir);
+    await writeSkill(dir, ".claude/skills", "pii-masker");
+    await writeSkill(dir, ".agents/skills", "pii-masker");
+
+    const runner: BackendCommandRunner = async () => ({ exitCode: 0, stdout: verdictJson("other-skill"), stderr: "" });
+    await expect(
+      evaluatePerAgentSkill({ targetDir: dir, skillName: "pii-masker", backend: "claude", runner })
+    ).rejects.toThrow("claude backend JSON field skill_name must be pii-masker, got other-skill");
+
+    const expected = {
+      skillName: "router",
+      claudePath: ".claude/skills/router",
+      codexPath: ".agents/skills/router"
+    };
+    expect(validateSkillEvalVerdict(JSON.parse(verdictJson("router")), "claude", expected).skillName).toBe("router");
+
+    const wrongPath = JSON.parse(verdictJson("router")) as { copies: { codex: { path: string } } };
+    wrongPath.copies.codex.path = ".agents/skills/elsewhere";
+    expect(() => validateSkillEvalVerdict(wrongPath, "codex", expected)).toThrow(
+      "codex backend JSON field copies.codex.path must be .agents/skills/router, got .agents/skills/elsewhere"
+    );
+  });
+
   test("resolvePerAgentSkillWinner deletes exactly the loser and creates a resolving relative symlink", async () => {
     const dir = await tempDir();
     await writeSkill(dir, ".claude/skills", "pii-masker");
@@ -179,6 +226,24 @@ describe("per-agent skill eval engine", () => {
     );
 
     expect(decisions).toEqual(["skills/x:.farrier-staging/1/x"]);
+  });
+
+  test("eligiblePerAgentEvals offers only per-agent outcomes with both copies in place", () => {
+    const perAgent: SkillCreationRequest = { description: "Mask PII", agents: ["claude", "codex"], mode: "per-agent" };
+    const bothCopies: SkillCreationOutcome = {
+      request: perAgent,
+      name: "pii-masker",
+      files: [".claude/skills/pii-masker/SKILL.md", ".agents/skills/pii-masker/SKILL.md"],
+      installed: false,
+      notes: []
+    };
+
+    expect(eligiblePerAgentEvals([bothCopies])).toEqual([{ skillName: "pii-masker", description: "Mask PII" }]);
+    expect(eligiblePerAgentEvals([{ ...bothCopies, error: "codex: leg failed" }])).toEqual([]);
+    expect(eligiblePerAgentEvals([{ ...bothCopies, files: [".claude/skills/pii-masker/SKILL.md"] }])).toEqual([]);
+    expect(
+      eligiblePerAgentEvals([{ ...bothCopies, request: { ...perAgent, mode: "author-claude" } }])
+    ).toEqual([]);
   });
 
   test("queued collision handler resolves replace and keep decisions", async () => {
