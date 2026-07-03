@@ -6,14 +6,12 @@ import {
   createSkills,
   type CreateAgent,
   type SkillCreationOutcome,
-  type SkillCreationPhase,
   type SkillCreationRequest
 } from "../engine/create-skill";
 import { detectPacks } from "../engine/detect";
 import { evaluatePerAgentSkill, resolvePerAgentSkillWinner, type SkillEvalVerdict, type SkillWinnerResolution } from "../engine/eval-skill";
 import { applyRefinements, generateRefineQuestions } from "../engine/refine-skill";
-import { palette, truncateTo, useSpinner } from "./chrome";
-import { CollisionPromptView, createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
+import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
 import {
   eligiblePerAgentEvals,
   EvalAppliedScreen,
@@ -23,155 +21,20 @@ import {
   EvalVerdictScreen,
   type PendingSkillEval
 } from "./create-eval";
+import { CreateDoneScreen, CreateProgressScreen, type RequestStatus } from "./create-progress";
 import { CreateStep } from "./CreateStep";
 import { RefineScreen, RefineWaitScreen, type PendingAnswer, type PendingQuestion } from "./RefineScreen";
 
 type Phase = "form" | "refining" | "questions" | "writing" | "done" | "evaluating" | "evalVerdict" | "evalConfirm" | "evalApplied" | "evalError";
 
-type RequestStatus =
-  | { kind: "pending" }
-  | { kind: "running"; phase: SkillCreationPhase; agent?: CreateAgent }
-  | { kind: "done"; outcome: SkillCreationOutcome };
-
-function statusText(status: RequestStatus, request: SkillCreationRequest): { fg: string; text: string } {
-  if (status.kind === "pending") {
-    return { fg: palette.faint, text: "queued" };
-  }
-
-  if (status.kind === "done") {
-    const outcome = status.outcome;
-    return outcome.error
-      ? { fg: palette.warn, text: `✗ ${truncateTo(outcome.error, 40)}` }
-      : { fg: palette.success, text: `✓ ${outcome.name}${outcome.installed ? " (installed)" : ""}` };
-  }
-
-  // Per-agent legs run in parallel, so name them together rather than
-  // flip-flopping between whichever leg emitted the latest event.
-  const agent =
-    request.mode === "per-agent" && request.agents.length > 1
-      ? ` via ${request.agents.join(" + ")} (parallel)`
-      : status.agent
-        ? ` via ${status.agent}`
-        : "";
-  const phases: Record<SkillCreationPhase, string> = {
-    creator: "pinning skill-creator",
-    authoring: `authoring${agent}`,
-    validating: "validating",
-    installing: "installing"
-  };
-  return { fg: palette.gold, text: phases[status.phase] };
-}
-
-function CreateProgressScreen(props: {
-  requests: SkillCreationRequest[];
-  statuses: RequestStatus[];
-  cancelling: boolean;
-  collision: CollisionPrompt | null;
-  onCancel: () => void;
-}) {
-  const spinner = useSpinner(true);
-  const running = props.statuses.some((status) => status.kind !== "done");
-
-  useKeyboard((key) => {
-    if (key.ctrl && key.name === "c") {
-      props.onCancel();
-      return;
-    }
-
-    if (props.collision) {
-      if (key.name === "r") {
-        props.collision.resolve("replace");
-      } else if (key.name === "k" || key.name === "escape") {
-        props.collision.resolve("keep");
-      }
-    }
-  });
-
-  return (
-    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <text fg={props.cancelling ? palette.warn : palette.accent}>
-        {props.cancelling
-          ? `${spinner}  Cancelling — killing the agent runs…`
-          : running
-            ? `${spinner}  Forging ${props.requests.length} skill(s) — up to 3 agent runs in parallel…`
-            : "  ⚒  Finishing up…"}
-      </text>
-      <box style={{ flexDirection: "column", gap: 0 }}>
-        {props.requests.map((request, index) => {
-          const status = statusText(props.statuses[index] ?? { kind: "pending" }, request);
-          const plan = `${request.agents.join("+")} · ${request.mode}`;
-
-          return (
-            <text key={`${request.description}-${index}`}>
-              <span fg={palette.text}>{`  ${truncateTo(request.description, 30).padEnd(32)}`}</span>
-              <span fg={status.fg}>{status.text.padEnd(30)}</span>
-              <span fg={palette.faint}>{plan}</span>
-            </text>
-          );
-        })}
-      </box>
-      {props.collision ? <CollisionPromptView collision={props.collision} /> : null}
-      <text fg={palette.muted}>Each skill is a full agent run — expect minutes. ctrl+c cancels and kills the agent runs.</text>
-    </box>
-  );
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type CreateAppProps = {
   targetDir: string;
   onExit: (code: number, message?: string) => void;
 };
-
-function CreateDoneScreen(props: { outcomes: SkillCreationOutcome[]; evalCandidate?: PendingSkillEval; onEvaluate: () => void; onExit: () => void }) {
-  useKeyboard((key) => {
-    if (key.name === "e" && props.evalCandidate) {
-      props.onEvaluate();
-      return;
-    }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q") {
-      props.onExit();
-    }
-  });
-
-  const failed = props.outcomes.filter((outcome) => outcome.error).length;
-
-  return (
-    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <text fg={failed === 0 ? palette.accent : palette.warn}>
-        {failed === 0 ? "  ⚒  Skills forged." : `  ✗  ${failed} of ${props.outcomes.length} skill(s) failed.`}
-      </text>
-      <box style={{ flexDirection: "column", gap: 0 }}>
-        {props.outcomes.map((outcome, index) => (
-          <box key={`${outcome.name ?? index}`} style={{ flexDirection: "column", gap: 0 }}>
-            <text>
-              <span fg={outcome.error ? palette.warn : palette.success}>{outcome.error ? "✗ " : "✓ "}</span>
-              <span fg={palette.text}>
-                {outcome.error ? outcome.error : `${outcome.name}${outcome.installed ? " (installed)" : ""}`}
-              </span>
-            </text>
-            {outcome.files.map((file) => (
-              <text key={file} fg={palette.muted}>{`    ${file}`}</text>
-            ))}
-            {outcome.notes.map((note) => (
-              <text key={note} fg={palette.faint}>{`    - ${note}`}</text>
-            ))}
-          </box>
-        ))}
-      </box>
-      {props.evalCandidate ? (
-        <text fg={palette.gold}>
-          {"e "}
-          <span fg={palette.muted}>{`evaluate ${props.evalCandidate.skillName} copies · enter close`}</span>
-        </text>
-      ) : (
-        <text fg={palette.gold}>
-          {"enter "}
-          <span fg={palette.muted}>close</span>
-        </text>
-      )}
-    </box>
-  );
-}
 
 function CreateApp(props: CreateAppProps) {
   const [availability, setAvailability] = useState<AgentAvailability | undefined>(undefined);
@@ -206,6 +69,9 @@ function CreateApp(props: CreateAppProps) {
 
     if (phase === "form" || phase === "refining" || phase === "questions") {
       props.onExit(1, "farrier skill new: cancelled — nothing created.");
+    } else if (phase === "evaluating") {
+      evalAbortRef.current?.abort();
+      setPhase("done");
     } else if (phase === "done") {
       props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0);
     }
@@ -341,6 +207,77 @@ function CreateApp(props: CreateAppProps) {
     };
   }, [phase, props.targetDir, requests]);
 
+  useEffect(() => {
+    if (phase !== "evaluating" || !pendingEval) {
+      return;
+    }
+
+    if (!evalBackend) {
+      setEvalError("No backend CLI is available to run the read-only eval.");
+      setPhase("evalError");
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    evalAbortRef.current = controller;
+    setEvalError(null);
+
+    evaluatePerAgentSkill({
+      targetDir: props.targetDir,
+      skillName: pendingEval.skillName,
+      description: pendingEval.description,
+      backend: evalBackend,
+      signal: controller.signal
+    })
+      .then((verdict) => {
+        if (!cancelled) {
+          setEvalVerdict(verdict);
+          setPhase("evalVerdict");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setEvalError(errorMessage(error));
+          setPhase("evalError");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [evalBackend, pendingEval, phase, props.targetDir]);
+
+  function startEval(candidate: PendingSkillEval): void {
+    setPendingEval(candidate);
+    setEvalVerdict(null);
+    setEvalWinner(null);
+    setEvalResolution(null);
+    setEvalError(null);
+    setPhase("evaluating");
+  }
+
+  async function applyEvalWinner(): Promise<void> {
+    if (!pendingEval || !evalWinner) {
+      return;
+    }
+
+    try {
+      const resolution = await resolvePerAgentSkillWinner({
+        targetDir: props.targetDir,
+        skillName: pendingEval.skillName,
+        winner: evalWinner,
+        confirmDeleteAndLink: true
+      });
+      setEvalResolution(resolution);
+      setPhase("evalApplied");
+    } catch (error) {
+      setEvalError(errorMessage(error));
+      setPhase("evalError");
+    }
+  }
+
   switch (phase) {
     case "form":
       return (
@@ -397,13 +334,73 @@ function CreateApp(props: CreateAppProps) {
         />
       );
 
-    case "done":
+    case "done": {
+      const evalCandidate = eligiblePerAgentEvals(outcomes)[0];
       return (
         <CreateDoneScreen
           outcomes={outcomes}
+          evalCandidate={evalCandidate}
+          onEvaluate={() => {
+            if (evalCandidate) {
+              startEval(evalCandidate);
+            }
+          }}
           onExit={() => props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0)}
         />
       );
+    }
+
+    case "evaluating":
+      return pendingEval ? (
+        <EvalProgressScreen
+          skillName={pendingEval.skillName}
+          onCancel={() => {
+            evalAbortRef.current?.abort();
+            setPhase("done");
+          }}
+        />
+      ) : (
+        <EvalErrorScreen message="No per-agent skill is selected for eval." onBack={() => setPhase("done")} />
+      );
+
+    case "evalVerdict":
+      return evalVerdict ? (
+        <EvalVerdictScreen
+          verdict={evalVerdict}
+          onPick={(winner) => {
+            setEvalWinner(winner);
+            setPhase("evalConfirm");
+          }}
+          onKeepBoth={() => setPhase("done")}
+        />
+      ) : (
+        <EvalErrorScreen message="Eval finished without a verdict." onBack={() => setPhase("done")} />
+      );
+
+    case "evalConfirm":
+      return pendingEval && evalWinner ? (
+        <EvalConfirmScreen
+          skillName={pendingEval.skillName}
+          winner={evalWinner}
+          onConfirm={() => void applyEvalWinner()}
+          onBack={() => setPhase("evalVerdict")}
+        />
+      ) : (
+        <EvalErrorScreen message="No winner is selected." onBack={() => setPhase("done")} />
+      );
+
+    case "evalApplied":
+      return evalResolution ? (
+        <EvalAppliedScreen
+          resolution={evalResolution}
+          onExit={() => props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0)}
+        />
+      ) : (
+        <EvalErrorScreen message="Winner resolution finished without a report." onBack={() => setPhase("done")} />
+      );
+
+    case "evalError":
+      return <EvalErrorScreen message={evalError ?? "Unknown eval error."} onBack={() => setPhase("done")} />;
   }
 }
 

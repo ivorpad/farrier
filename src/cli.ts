@@ -2,10 +2,11 @@
 
 import { resolve } from "node:path";
 import { runAdvise } from "./cli/advise";
+import { runDoctor } from "./cli/doctor";
 import { runSkillEval } from "./cli/skill-eval";
 import { runSkillNew } from "./cli/skill-new";
+import { runUpdate } from "./cli/update";
 import { detectPacks } from "./engine/detect";
-import { createDoctorReport, doctorExitCode, formatDoctorReport } from "./engine/doctor";
 import {
   applyLearn,
   createLearnReport,
@@ -14,12 +15,6 @@ import {
   type LearnBackend
 } from "./engine/learn";
 import { createRenderPlan, writeRenderPlan } from "./engine/render";
-import {
-  applyUpdate,
-  createUpdateReport,
-  formatUpdateApplyResult,
-  formatUpdateReport
-} from "./engine/update";
 import { resolvePack, supportedPackIds } from "./packs/index";
 
 type RenderCliOptions = {
@@ -32,13 +27,6 @@ type RenderCliOptions = {
   help: boolean;
 };
 
-type UpdateCliOptions = {
-  dir: string;
-  yes: boolean;
-  json: boolean;
-  help: boolean;
-};
-
 type LearnCliOptions = {
   dir: string;
   transcripts?: string;
@@ -47,12 +35,6 @@ type LearnCliOptions = {
   noLlm: boolean;
   backend: LearnBackend;
   model?: string;
-  help: boolean;
-};
-
-type DoctorCliOptions = {
-  dir: string;
-  json: boolean;
   help: boolean;
 };
 
@@ -181,53 +163,6 @@ function parseRenderArgs(args: string[]): RenderCliOptions {
   return options;
 }
 
-function parseUpdateArgs(args: string[]): UpdateCliOptions {
-  const options: UpdateCliOptions = {
-    dir: process.cwd(),
-    yes: false,
-    json: false,
-    help: false
-  };
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-
-    if (arg === "--help" || arg === "-h") {
-      options.help = true;
-      continue;
-    }
-
-    if (arg === "--yes" || arg === "-y") {
-      options.yes = true;
-      continue;
-    }
-
-    if (arg === "--json") {
-      options.json = true;
-      continue;
-    }
-
-    if (arg === "--dir") {
-      const value = args[i + 1];
-      if (!value || value.startsWith("--")) {
-        throw new Error("--dir requires a value");
-      }
-      options.dir = value;
-      i += 1;
-      continue;
-    }
-
-    if (arg.startsWith("--dir=")) {
-      options.dir = arg.slice("--dir=".length);
-      continue;
-    }
-
-    throw new Error(`Unknown update argument: ${arg}`);
-  }
-
-  return options;
-}
-
 function parseBackend(value: string): LearnBackend {
   if (value === "claude" || value === "codex") {
     return value;
@@ -335,47 +270,6 @@ function parseLearnArgs(args: string[]): LearnCliOptions {
   return options;
 }
 
-function parseDoctorArgs(args: string[]): DoctorCliOptions {
-  const options: DoctorCliOptions = {
-    dir: process.cwd(),
-    json: false,
-    help: false
-  };
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-
-    if (arg === "--help" || arg === "-h") {
-      options.help = true;
-      continue;
-    }
-
-    if (arg === "--json") {
-      options.json = true;
-      continue;
-    }
-
-    if (arg === "--dir") {
-      const value = args[i + 1];
-      if (!value || value.startsWith("--")) {
-        throw new Error("--dir requires a value");
-      }
-      options.dir = value;
-      i += 1;
-      continue;
-    }
-
-    if (arg.startsWith("--dir=")) {
-      options.dir = arg.slice("--dir=".length);
-      continue;
-    }
-
-    throw new Error(`Unknown doctor argument: ${arg}`);
-  }
-
-  return options;
-}
-
 async function resolveRenderStack(options: RenderCliOptions, targetDir: string): Promise<string> {
   if (options.detect) {
     const detected = await detectPacks(targetDir);
@@ -428,52 +322,6 @@ async function runRender(args: string[]): Promise<number> {
     console.log(file.path);
   }
 
-  return 0;
-}
-
-async function runUpdate(args: string[]): Promise<number> {
-  const options = parseUpdateArgs(args);
-
-  if (options.help) {
-    console.log(usage());
-    return 0;
-  }
-
-  const targetDir = resolve(options.dir);
-
-  if (options.yes) {
-    const result = await applyUpdate({ targetDir });
-
-    if (options.json) {
-      console.log(
-        JSON.stringify(
-          {
-            ...result.report,
-            applied: {
-              repairedFiles: result.repairedFiles,
-              acknowledgedSecondaryIds: result.acknowledgedSecondaryIds,
-              suggestedSkillsNotInstalled: result.suggestedSkillsNotInstalled
-            }
-          },
-          null,
-          2
-        )
-      );
-      return 0;
-    }
-
-    console.log(formatUpdateApplyResult(result).trimEnd());
-    return 0;
-  }
-
-  const report = await createUpdateReport({ targetDir });
-
-  if (options.json) {
-    console.log(JSON.stringify(report, null, 2));
-    return 0;
-  }
-
-  console.log(formatUpdateReport(report).trimEnd());
   return 0;
 }
 
@@ -540,30 +388,10 @@ async function runLearn(args: string[]): Promise<number> {
   return 0;
 }
 
-async function runDoctor(args: string[]): Promise<number> {
-  const options = parseDoctorArgs(args);
-
-  if (options.help) {
-    console.log(usage());
-    return 0;
-  }
-
-  const targetDir = resolve(options.dir);
-  const report = await createDoctorReport({ targetDir });
-
-  if (options.json) {
-    console.log(JSON.stringify(report, null, 2));
-  } else {
-    console.log(formatDoctorReport(report).trimEnd());
-  }
-
-  return doctorExitCode(report);
-}
-
 export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> {
   try {
     if (args[0] === "update") {
-      return await runUpdate(args.slice(1));
+      return await runUpdate(args.slice(1), usage);
     }
 
     if (args[0] === "learn") {
@@ -571,7 +399,7 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
     }
 
     if (args[0] === "doctor") {
-      return await runDoctor(args.slice(1));
+      return await runDoctor(args.slice(1), usage);
     }
 
     if (args[0] === "advise") {
