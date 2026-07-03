@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { createRenderPlan, type FarrierManifestInput, type RenderedFile } from "./render";
 import { inventoryOwnership, readManifest } from "./update";
 import { validateToolPolicyRuleProposal } from "./learn";
-import { resolvePack } from "../packs/index";
+import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 
 export type DoctorGroup =
   | "manifest"
@@ -179,8 +179,23 @@ function manifestInputFrom(manifest: Awaited<ReturnType<typeof readManifest>>): 
       farrierManifest: manifest.versions.farrierManifest ?? undefined,
       hooks: { ...manifest.versions.hooks },
       prompts: manifest.versions.prompts
+    },
+    registry: {
+      items: { ...manifest.registry.items }
     }
   };
+}
+
+function registryPinsForManifest(
+  manifest: Awaited<ReturnType<typeof readManifest>>,
+  catalog: PackCatalog
+): Record<string, RegistryPin> {
+  const currentPins = catalog.registryPins();
+  return Object.fromEntries(
+    Object.keys(manifest.registry.items)
+      .map((id) => [id, currentPins[id]])
+      .filter((entry): entry is [string, RegistryPin] => entry[1] !== undefined)
+  );
 }
 
 function addManifestShapeProblems(raw: unknown, problems: DoctorProblem[], targetDir: string): void {
@@ -497,7 +512,7 @@ function collectHookCommands(settings: unknown): { commands: string[]; shapeErro
 
 function referencedHookPath(command: string, targetDir: string): { relativePath: string; absolutePath: string } | undefined {
   const expanded = command.replaceAll("$CLAUDE_PROJECT_DIR", targetDir);
-  const match = expanded.match(/(?:^|["'\s])(?<path>(?:[^"'\s]*\/)?\.claude\/hooks\/[^"'\s]+\.py)(?:$|["'\s])/);
+  const match = expanded.match(/(?:^|["'\s])(?<path>(?:[^"'\s]*\/)?\.claude\/hooks\/[^"'\s]+)(?:$|["'\s])/);
 
   if (!match?.groups?.path) {
     return undefined;
@@ -752,8 +767,9 @@ async function addKonsistentProblems(
   }
 }
 
-export async function createDoctorReport(input: { targetDir: string }): Promise<DoctorReport> {
+export async function createDoctorReport(input: { targetDir: string; catalog?: PackCatalog }): Promise<DoctorReport> {
   const targetDir = resolve(input.targetDir);
+  const catalog = input.catalog ?? builtinCatalog();
   const manifestPath = join(targetDir, ".farrier.json");
   const problems: DoctorProblem[] = [];
   const notes: string[] = [
@@ -762,7 +778,7 @@ export async function createDoctorReport(input: { targetDir: string }): Promise<
 
   let manifest: Awaited<ReturnType<typeof readManifest>>;
   try {
-    manifest = await readManifest(targetDir);
+    manifest = await readManifest({ targetDir, catalog });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
@@ -796,7 +812,7 @@ export async function createDoctorReport(input: { targetDir: string }): Promise<
     });
   }
 
-  const basePack = resolvePack(manifest.currentPackId);
+  const basePack = catalog.resolvePack(manifest.currentPackId);
   const renderPack = {
     ...basePack,
     hooks: [...manifest.hookIds]
@@ -808,7 +824,8 @@ export async function createDoctorReport(input: { targetDir: string }): Promise<
     skills: manifest.skills,
     learnEnabled: manifest.learn.enabled,
     secondaryAcknowledged: manifest.secondaryAcknowledged,
-    existingManifest: manifestInputFrom(manifest)
+    existingManifest: manifestInputFrom(manifest),
+    registryPins: registryPinsForManifest(manifest, catalog)
   });
 
   await addInventoryProblems(targetDir, expectedPlan.files, problems);
