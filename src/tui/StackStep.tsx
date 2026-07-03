@@ -1,12 +1,15 @@
 import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
-import { resolvePack } from "../packs/index";
 import type { PackDetect } from "../packs/types";
+import type { PackCatalog, PackListing } from "../registry/catalog";
 import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { palette, StepHeader } from "./chrome";
 
 type StackStepProps = {
   packIds: string[];
+  listings: PackListing[];
+  catalog: PackCatalog;
+  warnings?: string[];
   selectedPackId: string;
   detectedPackId?: string;
   onSelectPack: (packId: string) => void;
@@ -37,17 +40,13 @@ const packSummary: Record<string, string> = {
   generic: "language-agnostic starter harness"
 };
 
-function summaryFor(packId: string): string {
+function summaryFor(packId: string, listings: PackListing[]): string {
   const authored = packSummary[packId];
   if (authored) {
     return authored;
   }
 
-  try {
-    return resolvePack(packId).verbs.check;
-  } catch {
-    return "available pack";
-  }
+  return listings.find((listing) => listing.id === packId)?.description ?? "available pack";
 }
 
 /**
@@ -90,13 +89,13 @@ function detectedEvidence(detect: PackDetect): string[] {
   return Array.from(new Set(evidence));
 }
 
-function evidenceFor(packId: string | undefined): string {
+function evidenceFor(packId: string | undefined, catalog: PackCatalog): string {
   if (!packId) {
     return "";
   }
 
   try {
-    return detectedEvidence(resolvePack(packId).detect).join(", ");
+    return detectedEvidence(catalog.resolvePack(packId).detect).join(", ");
   } catch {
     return "";
   }
@@ -111,7 +110,7 @@ export function StackStep(props: StackStepProps) {
 
   const nameWidth = props.packIds.reduce((width, packId) => Math.max(width, packId.length), 0);
   const rowWidth = 58;
-  const detectedEvidenceText = evidenceFor(props.detectedPackId);
+  const detectedEvidenceText = evidenceFor(props.detectedPackId, props.catalog);
 
   function moveFocus(delta: -1 | 1): void {
     const next = Math.min(Math.max(focusedIndex + delta, 0), props.packIds.length - 1);
@@ -195,6 +194,13 @@ export function StackStep(props: StackStepProps) {
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <StepHeader current="Stack" subtitle="Which iron are we working?" />
+      {props.warnings && props.warnings.length > 0 ? (
+        <box style={{ flexDirection: "column", gap: 0 }}>
+          {props.warnings.slice(0, 2).map((warning) => (
+            <text key={warning} fg={palette.warn}>{warning}</text>
+          ))}
+        </box>
+      ) : null}
       <box style={{ flexDirection: "column", gap: 0 }}>
         {props.packIds.map((packId, index) => {
           const focused = index === focusedIndex && zone === "list";
@@ -213,7 +219,7 @@ export function StackStep(props: StackStepProps) {
                   {detectedEvidenceText ? <span fg={palette.faint}>{` · ${detectedEvidenceText}`}</span> : null}
                 </span>
               ) : (
-                <span fg={palette.muted}>{summaryFor(packId)}</span>
+                <span fg={palette.muted}>{summaryFor(packId, props.listings)}</span>
               )}
               <span>{trailing}</span>
             </text>

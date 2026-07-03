@@ -8,8 +8,9 @@ import { probeAgents, type AgentAvailability } from "../engine/backend";
 import { detectPacks } from "../engine/detect";
 import { agentsHardRules, createRenderPlan, type RenderPlan } from "../engine/render";
 import { searchSkills, type SkillSearchResult } from "../engine/skills";
-import { resolvePack, supportedPackIds } from "../packs/index";
 import type { ResolvedPack } from "../packs/types";
+import { loadFarrierConfig } from "../config/farrier-config";
+import { builtinCatalog, loadPackCatalog, type PackCatalog } from "../registry/catalog";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
 import { eligiblePerAgentEvals, SkillEvalFlow, type PendingSkillEval } from "./create-eval";
 import { runForgeWrite } from "./forge";
@@ -28,11 +29,13 @@ type WizardAppProps = {
   contextSource?: string;
   adviseBackend?: AdviseBackend;
   adviseAutoStart?: boolean;
+  catalog: PackCatalog;
+  registryWarnings: string[];
   onExit: (code: number) => void;
 };
 
-function selectedPackFromState(state: WizardState): ResolvedPack {
-  const pack = resolvePack(state.packId);
+function selectedPackFromState(state: WizardState, catalog: PackCatalog): ResolvedPack {
+  const pack = catalog.resolvePack(state.packId);
   return {
     ...pack,
     hooks: [...state.selectedHooks]
@@ -44,13 +47,13 @@ function errorMessage(error: unknown): string {
 }
 
 function WizardApp(props: WizardAppProps) {
-  const packIds = useMemo(() => supportedPackIds(), []);
+  const packIds = useMemo(() => props.catalog.packIds(), [props.catalog]);
   const defaultPackId = packIds.includes("python-fastapi") ? "python-fastapi" : packIds[0] ?? "python-uv";
 
   const packDefaults = useMemo<PackDefaults>(() => {
     return Object.fromEntries(
       packIds.map((packId) => {
-        const pack = resolvePack(packId);
+        const pack = props.catalog.resolvePack(packId);
         return [
           packId,
           {
@@ -60,7 +63,7 @@ function WizardApp(props: WizardAppProps) {
         ];
       })
     );
-  }, [packIds]);
+  }, [packIds, props.catalog]);
 
   const initialState = useMemo(
     () =>
@@ -131,7 +134,7 @@ function WizardApp(props: WizardAppProps) {
     };
   }, []);
 
-  const selectedPack = useMemo(() => selectedPackFromState(state), [state.packId, state.selectedHooks]);
+  const selectedPack = useMemo(() => selectedPackFromState(state, props.catalog), [props.catalog, state.packId, state.selectedHooks]);
   const ruleCount = useMemo(() => agentsHardRules(selectedPack).length, [selectedPack]);
 
   const searchCache = useRef(new Map<string, SkillSearchResult[]>());
@@ -229,7 +232,8 @@ function WizardApp(props: WizardAppProps) {
       targetDir: props.targetDir,
       pack: selectedPack,
       skills: state.selectedSkills,
-      learnEnabled: state.learnEnabled
+      learnEnabled: state.learnEnabled,
+      registryPins: props.catalog.registryPins()
     })
       .then(async (plan) => {
         // A/M markers for the manifest: A = new file, M = overwrites one
@@ -259,10 +263,10 @@ function WizardApp(props: WizardAppProps) {
     return () => {
       cancelled = true;
     };
-  }, [props.targetDir, selectedPack, state.learnEnabled, state.selectedSkills, state.step]);
+  }, [props.catalog, props.targetDir, selectedPack, state.learnEnabled, state.selectedSkills, state.step]);
 
   function selectPack(packId: string): void {
-    const pack = resolvePack(packId);
+    const pack = props.catalog.resolvePack(packId);
     dispatch({
       type: "SELECT_PACK",
       packId,
@@ -314,6 +318,9 @@ function WizardApp(props: WizardAppProps) {
       return (
         <StackStep
           packIds={state.availablePackIds}
+          listings={props.catalog.listings()}
+          catalog={props.catalog}
+          warnings={props.registryWarnings}
           selectedPackId={state.packId}
           detectedPackId={state.detectedPackId}
           onSelectPack={selectPack}
@@ -393,6 +400,14 @@ function WizardApp(props: WizardAppProps) {
           selectedHooks={state.selectedHooks}
           createRequests={state.createRequests}
           learnEnabled={state.learnEnabled}
+          generator={
+            selectedPack.generator && selectedPack.packIds.some((packId) => packId.startsWith("@"))
+              ? {
+                  source: [...selectedPack.packIds].reverse().find((packId) => packId.startsWith("@")) ?? selectedPack.id,
+                  command: [selectedPack.generator.command, ...selectedPack.generator.args].join(" ")
+                }
+              : undefined
+          }
           files={reviewFiles}
           loading={!reviewPlan && !reviewError}
           error={reviewError}
@@ -443,8 +458,22 @@ function WizardApp(props: WizardAppProps) {
 
 export async function runWizard(targetDir: string, options?: { context?: string }): Promise<number> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
+  let catalog: PackCatalog = builtinCatalog();
+  let registryWarnings: string[] = [];
 
-  const detectedPackId = await detectPacks(targetDir)
+  try {
+    const config = await loadFarrierConfig({ projectDir: targetDir });
+    if (Object.keys(config.config.registries).length > 0) {
+      console.error("Loading registries...");
+    }
+    catalog = await loadPackCatalog({ config: config.config });
+    registryWarnings = catalog.warnings.map((warning) => `${warning.namespace}: ${warning.message}`);
+  } catch (error) {
+    catalog = builtinCatalog();
+    registryWarnings = [`Registry loading failed; showing built-in packs only: ${errorMessage(error)}`];
+  }
+
+  const detectedPackId = await detectPacks(targetDir, catalog)
     .then((detected) => detected[0])
     .catch(() => undefined);
 
@@ -484,6 +513,8 @@ export async function runWizard(targetDir: string, options?: { context?: string 
           contextSource={resolvedContext?.source}
           adviseBackend={adviseBackend}
           adviseAutoStart={options?.context !== undefined}
+          catalog={catalog}
+          registryWarnings={registryWarnings}
           onExit={finish}
         />
       );

@@ -394,6 +394,25 @@ describe("wizard machine", () => {
     expect(state.skillSearchStatus).toBe("idle");
   });
 
+  test("supports registry hook refs in pack defaults and toggles", () => {
+    let state = createInitialWizardState({
+      availablePackIds: ["@acme/demo"],
+      fallbackPackId: "@acme/demo",
+      packDefaults: {
+        "@acme/demo": {
+          skills: [],
+          hooks: ["secret-shield", "@acme/guard"]
+        }
+      }
+    });
+
+    expect(state.availableHooks).toEqual(["secret-shield", "@acme/guard"]);
+    expect(state.selectedHooks).toEqual(["secret-shield", "@acme/guard"]);
+
+    state = wizardReducer(state, { type: "TOGGLE_HOOK", hook: "@acme/guard" });
+    expect(state.selectedHooks).toEqual(["secret-shield"]);
+  });
+
   test("selecting a pack preserves detected metadata", () => {
     let state = createInitialWizardState({
       availablePackIds: ["python-fastapi", "rails"],
