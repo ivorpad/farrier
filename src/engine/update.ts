@@ -9,7 +9,7 @@ import {
   type RenderedFile
 } from "./render";
 import { resolvePack } from "../packs/index";
-import type { HookId, ResolvedPack, SecondaryDetectionFinding, SkillRef } from "../packs/types";
+import type { HookId, PackHookRef, ResolvedPack, SecondaryDetectionFinding, SkillRef } from "../packs/types";
 
 export const notFarrierProjectMessage = "not a farrier project; run farrier first";
 
@@ -66,7 +66,7 @@ export type NormalizedManifest = {
   farrierVersion: string | null;
   packIds: string[];
   currentPackId: string;
-  hookIds: HookId[];
+  hookIds: PackHookRef[];
   skills: SkillRef[];
   secondaryAcknowledged: string[];
   learn: {
@@ -138,8 +138,8 @@ function isHookId(value: string): value is HookId {
   return hookIdSet.has(value);
 }
 
-function parseHookIds(value: unknown, fallback: HookId[]): HookId[] {
-  const values = value === undefined ? fallback : stringArray(value);
+function parseHookIds(value: unknown, fallback: PackHookRef[]): PackHookRef[] {
+  const values = value === undefined ? [...fallback] : stringArray(value);
 
   if (!values) {
     throw new Error("invalid .farrier.json: hookIds must be a string array");
@@ -300,6 +300,10 @@ function hookDriftForManifest(manifest: NormalizedManifest): HookDrift[] {
   const drift: HookDrift[] = [];
 
   for (const hookId of manifest.hookIds) {
+    if (!isHookId(hookId)) {
+      continue;
+    }
+
     const currentVersion = hookCatalogVersions[hookId];
     const manifestVersion = manifest.versions.hooks[hookId] ?? null;
 
