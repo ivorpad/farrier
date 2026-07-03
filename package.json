@@ -1,0 +1,26 @@
+{
+  "name": "farrier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "farrier": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "test:hooks": "uvx pytest src/templates/hooks",
+    "check": "bun test && tsc --noEmit && uvx pytest src/templates/hooks"
+  },
+  "dependencies": {
+    "@opentui/core": "0.4.2",
+    "@opentui/react": "0.4.2",
+    "react": "^19.1.0",
+    "skills": "^1.5.14"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19",
+    "typescript": "latest"
+  }
+}

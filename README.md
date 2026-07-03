@@ -1,0 +1,248 @@
+# 🐴 farrier
+
+**The craftsman who equips your coding agents.**
+
+farrier generates an *agents-first harness* for any project: the hooks, rules, skills, verification verbs, and context files that let Claude Code (and Codex, and any other agent) work in your repo safely and productively — without you hand-assembling the same `.claude/` setup for the hundredth time.
+
+You pick a stack (or farrier detects it), and farrier writes a complete, tested harness:
+
+- **Hooks that protect** — no reading `.env`, no writing lockfiles, no `pip install` in a uv project (the deny message tells the agent the *right* command instead).
+- **Hooks that verify** — `just check` after every edit, structure linting (konsistent) before the agent yields.
+- **Skills that teach** — stack-appropriate skills from [skills.sh](https://skills.sh), pinned in a lockfile.
+- **Context that steers** — one `AGENTS.md` source of truth (CLAUDE.md points to it, so Codex and Claude read the same rules).
+- **A harness that evolves** — it detects stack drift, repairs itself, and *learns new rules from your session transcripts*.
+
+Everything is declarative data + tested templates. The LLM never writes hook code; it only proposes data that farrier's tested engine renders.
+
+---
+
+## 5-minute quickstart
+
+Prereqs: [bun](https://bun.sh), [uv](https://docs.astral.sh/uv/) (for Python stacks + hook tests), [just](https://github.com/casey/just) (verification verbs). The [skills](https://www.npmjs.com/package/skills) CLI ships as a farrier dependency (`bun install` pulls it into `node_modules/.bin/skills`), so skill installs work offline without a global install; override with `FARRIER_SKILLS_BIN` if you need a different binary.
+
+```bash
+cd ~/src/tries/2026-07-02-farrier
+bun install
+```
+
+### A. New project, interactive (the wizard)
+
+```bash
+mkdir ~/src/my-api && cd ~/src/my-api
+uv init --package .                                # native generator makes the code
+bun run ~/src/tries/2026-07-02-farrier/src/cli.ts  # bare farrier on a TTY = wizard
+```
+
+The wizard walks: **Stack → Skills → Hooks → Learn → Review → write**.
+
+**Navigation (same on every step):**
+
+- **Enter** — continue (on lists it picks the highlighted item; in toggle lists it toggles).
+- **Space** — toggle the highlighted item in Skills/Hooks/Learn.
+- **Tab** — cycle focus zones: input → list → the button bar at the bottom.
+- **Button bar** — `←`/`→` choose between `← Back` / `Next →`, Enter activates; press `↑` (or `←` past the leftmost button) to jump back up to the content.
+- **Esc** — always goes back one step (on the first step: exits without writing anything).
+
+Step by step:
+
+- *Stack*: your detected stack is preselected and annotated; Enter continues with it.
+- *Skills*: recommended skills are pre-ticked; type to live-search skills.sh; Space/Enter toggles.
+- *Hooks*: all six protections, pre-ticked; toggle any off.
+- *Learn*: opt this project into the self-learning loop (records intent in `.farrier.json`; see the learn walkthrough below).
+- *Review*: exact file inventory shown before anything is written. Enter writes the harness + installs skills (into `.claude/skills/` and `.agents/skills/` — Claude Code and Codex; farrier never scatters skills across every agent directory the skills CLI knows).
+
+### B. New project, headless (for scripts, CI, or agents driving farrier)
+
+```bash
+farrier --stack python-fastapi --yes --dir ./my-api      # explicit stack
+farrier --detect --yes --dir ./existing-repo             # detect the stack
+farrier --stack rails --dry-run --dir ./app              # preview, write nothing
+```
+
+(Substitute `bun run src/cli.ts` for `farrier` until it's linked/published: `bun link` in this repo makes `farrier` available globally.)
+
+### C. See it work
+
+Open Claude Code in the generated project and try to misbehave:
+
+```
+> cat .env
+⛔ Blocked secret access. Use .env.example, documented configuration, or ask the user.
+
+> pip install requests
+⛔ Do not use pip in this uv-managed project.
+   Redirect: Use `uv add <package>`.
+
+> (edit uv.lock directly)
+⛔ Lockfiles are owned by their package manager. Use `uv`.
+```
+
+Meanwhile every edit triggers `just check`, and when the agent tries to end its turn, `just konsistent` verifies the project structure — failures block the stop with actionable feedback, so the agent fixes them before yielding.
+
+---
+
+## What got generated (and why each file exists)
+
+For `python-fastapi`, 23 files:
+
+| File | Job |
+|---|---|
+| `AGENTS.md` | Source of truth: commands, hard rules, accepted risks. Read by every agent. |
+| `CLAUDE.md` | One-line pointer to AGENTS.md (keeps Claude + Codex on one ruleset). |
+| `.claude/settings.json` | Wires the hooks to Claude Code events. |
+| `.claude/hooks/*.py` + `test_*.py` | The six hooks, each with its pytest suite alongside. |
+| `.claude/hooks/tool-policy-rules.json` | **Declarative** wrong-tool rules (this is where `farrier learn` appends). |
+| `.claude/hooks/prompts/*.txt` | Versioned prompts for the LLM judges. |
+| `.claude/skills/harness-advisor/SKILL.md` | Teaches the in-session agent to manage the harness itself. |
+| `justfile` | The stable verbs: `just check` / `test` / `fmt` / `konsistent`. |
+| `konsistent.json` | Structure conventions (v1 grammar) enforced at Stop. |
+| `.farrier.json` | Manifest: packs, hooks, skills, judge config. **Never edit by hand.** |
+| `.gitignore` | Gains `.env`, `.env.*`, `!.env.example`. |
+
+Rails renders 22 (no konsistent — it's a TS/Python linter), `generic` renders 17.
+
+### The six hooks
+
+| Hook | Event | What it does |
+|---|---|---|
+| `secret-shield` | PreToolUse | Denies reading `.env*` / private keys (tracked examples like `.env.example` allowed). |
+| `tool-policy` | PreToolUse | Denies wrong-tool commands per the declarative rules file; every denial names the right tool. |
+| `write-guard` | PreToolUse | Denies writes to lockfiles, `.git/`, `skills-lock.json`, `.farrier.json`. |
+| `verb-runner` | PostToolUse + Stop | Runs `just check` after edits; `just konsistent` at Stop (blocks the stop on failure). |
+| `quality-judge` | PostToolUse | Always: warns when a file exceeds `quality.maxFileLines` (500). Optional: haiku judge for gross cohesion violations. |
+| `stop-judge` | Stop | Optional: sonnet/gpt-5.5 reviews the whole turn's diff; blocks only *serious* findings. |
+
+**LLM judge tiers ship disabled** — a generated project never surprise-calls an LLM. Enable in `.farrier.json`:
+
+```jsonc
+"judge": {
+  "perEdit": { "enabled": true, "backend": "claude", "model": "haiku" },
+  "stop":    { "enabled": true, "backend": "claude", "model": "sonnet" }   // or "codex" + "gpt-5.5"
+}
+```
+
+Any judge infrastructure failure (missing CLI, timeout, bad JSON) passes silently — the judges can slow an agent down, but they can never break it.
+
+---
+
+## Living with the harness: the day-2 loop
+
+### `farrier update` — did the project drift?
+
+```bash
+farrier update --dir .          # report only
+farrier update --dir . --json   # machine-readable
+farrier update --dir . --yes    # repair
+```
+
+Reports: stack drift (e.g. hotwire files appeared in your Rails repo → suggests JS skills), hook version drift, missing/outdated harness files, unacknowledged secondary findings.
+
+Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Files you customize — `AGENTS.md`, `justfile`, `settings.json`, `tool-policy-rules.json`, `konsistent.json` — are *reported* for manual review, never clobbered. It never switches packs and never installs skills without you.
+
+### `farrier learn` — the harness improves itself
+
+The self-learning loop turns *things that went wrong in your sessions* into *rules that prevent them next time* — as declarative data, never generated code.
+
+**How to use it, start to finish:**
+
+1. **Just work.** Use Claude Code in the project normally. Every session is transcribed automatically to `~/.claude/projects/<your-project-path-with-dashes>/*.jsonl` — you don't set anything up. (The wizard's Learn toggle only records intent in `.farrier.json`; learn runs either way.)
+
+2. **After a few sessions, ask farrier what it noticed:**
+
+   ```bash
+   farrier learn --dir .
+   ```
+
+   It mines the transcripts for Bash commands that were repeatedly denied by hooks or kept failing, then proposes new tool-policy rules. Nothing is written yet — this is report-only. Add `--json` for machine-readable output.
+
+3. **Read the proposals.** Each one is a complete declarative rule — id, regex, deny message, redirect — e.g. after `docker compose up` failed in three sessions:
+
+   ```text
+   learn-ban-docker-compose
+     pattern:  (^|[;&|()\s])docker\s+compose\b
+     message:  Avoid `docker compose` in this project. Learned from repeated failing transcript events.
+   ```
+
+   Proposals are validated hard before you ever see them: the regex must compile, the id must be new kebab-case, `tool` must be `"Bash"`. Invalid or duplicate proposals are dropped.
+
+4. **Accept them:**
+
+   ```bash
+   farrier learn --dir . --yes
+   ```
+
+   Accepted rules are **appended** to `.claude/hooks/tool-policy-rules.json` — existing rules are never modified or removed. The tool-policy hook enforces new rules immediately: the very next time an agent tries the banned command, it gets the deny + redirect.
+
+**Options:**
+
+```bash
+farrier learn --dir . --no-llm                      # deterministic only: bans commands that failed ≥2 times
+farrier learn --dir . --backend claude --model haiku    # default LLM proposal mode
+farrier learn --dir . --backend codex --model gpt-5.5   # or via Codex
+farrier learn --dir . --transcripts ./some/dir      # explicit transcript location (tests, other layouts)
+```
+
+LLM mode sends the extracted candidates (not your whole transcript) to the backend and falls back to deterministic mode on any failure. Run `farrier doctor --dir .` afterwards if you want confirmation the rules file is still healthy.
+
+### `farrier doctor` — is the harness healthy?
+
+```bash
+farrier doctor --dir .          # exit 1 if problems
+farrier doctor --dir . --json
+```
+
+Static checks: manifest parses, all inventory files exist, hooks are executable, `settings.json` doesn't reference missing scripts, every tool-policy regex compiles, judge/quality config is shape-valid. Good in CI: `farrier doctor --dir . || exit 1`.
+
+### `farrier advise` — recommend skills from project context
+
+Give farrier a PRP or any free-text description of the project and it researches skills.sh on your behalf, using whichever agent backend is on `PATH` (`claude -p`, else `codex exec`):
+
+```bash
+farrier advise --dir .                              # uses PRP.md / PRP.txt / docs/PRP.md if present
+farrier advise --dir . --context ./docs/brief.md    # explicit file
+farrier advise --dir . --context "a FastAPI billing service"   # literal text
+farrier advise --dir . --backend codex --json
+```
+
+It runs two backend calls — generate 2-4 registry search queries, then pick at most 6 skills from the candidates — and validates every returned ref against the candidate set before printing it, so a hallucinated ref never reaches an install. Exits 1 when there is no context, no backend available, or the backend call fails; otherwise it always prints (even zero recommendations).
+
+The same context and backend detection power a toggle on the wizard's Skills step. Passing `--context` on the bare `farrier` invocation enables it immediately — research starts at launch (searches run in parallel) so recommendations are ready by the time you reach Skills. With only an auto-detected `PRP.md` the toggle stays **off by default**; press `a` to run it. Recommendations merge into the picker as ★ proposals — nothing is auto-selected, and failures only show a warning, never blocking the wizard.
+
+### The harness-advisor skill
+
+Every generated project carries `.claude/skills/harness-advisor/SKILL.md`, so the *in-session agent* knows this loop too: it runs `farrier update` when it notices new file types, suggests skills.sh searches for new frameworks, points at `skill-creator` when you repeat yourself, and refuses to hand-edit `.farrier.json`.
+
+---
+
+## Stacks
+
+| `--stack` | Detected from | Notes |
+|---|---|---|
+| `python-uv` | `pyproject.toml` | Base Python: uv + ruff + pytest + konsistent |
+| `python-fastapi` | + `fastapi` dep | Adds layering convention (core ⊬ api) |
+| `python-lambda-powertools` | + `aws-lambda-powertools` dep | "No live AWS calls in tests" rules |
+| `ts-base` | `package.json` + `tsconfig.json` | bun + tsc + upstream konsistent |
+| `ts-react-vite` | + `react` & `vite` deps | |
+| `ts-nextjs` | + `next` dep | |
+| `ts-lambda` | `aws-cdk-lib` dep or `template.yaml`/`samconfig.toml` | |
+| `rails` | `Gemfile` with `rails` | No konsistent; **hotwire secondary detection** suggests JS skills |
+| `generic` | never auto-detected | Minimal safety harness for any repo; explicit `--stack generic` only |
+
+Detection returns most-specific-first; packs inherit (`python-fastapi extends python-uv`), and adding a stack is a data module in `src/packs/`, not engine code.
+
+---
+
+## Developing farrier itself
+
+```bash
+bun test              # engine + CLI + wizard-machine tests
+bun run typecheck     # tsc --noEmit
+bun run test:hooks    # pytest for the hook templates (needs uv)
+bun run check         # all of the above — the verb the harness itself would run
+```
+
+Architecture in one breath: **packs are declarative data** (`src/packs/`), the **engine** renders/detects/updates/learns/doctors (`src/engine/`), **hook templates** are self-contained Python scripts with tests (`src/templates/hooks/`), and the **TUI** is a pure reducer (`src/tui/machine.ts`, zero opentui imports) with thin opentui-react components around it.
+
+## Known caveat
+
+Generated Python projects reference konsistent-python as a **local path dependency** (`/Users/ivor/src/tries/2026-07-02-konsistent-python`) while it's being perfected — they only work on this machine for now. Upgrade path: git dependency, then PyPI.
