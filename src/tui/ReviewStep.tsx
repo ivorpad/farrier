@@ -48,6 +48,10 @@ type ReviewStepProps = {
   selectedHooks: PackHookRef[];
   createRequests: SkillCreationRequest[];
   learnEnabled: boolean;
+  generator?: {
+    source: string;
+    command: string;
+  };
   files: ReviewFile[];
   loading: boolean;
   error?: string;
@@ -88,6 +92,7 @@ function fileNote(path: string, ctx: NoteContext): string {
   const base = path.split("/").pop() ?? path;
 
   if (base === "AGENTS.md") return `${ctx.ruleCount} rules · source of truth`;
+  if (path.startsWith(".claude/hooks/@")) return "registry hook — review contents before forging";
   if (base === "CLAUDE.md") return "one line → see AGENTS.md";
   if (base === "settings.json") return `${ctx.hookCount} hooks wired`;
   if (base === "justfile") {
@@ -259,6 +264,14 @@ export function ReviewStep(props: ReviewStepProps) {
             </text>
           ))}
         </box>
+      ) : null}
+
+      {props.generator ? (
+        <text>
+          <span fg={palette.gold}>{"Generator will run: "}</span>
+          <span fg={palette.text}>{truncateTo(props.generator.command, 42)}</span>
+          <span fg={palette.faint}>{` (from ${props.generator.source})`}</span>
+        </text>
       ) : null}
 
       {focusedFile ? <DetailPane title={focusedFile.path} lines={previewLines(focusedFile.content)} /> : null}
