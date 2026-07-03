@@ -1,0 +1,28 @@
+{
+  "version": "v1",
+  "conventions": [
+    {
+      "name": "packages-have-init",
+      "description": "Every source package is a regular package.",
+      "paths": [
+        "src/app_2026_07_02_farrier"
+      ],
+      "must": {
+        "haveType": "directory",
+        "haveFiles": [
+          "__init__.py"
+        ]
+      }
+    },
+    {
+      "name": "core-independent-of-api",
+      "description": "Domain/core modules never import the FastAPI layer.",
+      "paths": [
+        "src/app_2026_07_02_farrier/core/*.py"
+      ],
+      "mustNot": {
+        "importFrom": "app_2026_07_02_farrier.api"
+      }
+    }
+  ]
+}

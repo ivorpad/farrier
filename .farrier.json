@@ -1,0 +1,60 @@
+{
+  "farrierVersion": "0.1.0",
+  "packIds": [
+    "python-uv",
+    "python-fastapi"
+  ],
+  "hookIds": [
+    "secret-shield",
+    "tool-policy",
+    "write-guard",
+    "verb-runner",
+    "quality-judge",
+    "stop-judge"
+  ],
+  "skills": [
+    "wshobson/agents@python-code-style",
+    "wshobson/agents@python-project-structure",
+    "wshobson/agents@python-testing-patterns"
+  ],
+  "secondaryAcknowledged": [],
+  "learn": {
+    "enabled": true
+  },
+  "judge": {
+    "perEdit": {
+      "enabled": false,
+      "backend": "claude",
+      "model": "haiku",
+      "timeoutMs": 15000,
+      "prompt": ".claude/hooks/prompts/quality-judge-v1.txt"
+    },
+    "stop": {
+      "enabled": false,
+      "backend": "claude",
+      "model": "sonnet",
+      "timeoutMs": 30000,
+      "prompt": ".claude/hooks/prompts/stop-judge-v1.txt",
+      "maxDiffBytes": 120000,
+      "maxUntrackedFiles": 50
+    }
+  },
+  "quality": {
+    "maxFileLines": 500
+  },
+  "versions": {
+    "farrierManifest": 1,
+    "hooks": {
+      "secret-shield": 1,
+      "tool-policy": 1,
+      "write-guard": 1,
+      "verb-runner": 1,
+      "quality-judge": 1,
+      "stop-judge": 1
+    },
+    "prompts": {
+      "qualityJudge": "v1",
+      "stopJudge": "v1"
+    }
+  }
+}

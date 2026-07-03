@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+tmp/
+
+# farrier: local secrets
+.env
+.env.*
+!.env.example
