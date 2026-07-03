@@ -1,8 +1,9 @@
-import type { SelectOption } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
+import { resolvePack } from "../packs/index";
+import type { PackDetect } from "../packs/types";
 import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
-import { StepHeader } from "./chrome";
+import { palette, StepHeader } from "./chrome";
 
 type StackStepProps = {
   packIds: string[];
@@ -20,43 +21,135 @@ const buttons: ButtonSpec[] = [
   { id: "next", label: "Continue →" }
 ];
 
-function optionDescription(packId: string, selectedPackId: string, detectedPackId: string | undefined): string {
-  const selected = packId === selectedPackId;
-  const detected = packId === detectedPackId;
+/**
+ * Human one-line summaries for each real pack, shown in muted text next to the
+ * pack name. Authored copy describing the actual packs — never invented stacks.
+ */
+const packSummary: Record<string, string> = {
+  "python-uv": "uv-managed python · ruff + pytest",
+  "python-fastapi": "fastapi services on uv",
+  "python-lambda-powertools": "aws lambda powertools on uv",
+  "ts-base": "typescript + bun · tsc + bun test",
+  "ts-react-vite": "react + vite on bun",
+  "ts-nextjs": "next.js on bun",
+  "ts-lambda": "typescript aws lambda / cdk",
+  rails: "ruby on rails · minitest + rubocop",
+  generic: "language-agnostic starter harness"
+};
 
-  if (selected && detected) {
-    return "Detected stack (selected)";
+function summaryFor(packId: string): string {
+  const authored = packSummary[packId];
+  if (authored) {
+    return authored;
   }
 
-  if (detected) {
-    return "Detected stack";
+  try {
+    return resolvePack(packId).verbs.check;
+  } catch {
+    return "available pack";
+  }
+}
+
+/**
+ * The files/signals that PROVED detection — evidence-first: the detected row
+ * cites what farrier read, not just an assertion. Pulled from the pack's own
+ * detect spec (files + dependency signals), so it is honest and unfabricated.
+ */
+function detectedEvidence(detect: PackDetect): string[] {
+  const evidence: string[] = [];
+
+  for (const file of detect.files ?? []) {
+    evidence.push(file);
   }
 
-  if (selected) {
-    return "Selected stack";
+  for (const file of detect.anyFiles ?? []) {
+    evidence.push(file);
   }
 
-  return "Available stack";
+  if ((detect.pyprojectDependencies ?? []).length > 0) {
+    evidence.push(`pyproject.toml → ${detect.pyprojectDependencies!.join(", ")}`);
+  }
+
+  const packageDeps = [
+    ...(detect.packageJsonDependencies ?? []),
+    ...(detect.packageJsonDevDependencies ?? []),
+    ...(detect.packageJsonAnyDependencies ?? [])
+  ];
+  if (packageDeps.length > 0) {
+    evidence.push(`package.json → ${packageDeps.join(", ")}`);
+  }
+
+  if ((detect.gemfileGems ?? []).length > 0) {
+    evidence.push(`Gemfile → ${detect.gemfileGems!.join(", ")}`);
+  }
+
+  for (const child of detect.any ?? []) {
+    evidence.push(...detectedEvidence(child));
+  }
+
+  return Array.from(new Set(evidence));
+}
+
+function evidenceFor(packId: string | undefined): string {
+  if (!packId) {
+    return "";
+  }
+
+  try {
+    return detectedEvidence(resolvePack(packId).detect).join(", ");
+  } catch {
+    return "";
+  }
 }
 
 export function StackStep(props: StackStepProps) {
   const [zone, setZone] = useState<Zone>("list");
   const [focusedButtonId, setFocusedButtonId] = useState<string>(buttons[0].id);
+  const [focusedIndex, setFocusedIndex] = useState<number>(
+    Math.max(props.packIds.indexOf(props.selectedPackId), 0)
+  );
 
-  const options: SelectOption[] = props.packIds.map((packId) => ({
-    name: `${packId === props.selectedPackId ? "◉" : "○"} ${packId}${packId === props.detectedPackId ? " ✓ detected" : ""}`,
-    description: optionDescription(packId, props.selectedPackId, props.detectedPackId),
-    value: packId
-  }));
+  const nameWidth = props.packIds.reduce((width, packId) => Math.max(width, packId.length), 0);
+  const rowWidth = 58;
+  const detectedEvidenceText = evidenceFor(props.detectedPackId);
+
+  function moveFocus(delta: -1 | 1): void {
+    const next = Math.min(Math.max(focusedIndex + delta, 0), props.packIds.length - 1);
+    if (next === focusedIndex) {
+      return;
+    }
+
+    setFocusedIndex(next);
+    const packId = props.packIds[next];
+    if (packId) {
+      props.onSelectPack(packId);
+    }
+  }
 
   useKeyboard((key) => {
-    if (key.name === "escape") {
+    if (key.name === "escape" || key.name === "q") {
       props.onCancel();
       return;
     }
 
     if (key.name === "tab") {
       setZone((current) => (current === "list" ? "buttons" : "list"));
+      return;
+    }
+
+    if (key.name === "down") {
+      if (zone === "list") {
+        moveFocus(1);
+      }
+      return;
+    }
+
+    if (key.name === "up") {
+      if (zone === "buttons") {
+        setZone("list");
+      } else {
+        moveFocus(-1);
+      }
       return;
     }
 
@@ -71,17 +164,17 @@ export function StackStep(props: StackStepProps) {
       return;
     }
 
-    if (key.name === "up" && zone === "buttons") {
-      setZone("list");
-      return;
-    }
-
     if (key.name === "right") {
       if (zone === "buttons") {
         setFocusedButtonId((current) => adjacentButtonId(buttons, current, 1) ?? current);
       } else {
         props.onNext();
       }
+      return;
+    }
+
+    if (key.name === "n" && zone === "list") {
+      props.onNext();
       return;
     }
 
@@ -101,18 +194,39 @@ export function StackStep(props: StackStepProps) {
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <StepHeader current="Stack" subtitle="Choose the stack pack to render." />
-      <select
-        options={options}
-        selectedIndex={Math.max(props.packIds.indexOf(props.selectedPackId), 0)}
-        focused={zone === "list"}
-        onChange={(_index, option) => option && props.onSelectPack(String(option.value))}
-        style={{ height: Math.min(Math.max(props.packIds.length + 1, 3), 8) }}
-      />
+      <StepHeader current="Stack" subtitle="Which iron are we working?" />
+      <box style={{ flexDirection: "column", gap: 0 }}>
+        {props.packIds.map((packId, index) => {
+          const focused = index === focusedIndex && zone === "list";
+          const detected = packId === props.detectedPackId;
+          const bg = focused ? palette.selBg : undefined;
+          const cursor = index === focusedIndex ? "▸ " : "  ";
+          const trailing = " ".repeat(Math.max(rowWidth - nameWidth - 3, 0));
+
+          return (
+            <text key={packId} bg={bg}>
+              <span fg={palette.accent}>{cursor}</span>
+              <span fg={palette.text}>{packId.padEnd(nameWidth + 1)}</span>
+              {detected ? (
+                <span>
+                  <span fg={palette.success}>{"detected"}</span>
+                  {detectedEvidenceText ? <span fg={palette.faint}>{` · ${detectedEvidenceText}`}</span> : null}
+                </span>
+              ) : (
+                <span fg={palette.muted}>{summaryFor(packId)}</span>
+              )}
+              <span>{trailing}</span>
+            </text>
+          );
+        })}
+      </box>
+      <text fg={palette.faint}>
+        The pack decides everything downstream: which hooks make sense, which skills exist for it, what `just check` runs.
+      </text>
       <ButtonBar
         buttons={buttons}
         focusedId={zone === "buttons" ? focusedButtonId : undefined}
-        hint="Enter: continue · Tab/↑: buttons · ←/→: choose button · Esc: exit"
+        hint="↑↓ move · enter choose · q quit"
       />
     </box>
   );
