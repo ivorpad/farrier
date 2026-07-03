@@ -568,6 +568,46 @@ describe("create-skill engine", () => {
     }
   });
 
+  test("createSkill streams backend stdout lines into authoring activity progress", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env[skillsBin];
+    process.env[skillsBin] = "skills";
+    await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
+
+    const backend = writingBackendRunner(async (input) => {
+      expect(input.cmd).toContain("stream-json");
+      input.onStdoutLine?.(
+        JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "iban-extractor/SKILL.md" } }] }
+        })
+      );
+      input.onStdoutLine?.(JSON.stringify({ type: "system", subtype: "thinking_tokens" }));
+      await writeSkill(dir, rootFromPrompt(input), "iban-extractor");
+    });
+
+    const activities: Array<[string, string | undefined, string | undefined]> = [];
+
+    try {
+      const outcome = await createSkill(
+        { description: "Extract IBANs", agents: ["claude"], mode: "author-claude" },
+        dir,
+        {
+          backendRunner: backend.runner,
+          skillsRunner: recordingSkillsRunner().runner,
+          progress: (phase, agent, activity) => activities.push([phase, agent, activity])
+        }
+      );
+
+      expect(outcome.error).toBeUndefined();
+      expect(activities).toContainEqual(["authoring", "claude", "Write iban-extractor/SKILL.md"]);
+      // Unrenderable lines never surface as activity events.
+      expect(activities.filter(([, , activity]) => activity !== undefined)).toHaveLength(1);
+    } finally {
+      restoreEnv(skillsBin, previousBin);
+    }
+  });
+
   test("defaultBackendRunner kills the spawned process when the signal aborts", async () => {
     const controller = new AbortController();
     const started = Date.now();

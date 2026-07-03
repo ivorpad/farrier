@@ -185,13 +185,25 @@ function CreateApp(props: CreateAppProps) {
       }
 
       setStatuses((current) =>
-        current.map((status, index) =>
-          index === event.index
-            ? event.phase === "done"
-              ? { kind: "done", outcome: event.outcome }
-              : { kind: "running", phase: event.phase, agent: event.agent }
-            : status
-        )
+        current.map((status, index) => {
+          if (index !== event.index) {
+            return status;
+          }
+
+          if (event.phase === "done") {
+            return { kind: "done", outcome: event.outcome };
+          }
+
+          // Per-agent runs stream concurrently into one row; keep the latest
+          // activity line from each agent.
+          const activities = status.kind === "running" ? { ...status.activities } : {};
+
+          if (event.agent && event.activity) {
+            activities[event.agent] = event.activity;
+          }
+
+          return { kind: "running", phase: event.phase, agent: event.agent, activities };
+        })
       );
     }).then((results) => {
       if (!cancelled) {

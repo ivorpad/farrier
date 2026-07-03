@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Effect } from "effect";
-import { backendCommand, type AgentBackend, type BackendCommandRunner, defaultBackendRunner } from "./backend";
+import {
+  backendCommand,
+  defaultBackendRunner,
+  formatBackendStreamActivity,
+  type AgentBackend,
+  type BackendCommandRunner
+} from "./backend";
 import type { RenderedFile } from "./render";
 import {
   collapseDescription,
@@ -161,7 +167,7 @@ export type CreateSkillDeps = {
   skillsRunner?: CommandRunner;
   resolveDeps?: ResolveSkillsCommandDeps;
   install?: boolean;
-  progress?: (phase: SkillCreationPhase, agent?: CreateAgent) => void;
+  progress?: (phase: SkillCreationPhase, agent?: CreateAgent, activity?: string) => void;
   /** Serializes skills-lock/manifest writers when authoring runs concurrently. */
   serializeInstall?: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Aborting kills in-flight agent runs and skips work not yet started. */
@@ -254,9 +260,21 @@ async function authorSkill(input: {
 
   throwIfCancelled(input.deps.signal);
   input.deps.progress?.("authoring", input.agent);
-  const command = backendCommand(input.agent, input.model, prompt, { write: true });
+  const command = backendCommand(input.agent, input.model, prompt, { write: true, stream: true });
   const runner = input.deps.backendRunner ?? defaultBackendRunner;
-  const output = await runner({ cmd: command.cmd, cwd: input.targetDir, stdin: command.stdin, signal: input.deps.signal });
+  const output = await runner({
+    cmd: command.cmd,
+    cwd: input.targetDir,
+    stdin: command.stdin,
+    signal: input.deps.signal,
+    onStdoutLine: (line) => {
+      const activity = formatBackendStreamActivity(input.agent, line);
+
+      if (activity) {
+        input.deps.progress?.("authoring", input.agent, activity);
+      }
+    }
+  });
 
   if (input.deps.signal?.aborted) {
     throw new Error(`cancelled — killed the ${input.agent} run`);
@@ -432,7 +450,7 @@ export async function createSkill(
 }
 
 export type SkillCreationProgressEvent =
-  | { index: number; phase: SkillCreationPhase; agent?: CreateAgent }
+  | { index: number; phase: SkillCreationPhase; agent?: CreateAgent; activity?: string }
   | { index: number; phase: "done"; outcome: SkillCreationOutcome };
 
 const AUTHOR_CONCURRENCY = 3;
@@ -481,7 +499,7 @@ export async function createSkills(
           const outcome = await createSkill(request, targetDir, {
             ...deps,
             serializeInstall,
-            progress: (phase, agent) => onProgress?.({ index, phase, agent })
+            progress: (phase, agent, activity) => onProgress?.({ index, phase, agent, activity })
           });
 
           onProgress?.({ index, phase: "done", outcome });

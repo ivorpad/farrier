@@ -6,7 +6,13 @@ import type { PendingSkillEval } from "./create-eval";
 
 export type RequestStatus =
   | { kind: "pending" }
-  | { kind: "running"; phase: SkillCreationPhase; agent?: CreateAgent }
+  | {
+      kind: "running";
+      phase: SkillCreationPhase;
+      agent?: CreateAgent;
+      /** Latest streamed activity line per agent (per-agent runs stream in parallel). */
+      activities?: Partial<Record<CreateAgent, string>>;
+    }
   | { kind: "done"; outcome: SkillCreationOutcome };
 
 function statusText(status: RequestStatus, request: SkillCreationRequest): { fg: string; text: string } {
@@ -72,15 +78,28 @@ export function CreateProgressScreen(props: {
       </text>
       <box style={{ flexDirection: "column", gap: 0 }}>
         {props.requests.map((request, index) => {
-          const status = statusText(props.statuses[index] ?? { kind: "pending" }, request);
+          const requestStatus = props.statuses[index] ?? { kind: "pending" };
+          const status = statusText(requestStatus, request);
           const plan = `${request.agents.join("+")} · ${request.mode}`;
+          const activities =
+            requestStatus.kind === "running" && requestStatus.activities
+              ? Object.entries(requestStatus.activities).filter(([, activity]) => activity)
+              : [];
 
           return (
-            <text key={`${request.description}-${index}`}>
-              <span fg={palette.text}>{`  ${truncateTo(request.description, 30).padEnd(32)}`}</span>
-              <span fg={status.fg}>{status.text.padEnd(30)}</span>
-              <span fg={palette.faint}>{plan}</span>
-            </text>
+            <box key={`${request.description}-${index}`} style={{ flexDirection: "column", gap: 0 }}>
+              <text>
+                <span fg={palette.text}>{`  ${truncateTo(request.description, 30).padEnd(32)}`}</span>
+                <span fg={status.fg}>{truncateTo(status.text, 40).padEnd(42)}</span>
+                <span fg={palette.faint}>{plan}</span>
+              </text>
+              {activities.map(([agent, activity]) => (
+                <text key={agent}>
+                  <span fg={palette.faint}>{`    ${agent.padEnd(6)} ▸ `}</span>
+                  <span fg={palette.muted}>{truncateTo(activity ?? "", 80)}</span>
+                </text>
+              ))}
+            </box>
           );
         })}
       </box>
