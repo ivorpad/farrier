@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSkillEvalArgs } from "../src/cli/skill-eval";
-import { parseSkillNewArgs, resolveRefineAnswer } from "../src/cli/skill-new";
+import { isGrillFinish, parseSkillNewArgs, resolveRefineAnswer } from "../src/cli/skill-new";
 import { loadFarrierConfig, resolveModelSettings } from "../src/config/farrier-config";
 import { createSkill } from "../src/engine/create-skill";
 import type { BackendCommandRunner, BackendCommandRunnerInput } from "../src/engine/backend";
@@ -81,6 +81,14 @@ describe("parseSkillNewArgs", () => {
     expect(resolveRefineAnswer("2", options)).toBe("camelot");
     expect(resolveRefineAnswer("3", options)).toBe("3");
     expect(resolveRefineAnswer("use tabula instead", options)).toBe("use tabula instead");
+  });
+
+  test("isGrillFinish treats a bare q (any case, trimmed) as done and nothing else", () => {
+    expect(isGrillFinish("q")).toBe(true);
+    expect(isGrillFinish(" Q ")).toBe(true);
+    expect(isGrillFinish("")).toBe(false);
+    expect(isGrillFinish("quit it")).toBe(false);
+    expect(isGrillFinish("1")).toBe(false);
   });
 
   test("rejects unknown flags, second positionals, and bad enum values", () => {

@@ -7,11 +7,13 @@ import {
 import type { ReasoningEffort } from "../config/farrier-config";
 
 /**
- * Before delegating to a vendor skill-creator, farrier asks the backend LLM
- * for the implementation decisions the request leaves open (language,
- * libraries, formats, integration points). The user's answers become an
- * explicit "implementation decisions" block in the authoring brief, so the
- * creator stops guessing.
+ * Before delegating to a vendor skill-creator, farrier grills the requester
+ * about the implementation decisions the request leaves open — one question at
+ * a time, each adapting to the prior answers. Walking the design tree branch by
+ * branch (rather than dumping a fixed batch) keeps the interview short and lets
+ * every answer steer the next question. The answers become an explicit
+ * "implementation decisions" block in the authoring brief, so the creator stops
+ * guessing.
  */
 export type RefineQuestion = {
   question: string;
@@ -23,74 +25,112 @@ export type RefineAnswer = {
   answer: string;
 };
 
-const maxQuestions = 4;
+export const maxGrillQuestions = 6;
 const maxOptions = 5;
 const requestCharLimit = 16_000;
 
-function buildRefinePrompt(input: { description: string; packId?: string }): string {
-  return `You are farrier's skill-briefing assistant. A coding-agent skill will be authored from the request below by a skill-creator agent. Return JSON only, with this exact shape:
-{"questions": [{"question": "short question", "options": ["concrete option"]}]}
-- 2 to ${maxQuestions} questions that pin down implementation decisions the request leaves open: language, specific libraries, input/output formats, integration points.
-- Skip anything the request already decides. If nothing is open, return {"questions": []}.
-- 2 to ${maxOptions} options per question, each concrete (name the actual library/tool/format). Put your recommendation first.
+function renderTranscript(priorAnswers: RefineAnswer[]): string {
+  if (priorAnswers.length === 0) {
+    return "";
+  }
+
+  const lines = priorAnswers
+    .map((entry) => {
+      const answer = entry.answer.trim().length > 0 ? entry.answer.trim() : "(skipped — you decide; do not re-ask)";
+      return `Q: ${entry.question}\nA: ${answer}`;
+    })
+    .join("\n");
+
+  return `\nDecisions so far (never re-ask these):\n${lines}\n`;
+}
+
+function buildGrillPrompt(input: {
+  description: string;
+  priorAnswers: RefineAnswer[];
+  questionNumber: number;
+  packId?: string;
+}): string {
+  return `You are farrier's grill-master: a relentless but concise design interviewer. A coding-agent skill will be authored from the request below by a skill-creator agent. Interview the requester ONE question at a time until the brief leaves no consequential decision open. Walk the design tree branch by branch: pick the biggest unresolved fork, and let each prior answer decide which branch to probe next — never ask about a branch whose parent decision is still open, and never ask about anything the request or a prior answer already settles.
+
+Probe whatever most changes what gets built: scope and non-goals, inputs/outputs and formats, language and libraries, integration points, edge cases, failure modes, quality bars — not just library picks.
+
+Return JSON only, exactly one of:
+{"question": "one short, specific question", "options": ["concrete option"]}
+{"done": true}
+
+Rules:
+- Exactly ONE question. Bundling questions is bewildering.
+- 2 to ${maxOptions} options, each concrete (name the actual library/tool/format/behavior). Put your recommendation first.
+- This is question ${input.questionNumber} of at most ${maxGrillQuestions} — spend it on the most consequential open fork.
+- Return {"done": true} when the remaining open decisions would not change what a competent skill-creator builds.
 - No prose, no markdown.
 ${input.packId ? `Project stack: ${input.packId}\n` : ""}Skill request:
 ${input.description.slice(0, requestCharLimit)}
-`;
+${renderTranscript(input.priorAnswers)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function validateQuestions(parsed: unknown, backend: AgentBackend): RefineQuestion[] {
-  if (!isRecord(parsed) || !Array.isArray(parsed.questions)) {
-    throw new Error(`${backend} backend JSON must have shape {"questions":[...]}`);
+function validateGrillStep(parsed: unknown, backend: AgentBackend): RefineQuestion | null {
+  if (isRecord(parsed) && parsed.done === true) {
+    return null;
   }
 
-  const questions: RefineQuestion[] = [];
-
-  for (const raw of parsed.questions) {
-    if (questions.length >= maxQuestions) {
-      break;
-    }
-
-    if (!isRecord(raw) || typeof raw.question !== "string" || raw.question.trim().length === 0) {
-      continue;
-    }
-
-    const options = Array.isArray(raw.options)
-      ? raw.options
+  if (isRecord(parsed) && typeof parsed.question === "string" && parsed.question.trim().length > 0) {
+    const options = Array.isArray(parsed.options)
+      ? parsed.options
           .filter((option): option is string => typeof option === "string" && option.trim().length > 0)
           .map((option) => option.trim())
           .slice(0, maxOptions)
       : [];
 
-    questions.push({ question: raw.question.trim(), options });
+    return { question: parsed.question.trim(), options };
   }
 
-  return questions;
+  throw new Error(`${backend} backend JSON must be {"question":"...","options":[...]} or {"done":true}`);
 }
 
-export async function generateRefineQuestions(input: {
+/**
+ * Asks the backend for the next grill question, adapting to the answers so far.
+ * Returns null when grilling is done — either the backend calls it (`{"done":
+ * true}`) or the question budget is spent. A thrown error means the malformed
+ * step should stop the interview; callers proceed with the answers already in
+ * hand, never blocking creation.
+ */
+export async function generateNextGrillQuestion(input: {
   description: string;
   backend: AgentBackend;
   targetDir: string;
+  priorAnswers: RefineAnswer[];
+  questionNumber: number;
   packId?: string;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   runner?: BackendCommandRunner;
-}): Promise<RefineQuestion[]> {
+  signal?: AbortSignal;
+}): Promise<RefineQuestion | null> {
+  if (input.questionNumber > maxGrillQuestions) {
+    return null;
+  }
+
   const parsed = await invokeBackend({
     backend: input.backend,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
-    prompt: buildRefinePrompt({ description: input.description, packId: input.packId }),
+    prompt: buildGrillPrompt({
+      description: input.description,
+      priorAnswers: input.priorAnswers,
+      questionNumber: input.questionNumber,
+      packId: input.packId
+    }),
     targetDir: input.targetDir,
-    runner: input.runner ?? defaultBackendRunner
+    runner: input.runner ?? defaultBackendRunner,
+    signal: input.signal
   });
 
-  return validateQuestions(parsed, input.backend);
+  return validateGrillStep(parsed, input.backend);
 }
 
 /** Folds answered questions into the brief the skill-creator will receive. */
