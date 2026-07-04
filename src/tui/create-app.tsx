@@ -10,14 +10,13 @@ import {
   type SkillCreationRequest
 } from "../engine/create-skill";
 import { detectPacks } from "../engine/detect";
-import { applyRefinements, generateRefineQuestions } from "../engine/refine-skill";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
 import { eligiblePerAgentEvals, nextEvalPolicy, SkillEvalFlow, type PendingSkillEval, type SkillEvalPolicy } from "./create-eval";
 import { CreateDoneScreen, CreateProgressScreen, type RequestStatus } from "./create-progress";
 import { CreateStep } from "./CreateStep";
-import { RefineScreen, RefineWaitScreen, type PendingAnswer, type PendingQuestion } from "./RefineScreen";
+import { RefineFlow } from "./RefineScreen";
 
-type Phase = "form" | "refining" | "questions" | "writing" | "done" | "eval";
+type Phase = "form" | "questions" | "writing" | "done" | "eval";
 
 type CreateAppProps = {
   targetDir: string;
@@ -34,7 +33,9 @@ function CreateApp(props: CreateAppProps) {
   const [cancelling, setCancelling] = useState(false);
   const [refine, setRefine] = useState(true);
   const [packId, setPackId] = useState<string | undefined>(undefined);
-  const [questionItems, setQuestionItems] = useState<PendingQuestion[]>([]);
+  // Requests grill sequentially — each question adapts to the prior answers, so
+  // one request's interview must finish before the next begins.
+  const [grillIndex, setGrillIndex] = useState(0);
   const [collision, setCollision] = useState<CollisionPrompt | null>(null);
   const [pendingEval, setPendingEval] = useState<PendingSkillEval | null>(null);
   const [evalPolicy, setEvalPolicy] = useState<SkillEvalPolicy>("ask");
@@ -52,7 +53,7 @@ function CreateApp(props: CreateAppProps) {
       return;
     }
 
-    if (phase === "form" || phase === "refining" || phase === "questions") {
+    if (phase === "form" || phase === "questions") {
       props.onExit(1, "farrier skill new: cancelled — nothing created.");
     } else if (phase === "done") {
       props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0);
@@ -87,68 +88,6 @@ function CreateApp(props: CreateAppProps) {
       cancelled = true;
     };
   }, [props.targetDir]);
-
-  // Refine phase: one read-only backend call per request proposes the
-  // implementation decisions the description leaves open. Failures never
-  // block authoring — they just skip the questions.
-  useEffect(() => {
-    if (phase !== "refining" || !refineBackend) {
-      return;
-    }
-
-    let cancelled = false;
-
-    Promise.all(
-      requests.map(async (request, requestIndex) => {
-        try {
-          const refineSettings = resolveModelSettings({ models: props.models, backend: refineBackend, role: "refine" });
-          const questions = await generateRefineQuestions({
-            description: request.description,
-            backend: refineBackend,
-            targetDir: props.targetDir,
-            packId,
-            model: refineSettings.model,
-            reasoningEffort: refineSettings.reasoningEffort
-          });
-          return questions.map((question): PendingQuestion => ({ requestIndex, description: request.description, question }));
-        } catch {
-          return [] as PendingQuestion[];
-        }
-      })
-    ).then((perRequest) => {
-      if (cancelled) {
-        return;
-      }
-
-      const items = perRequest.flat();
-
-      if (items.length === 0) {
-        setPhase("writing");
-      } else {
-        setQuestionItems(items);
-        setPhase("questions");
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [packId, phase, props.targetDir, refineBackend, requests]);
-
-  function applyAnswers(answers: PendingAnswer[]): void {
-    setRequests((current) =>
-      current.map((request, index) =>
-        ({
-          ...request,
-          description: applyRefinements(
-            request.description,
-            answers.filter((answer) => answer.requestIndex === index)
-          )
-        })
-      )
-    );
-    setPhase("writing");
-  }
 
   useEffect(() => {
     if (phase !== "writing") {
@@ -246,7 +185,8 @@ function CreateApp(props: CreateAppProps) {
             }
 
             setRequests(all);
-            setPhase(refine && refineBackend ? "refining" : "writing");
+            setGrillIndex(0);
+            setPhase(refine && refineBackend ? "questions" : "writing");
           }}
           onBack={() =>
             props.onExit(
@@ -259,11 +199,38 @@ function CreateApp(props: CreateAppProps) {
         />
       );
 
-    case "refining":
-      return <RefineWaitScreen backend={refineBackend ?? "backend"} count={requests.length} />;
+    case "questions": {
+      const request = requests[grillIndex];
 
-    case "questions":
-      return <RefineScreen items={questionItems} backend={refineBackend ?? "backend"} onDone={applyAnswers} />;
+      if (!request || !refineBackend) {
+        return null;
+      }
+
+      const refineSettings = resolveModelSettings({ models: props.models, backend: refineBackend, role: "refine" });
+
+      return (
+        <RefineFlow
+          key={grillIndex}
+          request={request}
+          backend={refineBackend}
+          targetDir={props.targetDir}
+          packId={packId}
+          model={refineSettings.model}
+          reasoningEffort={refineSettings.reasoningEffort}
+          progressLabel={requests.length > 1 ? `skill ${grillIndex + 1} of ${requests.length}` : undefined}
+          onDone={(refined) => {
+            setRequests((current) => current.map((item, index) => (index === grillIndex ? refined : item)));
+
+            if (grillIndex + 1 >= requests.length) {
+              setGrillIndex(0);
+              setPhase("writing");
+            } else {
+              setGrillIndex(grillIndex + 1);
+            }
+          }}
+        />
+      );
+    }
 
     case "writing":
       return (

@@ -15,7 +15,13 @@ import {
 } from "../engine/create-skill";
 import { detectPacks } from "../engine/detect";
 import { evaluatePerAgentSkill, perAgentEvalCandidates, type SkillEvalVerdict } from "../engine/eval-skill";
-import { applyRefinements, generateRefineQuestions, type RefineAnswer, type RefineQuestion } from "../engine/refine-skill";
+import {
+  applyRefinements,
+  generateNextGrillQuestion,
+  maxGrillQuestions,
+  type RefineAnswer,
+  type RefineQuestion
+} from "../engine/refine-skill";
 import { writeRenderPlan } from "../engine/render";
 
 export type SkillNewCliOptions = {
@@ -57,8 +63,7 @@ Options:
   --name <kebab>     Ask the creator for this exact skill name.
   --model <name>     Backend model override for the authoring run (overrides the models config).
   --no-llm           Skip agent authoring; write a deterministic SKILL.md scaffold instead.
-  --refine           Ask clarifying questions first (interactive; requires a terminal): the backend
-                     proposes the open implementation decisions, your answers join the brief.
+  --refine           Grill the brief first: clarifying questions one at a time (interactive; requires a terminal).
   --force            Replace an existing skill directory on collision (scaffold and authored).
   --no-install       Skip the 'skills add ./skills' install step after authoring.
   --dry-run          Preview the scaffold without writing (only valid with --no-llm).
@@ -277,26 +282,17 @@ export function resolveRefineAnswer(line: string, options: string[]): string {
   return trimmed;
 }
 
-async function askRefineQuestions(
-  questions: RefineQuestion[],
-  readLine: () => Promise<string>
-): Promise<RefineAnswer[]> {
-  const answers: RefineAnswer[] = [];
-
-  for (const [index, question] of questions.entries()) {
-    console.log(`\n[${index + 1}/${questions.length}] ${question.question}`);
-    question.options.forEach((option, optionIndex) => {
-      console.log(`  ${optionIndex + 1}) ${option}${optionIndex === 0 ? "   (recommended)" : ""}`);
-    });
-    console.log("  number picks an option · free text is used verbatim · empty = let the creator decide");
-    process.stdout.write("> ");
-
-    answers.push({ question: question.question, answer: resolveRefineAnswer(await readLine(), question.options) });
-  }
-
-  return answers;
+/** A trimmed lowercase "q" ends the grill early — "that's enough, proceed". */
+export function isGrillFinish(line: string): boolean {
+  return line.trim().toLowerCase() === "q";
 }
 
+/**
+ * Interactive grill loop: ask the backend for one adaptive question at a time,
+ * fold each answer into the running transcript so the next question responds to
+ * it. Any failure stops the interview and proceeds with the answers so far —
+ * grilling never blocks creation.
+ */
 async function refineDescription(
   options: SkillNewCliOptions,
   targetDir: string,
@@ -304,26 +300,62 @@ async function refineDescription(
   models: ModelsConfig
 ): Promise<string> {
   const packId = (await detectPacks(targetDir).catch(() => [] as string[]))[0];
-  console.log(`Asking ${backend} what the brief leaves open…`);
-
   const refineSettings = resolveModelSettings({ models, backend, role: "refine", explicitModel: options.model });
-  const questions = await generateRefineQuestions({
-    description: options.description!,
-    backend,
-    targetDir,
-    packId,
-    model: refineSettings.model,
-    reasoningEffort: refineSettings.reasoningEffort
-  });
-
-  if (questions.length === 0) {
-    console.log("No open decisions — the brief is specific enough.");
-    return options.description!;
-  }
 
   const stdinLines = (console as unknown as AsyncIterable<string>)[Symbol.asyncIterator]();
   const readLine = async (): Promise<string> => String((await stdinLines.next()).value ?? "");
-  const answers = await askRefineQuestions(questions, readLine);
+
+  const answers: RefineAnswer[] = [];
+
+  for (let questionNumber = 1; questionNumber <= maxGrillQuestions; questionNumber += 1) {
+    console.log(
+      questionNumber === 1 ? `Asking ${backend} for its first question…` : `${backend} is thinking about your answer…`
+    );
+
+    let question: RefineQuestion | null;
+
+    try {
+      question = await generateNextGrillQuestion({
+        description: options.description!,
+        backend,
+        targetDir,
+        packId,
+        priorAnswers: answers,
+        questionNumber,
+        model: refineSettings.model,
+        reasoningEffort: refineSettings.reasoningEffort
+      });
+    } catch (error) {
+      console.log(`Grilling stopped (${errorMessage(error)}); proceeding with ${answers.length} answer(s).`);
+      break;
+    }
+
+    if (question === null) {
+      console.log(
+        questionNumber === 1
+          ? "No open decisions — the brief is specific enough."
+          : "No more questions — the brief is pinned down."
+      );
+      break;
+    }
+
+    console.log(`\n[${questionNumber}/≤${maxGrillQuestions}] ${question.question}`);
+    question.options.forEach((option, optionIndex) => {
+      console.log(`  ${optionIndex + 1}) ${option}${optionIndex === 0 ? "   (recommended)" : ""}`);
+    });
+    console.log(
+      "  number picks an option · free text is used verbatim · empty = let the creator decide · q = that's enough"
+    );
+    process.stdout.write("> ");
+
+    const line = await readLine();
+
+    if (isGrillFinish(line)) {
+      break;
+    }
+
+    answers.push({ question: question.question, answer: resolveRefineAnswer(line, question.options) });
+  }
 
   return applyRefinements(options.description!, answers);
 }

@@ -1,155 +1,197 @@
 import { useKeyboard } from "@opentui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentBackend } from "../engine/backend";
+import type { ReasoningEffort } from "../config/farrier-config";
 import type { SkillCreationRequest } from "../engine/create-skill";
-import { applyRefinements, generateRefineQuestions, type RefineAnswer, type RefineQuestion } from "../engine/refine-skill";
-import { KeyHints, palette, truncateTo, useSpinner } from "./chrome";
-
-export type PendingQuestion = {
-  requestIndex: number;
-  description: string;
-  question: RefineQuestion;
-};
-
-export type PendingAnswer = RefineAnswer & { requestIndex: number };
-
-type RefineScreenProps = {
-  items: PendingQuestion[];
-  backend: string;
-  onDone: (answers: PendingAnswer[]) => void;
-};
+import {
+  applyRefinements,
+  generateNextGrillQuestion,
+  maxGrillQuestions,
+  type RefineAnswer,
+  type RefineQuestion
+} from "../engine/refine-skill";
+import { KeyHints, palette, useSpinner } from "./chrome";
 
 const decideLabel = "Let the creator decide";
 const typeLabel = "Type an answer…";
 
-export function RefineWaitScreen(props: { backend: string; count: number }) {
-  const spinner = useSpinner(true);
-
-  return (
-    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <text fg={palette.accent}>{`${spinner}  Asking ${props.backend} what the brief leaves open for ${props.count} skill(s)…`}</text>
-      <text fg={palette.muted}>One quick read-only call — your answers become explicit implementation decisions for the skill-creator.</text>
-    </box>
-  );
-}
+type GrillState =
+  | { kind: "loading"; questionNumber: number }
+  | { kind: "asking"; questionNumber: number; question: RefineQuestion };
 
 /**
- * Self-contained refine flow for a single request: generate questions (wait
- * screen), ask them, hand back the request with the answers folded into its
- * description. Generation failures or zero questions pass the request through
- * untouched — refinement never blocks creation.
+ * Self-contained grill for a single request: interview the requester one
+ * question at a time (each adapting to the prior answers), then hand back the
+ * request with the answers folded into its description. A null step, a thrown
+ * step, or Esc all finish gracefully with the answers so far — grilling never
+ * blocks creation.
  */
 export function RefineFlow(props: {
   request: SkillCreationRequest;
   backend: AgentBackend;
   targetDir: string;
   packId?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  progressLabel?: string;
   onDone: (refined: SkillCreationRequest) => void;
 }) {
-  const [items, setItems] = useState<PendingQuestion[] | undefined>(undefined);
+  const [state, setState] = useState<GrillState>({ kind: "loading", questionNumber: 1 });
+  const [answers, setAnswers] = useState<RefineAnswer[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const finishedRef = useRef(false);
 
+  function finish(finalAnswers: RefineAnswer[]): void {
+    if (finishedRef.current) {
+      return;
+    }
+
+    finishedRef.current = true;
+    abortRef.current?.abort();
+    props.onDone({ ...props.request, description: applyRefinements(props.request.description, finalAnswers) });
+  }
+
+  // Fetch the next question whenever we enter a loading state. Aborting kills
+  // the in-flight backend subprocess (Esc, or unmount on process exit).
   useEffect(() => {
+    if (state.kind !== "loading") {
+      return;
+    }
+
+    const controller = new AbortController();
+    abortRef.current = controller;
     let cancelled = false;
 
-    generateRefineQuestions({
+    generateNextGrillQuestion({
       description: props.request.description,
       backend: props.backend,
       targetDir: props.targetDir,
-      packId: props.packId
+      packId: props.packId,
+      priorAnswers: answers,
+      questionNumber: state.questionNumber,
+      model: props.model,
+      reasoningEffort: props.reasoningEffort,
+      signal: controller.signal
     })
-      .then((questions) => {
+      .then((question) => {
         if (cancelled) {
           return;
         }
 
-        if (questions.length === 0) {
-          props.onDone(props.request);
+        if (question === null) {
+          finish(answers);
         } else {
-          setItems(questions.map((question) => ({ requestIndex: 0, description: props.request.description, question })));
+          setState({ kind: "asking", questionNumber: state.questionNumber, question });
         }
       })
       .catch(() => {
+        // A malformed or aborted step stops the interview; proceed with the
+        // answers already in hand.
         if (!cancelled) {
-          props.onDone(props.request);
+          finish(answers);
         }
       });
 
     return () => {
       cancelled = true;
     };
+  }, [state, answers]);
+
+  // Aborting an in-flight fetch on unmount must not orphan the subprocess.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
   }, []);
 
-  if (!items) {
-    return <RefineWaitScreen backend={props.backend} count={1} />;
+  // Esc at any point — including while a question is loading — ends the grill.
+  useKeyboard((key) => {
+    if (key.name === "escape") {
+      finish(answers);
+    }
+  });
+
+  function onAnswer(answer: string): void {
+    const next: RefineAnswer[] = [
+      ...answers,
+      { question: state.kind === "asking" ? state.question.question : "", answer }
+    ];
+
+    if (state.questionNumber >= maxGrillQuestions) {
+      finish(next);
+      return;
+    }
+
+    setAnswers(next);
+    setState({ kind: "loading", questionNumber: state.questionNumber + 1 });
+  }
+
+  if (state.kind === "loading") {
+    return <GrillWaitScreen backend={props.backend} questionNumber={state.questionNumber} />;
   }
 
   return (
-    <RefineScreen
-      items={items}
+    <GrillQuestionScreen
+      key={state.questionNumber}
       backend={props.backend}
-      onDone={(answers) => props.onDone({ ...props.request, description: applyRefinements(props.request.description, answers) })}
+      questionNumber={state.questionNumber}
+      question={state.question}
+      progressLabel={props.progressLabel}
+      onAnswer={onAnswer}
     />
+  );
+}
+
+export function GrillWaitScreen(props: { backend: string; questionNumber: number }) {
+  const spinner = useSpinner(true);
+
+  const message =
+    props.questionNumber === 1
+      ? `${spinner}  ${props.backend} is sizing up the brief — first question coming…`
+      : `${spinner}  ${props.backend} is thinking about your answer… (question ${props.questionNumber} of ≤${maxGrillQuestions})`;
+
+  return (
+    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
+      <text fg={palette.accent}>{message}</text>
+      <text fg={palette.muted}>esc that's enough — proceed with what you've answered so far.</text>
+    </box>
   );
 }
 
 /**
  * One question at a time: the backend's concrete options first (its
  * recommendation leads), then an explicit "creator decides" escape hatch and
- * free text. Skipping is always one key — questions must never feel like a
+ * free text. Skipping is always one key — the interview must never feel like a
  * form the user is trapped in.
  */
-export function RefineScreen(props: RefineScreenProps) {
-  const [index, setIndex] = useState(0);
+export function GrillQuestionScreen(props: {
+  backend: string;
+  questionNumber: number;
+  question: RefineQuestion;
+  progressLabel?: string;
+  onAnswer: (answer: string) => void;
+}) {
   const [choice, setChoice] = useState(0);
   const [typing, setTyping] = useState(false);
   const [freeText, setFreeText] = useState("");
-  const [answers, setAnswers] = useState<PendingAnswer[]>([]);
 
-  const item = props.items[index];
-
-  if (!item) {
-    return null;
-  }
-
-  const choices = [...item.question.options, decideLabel, typeLabel];
-
-  function advance(answer: string): void {
-    const next: PendingAnswer[] = [
-      ...answers,
-      { requestIndex: item!.requestIndex, question: item!.question.question, answer }
-    ];
-
-    if (index + 1 >= props.items.length) {
-      props.onDone(next);
-      return;
-    }
-
-    setAnswers(next);
-    setIndex(index + 1);
-    setChoice(0);
-    setTyping(false);
-    setFreeText("");
-  }
-
-  function skipRemaining(): void {
-    props.onDone(answers);
-  }
+  const choices = [...props.question.options, decideLabel, typeLabel];
 
   useKeyboard((key) => {
+    // Esc is owned by RefineFlow (it ends the grill from anywhere).
     if (key.name === "escape") {
-      skipRemaining();
       return;
     }
 
     if (typing) {
       if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-        advance(freeText.trim());
+        props.onAnswer(freeText.trim());
       }
       return;
     }
 
     if (key.name === "s") {
-      advance("");
+      props.onAnswer("");
       return;
     }
 
@@ -171,18 +213,19 @@ export function RefineScreen(props: RefineScreenProps) {
         return;
       }
 
-      advance(selected === decideLabel ? "" : selected);
+      props.onAnswer(selected === decideLabel ? "" : selected);
     }
   });
 
+  const header = `? Grilling the brief — question ${props.questionNumber} of ≤${maxGrillQuestions} (via ${props.backend})${
+    props.progressLabel ? ` · ${props.progressLabel}` : ""
+  }`;
+
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <box style={{ flexDirection: "column", gap: 0 }}>
-        <text fg={palette.accent}>{`? Pinning down the brief — question ${index + 1} of ${props.items.length} (via ${props.backend})`}</text>
-        <text fg={palette.muted}>{truncateTo(item.description, 76)}</text>
-      </box>
+      <text fg={palette.accent}>{header}</text>
 
-      <text fg={palette.text}>{item.question.question}</text>
+      <text fg={palette.text}>{props.question.question}</text>
 
       <box style={{ flexDirection: "column", gap: 0 }}>
         {choices.map((option, optionIndex) => {
@@ -208,7 +251,7 @@ export function RefineScreen(props: RefineScreenProps) {
         />
       ) : null}
 
-      <KeyHints hint="enter pick · ↑↓ move · s skip question · esc skip the rest" />
+      <KeyHints hint="enter pick · ↑↓ move · s skip question · esc that's enough — proceed" />
     </box>
   );
 }

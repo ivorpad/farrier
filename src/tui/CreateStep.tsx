@@ -417,7 +417,7 @@ export function CreateStep(props: CreateStepProps) {
           <span fg={palette.accent}>{zone === "refine" ? "▸ " : "  "}</span>
           <span fg={props.refine ? palette.success : palette.faint}>{props.refine ? "[x] " : "[ ] "}</span>
           <span fg={palette.text}>{`ask clarifying questions first`}</span>
-          <span fg={palette.faint}>{`  ${props.refineBackend} picks libraries/formats with you before authoring`}</span>
+          <span fg={palette.faint}>{`  ${props.refineBackend} interviews you one question at a time before authoring`}</span>
         </text>
       ) : null}
 
