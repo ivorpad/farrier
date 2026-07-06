@@ -79,6 +79,8 @@ Provider shorthands:
 
 For self-hosted GitLab, Bitbucket, or any custom service, use a full URL template with `{name}`. URLs must be `https:` except for loopback test hosts such as `http://127.0.0.1:<port>/{name}.json`.
 
+**Troubleshooting a private repo that "isn't found":** GitHub, GitLab, and Bitbucket all return 404, not 401/403, for unauthenticated access to a private repository or project — they don't confirm it exists. A provider shorthand only sends its default header when the matching token env var is set, so a forgotten or expired `GITHUB_TOKEN`/`GITLAB_TOKEN`/`BITBUCKET_TOKEN` looks exactly like a typo in the ref. Farrier detects this case and appends "If this is a private repository, set `<TOKEN>` and retry" to the not-found error whenever the token was never set in the first place — if you see that hint, the item name is very likely fine and the token is the problem.
+
 ## Index schema
 
 Farrier loads the index by requesting the reserved item name `registry`, so URL templates resolve it as `registry.json`. Item name `registry` is reserved and cannot be published as a pack, hook, or skill.

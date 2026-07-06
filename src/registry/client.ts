@@ -311,6 +311,21 @@ function authMessage(namespace: string, url: string, envVars: string[]): string 
   return `authentication failed for registry ${namespace} at ${hostFor(url)}${suffix}`;
 }
 
+function notFoundMessage(source: RegistrySource, url: string, env: Record<string, string | undefined>): string {
+  const base = `registry ${source.namespace} item not found at ${hostFor(url)}`;
+  const unsetOptionalTokens = source.optionalAuthEnvVars.filter((name) => !env[name]);
+
+  if (unsetOptionalTokens.length === 0) {
+    return base;
+  }
+
+  // GitHub, GitLab, and Bitbucket all return 404 (not 401/403) for unauthenticated
+  // access to a private repo, to avoid confirming it exists. A provider shorthand
+  // sends its token only when the env var is set (see providerHeaders), so a missing
+  // token for a private registry looks identical to a real 404 without this hint.
+  return `${base}. If this is a private repository, set ${unsetOptionalTokens.join(" or ")} and retry.`;
+}
+
 export class RegistryClient {
   private readonly env: Record<string, string | undefined>;
   private readonly fetchImpl: typeof fetch;
@@ -409,7 +424,7 @@ export class RegistryClient {
       }
 
       if (response.status === 404) {
-        throw new RegistryError("not-found", source.namespace, `registry ${source.namespace} item not found at ${hostFor(url)}`);
+        throw new RegistryError("not-found", source.namespace, notFoundMessage(source, url, this.env));
       }
 
       if (!response.ok) {

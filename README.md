@@ -290,6 +290,8 @@ farrier --stack @acme/demo --yes --dir .
 
 Registries are something the owning team builds and hosts — farrier does not search or browse across them; every item is resolved by its exact ref (`@acme/demo`, `@acme/guard`, `@acme/platform-skills`). Fetches are cached to disk with a sha256 pin recorded in `.farrier.json`, so `farrier update` can report drift and still work offline once a registry pack has been rendered. A complete, schema-valid worked example — pack, hook, and skill bundle — is checked into this repo at [`examples/registries/acme/`](examples/registries/acme/); it's also the fixture `tests/cli-e2e.test.ts` drives the real CLI against. Full schema and trust-model docs: [`docs/registries.md`](docs/registries.md).
 
+For a **private** GitHub/GitLab/Bitbucket repo, export the matching token (`GITHUB_TOKEN`, `GITLAB_TOKEN`, or `BITBUCKET_TOKEN`) before running farrier. If you forget, farrier tells you which one: these hosts return a plain 404 for unauthenticated access to a private repo (to avoid confirming it exists), so a missing token surfaces as *"If this is a private repository, set GITHUB_TOKEN and retry"* rather than a generic not-found error.
+
 ---
 
 ## Model configuration
