@@ -9,8 +9,9 @@ You pick a stack (or farrier detects it), and farrier writes a complete, tested 
 - **Hooks that protect** — no reading `.env`, no writing lockfiles, no `pip install` in a uv project (the deny message tells the agent the *right* command instead).
 - **Hooks that verify** — `just check` after every edit, structure linting (konpy for Python, konsistent for TypeScript) before the agent yields.
 - **Skills that teach** — stack-appropriate skills from [skills.sh](https://skills.sh), pinned in a lockfile.
-- **Context that steers** — one `AGENTS.md` source of truth (CLAUDE.md points to it, so Codex and Claude read the same rules).
+- **Context that steers** — one `AGENTS.md` source of truth (`CLAUDE.md` imports it via Claude Code's `@AGENTS.md` syntax, so Codex and Claude read the same rules).
 - **A harness that evolves** — it detects stack drift, repairs itself, and *learns new rules from your session transcripts*.
+- **Enterprise registries** — teams publish private packs, hook payloads, and skill bundles behind namespaced refs (`@acme/demo`); farrier fetches, schema-validates, caches, and pins them exactly like a built-in pack.
 
 Everything is declarative data + tested templates. The LLM never writes hook code; it only proposes data that farrier's tested engine renders.
 
@@ -96,7 +97,7 @@ For `python-fastapi`, 23 files:
 | File | Job |
 |---|---|
 | `AGENTS.md` | Source of truth: commands, hard rules, accepted risks. Read by every agent. |
-| `CLAUDE.md` | One-line pointer to AGENTS.md (keeps Claude + Codex on one ruleset). |
+| `CLAUDE.md` | Imports AGENTS.md via Claude Code's `@AGENTS.md` syntax, so its content actually loads into every session (not just an advisory pointer) — keeps Claude + Codex on one ruleset. |
 | `.claude/settings.json` | Wires the hooks to Claude Code events. |
 | `.claude/hooks/*.py` + `test_*.py` | The six hooks, each with its pytest suite alongside. |
 | `.claude/hooks/tool-policy-rules.json` | **Declarative** wrong-tool rules (this is where `farrier learn` appends). |
@@ -265,6 +266,29 @@ Every generated project carries `.claude/skills/harness-advisor/SKILL.md`, so th
 | `generic` | never auto-detected | Minimal safety harness for any repo; explicit `--stack generic` only |
 
 Detection returns most-specific-first; packs inherit (`python-fastapi extends python-uv`), and adding a stack is a data module in `src/packs/`, not engine code.
+
+---
+
+## Private registries
+
+A team or enterprise can publish its own packs, hook payloads, and skill bundles as static, schema-validated JSON in a private GitHub/GitLab/Bitbucket repo (or any HTTPS endpoint) and reference them by namespaced ref, alongside the built-in stacks:
+
+```jsonc
+// farrier.config.json (project) or ~/.config/farrier/config.json (user)
+{
+  "registries": {
+    "@acme": "github:acme/farrier-registry@main"
+  }
+}
+```
+
+```bash
+farrier registry list --dir .                     # namespaces + item counts, no payloads executed
+farrier --stack @acme/demo --dry-run --dir .       # preview a registry pack before writing anything
+farrier --stack @acme/demo --yes --dir .
+```
+
+Registries are something the owning team builds and hosts — farrier does not search or browse across them; every item is resolved by its exact ref (`@acme/demo`, `@acme/guard`, `@acme/platform-skills`). Fetches are cached to disk with a sha256 pin recorded in `.farrier.json`, so `farrier update` can report drift and still work offline once a registry pack has been rendered. A complete, schema-valid worked example — pack, hook, and skill bundle — is checked into this repo at [`examples/registries/acme/`](examples/registries/acme/); it's also the fixture `tests/cli-e2e.test.ts` drives the real CLI against. Full schema and trust-model docs: [`docs/registries.md`](docs/registries.md).
 
 ---
 
