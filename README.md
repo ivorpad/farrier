@@ -7,7 +7,7 @@ farrier generates an *agents-first harness* for any project: the hooks, rules, s
 You pick a stack (or farrier detects it), and farrier writes a complete, tested harness:
 
 - **Hooks that protect** — no reading `.env`, no writing lockfiles, no `pip install` in a uv project (the deny message tells the agent the *right* command instead).
-- **Hooks that verify** — `just check` after every edit, structure linting (konsistent) before the agent yields.
+- **Hooks that verify** — `just check` after every edit, structure linting (konpy for Python, konsistent for TypeScript) before the agent yields.
 - **Skills that teach** — stack-appropriate skills from [skills.sh](https://skills.sh), pinned in a lockfile.
 - **Context that steers** — one `AGENTS.md` source of truth (CLAUDE.md points to it, so Codex and Claude read the same rules).
 - **A harness that evolves** — it detects stack drift, repairs itself, and *learns new rules from your session transcripts*.
@@ -77,7 +77,7 @@ Open Claude Code in the generated project and try to misbehave:
 ⛔ Lockfiles are owned by their package manager. Use `uv`.
 ```
 
-Meanwhile every edit triggers `just check`, and when the agent tries to end its turn, `just konsistent` verifies the project structure — failures block the stop with actionable feedback, so the agent fixes them before yielding.
+Meanwhile every edit triggers `just check`, and when the agent tries to end its turn, the structure linter (`just konpy` on Python, `just konsistent` on TypeScript) verifies the project structure — failures block the stop with actionable feedback, so the agent fixes them before yielding.
 
 ### How skill search & installs run
 
@@ -102,12 +102,12 @@ For `python-fastapi`, 23 files:
 | `.claude/hooks/tool-policy-rules.json` | **Declarative** wrong-tool rules (this is where `farrier learn` appends). |
 | `.claude/hooks/prompts/*.txt` | Versioned prompts for the LLM judges. |
 | `.claude/skills/harness-advisor/SKILL.md` | Teaches the in-session agent to manage the harness itself. |
-| `justfile` | The stable verbs: `just check` / `test` / `fmt` / `konsistent`. |
-| `konsistent.json` | Structure conventions (v1 grammar) enforced at Stop. |
+| `justfile` | The stable verbs: `just check` / `test` / `fmt` / `konpy` (Python) or `konsistent` (TypeScript). |
+| `konpy.json` / `konsistent.json` | Structure conventions (v1 grammar) enforced at Stop — `konpy.json` on Python, `konsistent.json` on TypeScript. |
 | `.farrier.json` | Manifest: packs, hooks, skills, judge config. **Never edit by hand.** |
 | `.gitignore` | Gains `.env`, `.env.*`, `!.env.example`. |
 
-Rails renders 22 (no konsistent — it's a TS/Python linter), `generic` renders 17.
+Rails renders 22 (no structure linter — konpy/konsistent are TS/Python-only), `generic` renders 17.
 
 ### The six hooks
 
@@ -116,7 +116,7 @@ Rails renders 22 (no konsistent — it's a TS/Python linter), `generic` renders 
 | `secret-shield` | PreToolUse | Denies reading `.env*` / private keys (tracked examples like `.env.example` allowed). |
 | `tool-policy` | PreToolUse | Denies wrong-tool commands per the declarative rules file; every denial names the right tool. |
 | `write-guard` | PreToolUse | Denies writes to lockfiles, `.git/`, `skills-lock.json`, `.farrier.json`. |
-| `verb-runner` | PostToolUse + Stop | Runs `just check` after edits; `just konsistent` at Stop (blocks the stop on failure). |
+| `verb-runner` | PostToolUse + Stop | Runs `just check` after edits; the structure check (`just konpy` / `just konsistent`) at Stop (blocks the stop on failure). |
 | `quality-judge` | PostToolUse | Always: warns when a file exceeds `quality.maxFileLines` (500). Optional: haiku judge for gross cohesion violations. |
 | `stop-judge` | Stop | Optional: sonnet/gpt-5.5 reviews the whole turn's diff; blocks only *serious* findings. |
 
@@ -145,7 +145,7 @@ farrier update --dir . --yes    # repair
 
 Reports: stack drift (e.g. hotwire files appeared in your Rails repo → suggests JS skills), hook version drift, missing/outdated harness files, unacknowledged secondary findings.
 
-Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Files you customize — `AGENTS.md`, `justfile`, `settings.json`, `tool-policy-rules.json`, `konsistent.json` — are *reported* for manual review, never clobbered. It never switches packs and never installs skills without you.
+Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Files you customize — `AGENTS.md`, `justfile`, `settings.json`, `tool-policy-rules.json`, `konpy.json`/`konsistent.json` — are *reported* for manual review, never clobbered. It never switches packs and never installs skills without you.
 
 ### `farrier learn` — the harness improves itself
 
@@ -226,9 +226,9 @@ The wizard has a **Create** step (Stack → Skills → Create → Hooks → Lear
 - **Codex authors, install to both** — same, codex writes the canonical copy.
 - **Each agent authors its own copy** — claude writes `.claude/skills/<name>/`, codex writes `.agents/skills/<name>/`; truest to each vendor, but the copies may diverge and are not lock-tracked.
 
-Vague briefs make dumb skills, so the standalone create flow **asks first**: before authoring, farrier makes one read-only backend call (`claude -p` / `codex exec`) that proposes 2–4 concrete questions about whatever the description leaves open — language, specific libraries, input/output formats — each with recommended options, a "let the creator decide" escape hatch, and free-text input (`s` skips a question, esc skips them all). Your answers are folded into the brief as an "Implementation decisions (follow these exactly)" block before it reaches the skill-creator. Toggle it off with the "ask clarifying questions first" checkbox; the wizard's Create step asks the same questions at queue time. Headless `farrier skill new` asks only with `--refine` (interactive: numbers pick options, free text is used verbatim, empty lets the creator decide) — otherwise put the decisions in the description yourself. If the authored skill's directory already exists, the standalone flow and the forge wizard both pause and ask whether to **replace** it or keep the existing copy (the new one stays in `.farrier-staging/`); headless replaces only with `--force`.
+Vague briefs make dumb skills, so the standalone create flow **asks first**: before authoring, farrier makes one read-only backend call (`claude -p` / `codex exec`) that proposes 2–4 concrete questions about whatever the description leaves open — language, specific libraries, input/output formats — each with recommended options, a "let the creator decide" escape hatch, and free-text input (`s` skips a question, esc skips them all). Your answers are folded into the brief as an "Implementation decisions (follow these exactly)" block before it reaches the skill-creator. Toggle it off with the "ask clarifying questions first" checkbox; the wizard's Create step asks the same questions at queue time. Headless `farrier skill new` asks only with `--refine` (interactive: numbers pick options, free text is used verbatim, empty lets the creator decide) — otherwise put the decisions in the description yourself. If the authored skill's directory already exists, the standalone flow and the harness wizard both pause and ask whether to **replace** it or keep the existing copy (the new one stays in `.farrier-staging/`); headless replaces only with `--force`.
 
-You don't need the full wizard to create a skill: bare `farrier` now opens a launcher — **⚒ Forge the harness** (the full wizard) or **✚ Create a skill** (straight to authoring) — and bare `farrier skill new` (optionally with `--dir`) on a terminal opens the same standalone create flow directly: describe → check agents → ⚒ Create → per-skill results.
+You don't need the full wizard to create a skill: bare `farrier` now opens a launcher — **⚒ Create the harness** (the full wizard) or **✚ Create a skill** (straight to authoring) — and bare `farrier skill new` (optionally with `--dir`) on a terminal opens the same standalone create flow directly: describe → check agents → ⚒ Create → per-skill results.
 
 Queue as many skills as you like (each enter queues another; empty + enter starts). They are authored **in parallel** — up to 3 agent runs at once, each in its own staging root so runs can't cross-contaminate, with lockfile-touching installs serialized — while a progress screen shows each skill's phase (pinning creator → authoring via claude/codex → validating → installing → ✓/✗). Each run is a full agent session, so expect minutes. Headless:
 
@@ -254,14 +254,14 @@ Every generated project carries `.claude/skills/harness-advisor/SKILL.md`, so th
 
 | `--stack` | Detected from | Notes |
 |---|---|---|
-| `python-uv` | `pyproject.toml` | Base Python: uv + ruff + pytest + konsistent |
+| `python-uv` | `pyproject.toml` | Base Python: uv + ruff + pytest + konpy |
 | `python-fastapi` | + `fastapi` dep | Adds layering convention (core ⊬ api) |
 | `python-lambda-powertools` | + `aws-lambda-powertools` dep | "No live AWS calls in tests" rules |
 | `ts-base` | `package.json` + `tsconfig.json` | bun + tsc + upstream konsistent |
 | `ts-react-vite` | + `react` & `vite` deps | |
 | `ts-nextjs` | + `next` dep | |
 | `ts-lambda` | `aws-cdk-lib` dep or `template.yaml`/`samconfig.toml` | |
-| `rails` | `Gemfile` with `rails` | No konsistent; **hotwire secondary detection** suggests JS skills |
+| `rails` | `Gemfile` with `rails` | No structure linter; **hotwire secondary detection** suggests JS skills |
 | `generic` | never auto-detected | Minimal safety harness for any repo; explicit `--stack generic` only |
 
 Detection returns most-specific-first; packs inherit (`python-fastapi extends python-uv`), and adding a stack is a data module in `src/packs/`, not engine code.
@@ -308,4 +308,4 @@ Architecture in one breath: **packs are declarative data** (`src/packs/`), the *
 
 ## Known caveat
 
-Generated Python projects reference konsistent-python as a **local path dependency** (`/Users/ivor/src/tries/2026-07-02-konsistent-python`) while it's being perfected — they only work on this machine for now. Upgrade path: git dependency, then PyPI.
+Generated Python projects reference konpy as a **local path dependency** (`/Users/ivor/src/tries/2026-07-02-konsistent-python`) while it's being perfected — they only work on this machine for now. Upgrade path: git dependency, then PyPI.

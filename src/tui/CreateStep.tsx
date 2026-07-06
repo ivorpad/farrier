@@ -8,7 +8,7 @@ import { evalPolicyLabels, type SkillEvalPolicy } from "./create-eval";
 type CreateStepProps = {
   requests: SkillCreationRequest[];
   availability?: AgentAvailability;
-  /** Standalone create flow (farrier skill new / launcher): own header, forge verb. */
+  /** Standalone create flow (farrier skill new / launcher): own header, harness verb. */
   standalone?: boolean;
   /** When set, renders the "ask clarifying questions first" toggle. */
   refine?: boolean;
@@ -111,7 +111,7 @@ export function CreateStep(props: CreateStepProps) {
       id: "create",
       label: props.standalone
         ? `⚒ Create${total > 0 ? ` ${total} skill${total > 1 ? "s" : ""}` : ""}`
-        : `Next →${total > 0 ? ` (${total} at forge)` : ""}`,
+        : `Next →${total > 0 ? ` (${total} queued)` : ""}`,
       ember: props.standalone && total > 0,
       disabled: props.standalone && total === 0
     },
@@ -173,7 +173,7 @@ export function CreateStep(props: CreateStepProps) {
       : `enter ⚒ creates ${total} skill${total > 1 ? "s" : ""} now${canQueue ? "" : " (queued)"}`
     : total === 0
       ? "Nothing queued — enter continues to Hooks."
-      : `enter continues — ${total} skill${total > 1 ? "s" : ""} will be authored at forge time`;
+      : `enter continues — ${total} skill${total > 1 ? "s" : ""} will be authored when the harness is created`;
 
   useKeyboard((key) => {
     if (key.name === "escape") {
@@ -336,7 +336,7 @@ export function CreateStep(props: CreateStepProps) {
           <text fg={palette.muted}>Each vendor's own skill-creator authors; farrier validates and installs.</text>
         </box>
       ) : (
-        <StepHeader current="Create" subtitle="Forge new skills — each vendor's own skill-creator does the authoring." />
+        <StepHeader current="Create" subtitle="Queue new skills — each vendor's own skill-creator does the authoring." />
       )}
 
       <box style={{ flexDirection: "column", gap: 0 }}>

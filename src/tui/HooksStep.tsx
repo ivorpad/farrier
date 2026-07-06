@@ -42,7 +42,7 @@ const hookDescriptions: Record<HookId, string> = {
   "secret-shield": "blocks reads of .env* and private keys",
   "tool-policy": "redirects banned shell tools to stack-approved ones",
   "write-guard": "blocks direct writes to protected/generated files",
-  "verb-runner": "`just check` + `just konsistent` after edits",
+  "verb-runner": "`just check` after edits; structure check at Stop",
   "quality-judge": "warns on LOC and optional per-edit review",
   "stop-judge": "optional full-diff semantic review before yield"
 };
@@ -89,7 +89,7 @@ function agentSeesLines(hook: PackHookRef, rules: ToolPolicyRule[]): PaneLine[] 
 
     case "verb-runner":
       return [
-        { fg: palette.success, text: "runs `just check` and `just konsistent` after edits" },
+        { fg: palette.success, text: "runs `just check` after edits, structure check at Stop" },
         { fg: palette.muted, text: "failures return to the agent as feedback, not to you as surprises" }
       ];
 

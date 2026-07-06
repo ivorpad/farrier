@@ -1,14 +1,14 @@
-export type ForgeVerb = { gerund: string; past: string };
+export type HarnessVerb = { gerund: string; past: string };
 
 // A Claude-Code-spinner-style rotation for the "writing" phase: half
-// smith/farrier-flavored (the harness is a shoe being forged), half the
-// playful making-something gerunds Claude Code cycles through. "Forging"
-// stays in the mix so the original copy is still one of the possible picks.
+// smith/farrier-flavored (the harness is a shoe being fitted), half the
+// playful making-something gerunds Claude Code cycles through. "Harnessing"
+// leads so the tool's own verb is one of the possible picks.
 // Each `past` is the plain past tense that grammatically closes the sentence
 // "Harness <past>." for its gerund.
-export const forgeVerbs: ForgeVerb[] = [
+export const harnessVerbs: HarnessVerb[] = [
   // Smith / farrier flavored.
-  { gerund: "Forging", past: "forged" },
+  { gerund: "Harnessing", past: "harnessed" },
   { gerund: "Tempering", past: "tempered" },
   { gerund: "Hammering", past: "hammered" },
   { gerund: "Shoeing", past: "shod" },
@@ -61,7 +61,7 @@ export const forgeVerbs: ForgeVerb[] = [
   { gerund: "Spinning", past: "spun" }
 ];
 
-export function pickForgeVerb(rand: () => number = Math.random): ForgeVerb {
-  const index = Math.min(forgeVerbs.length - 1, Math.max(0, Math.floor(rand() * forgeVerbs.length)));
-  return forgeVerbs[index];
+export function pickHarnessVerb(rand: () => number = Math.random): HarnessVerb {
+  const index = Math.min(harnessVerbs.length - 1, Math.max(0, Math.floor(rand() * harnessVerbs.length)));
+  return harnessVerbs[index];
 }

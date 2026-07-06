@@ -61,11 +61,12 @@ export const pythonUvPack: Pack = {
       }
     ]
   },
+  konsistentTool: "konpy",
   verbs: {
     check: "uv run ruff check . && uv run pytest",
     test: "uv run pytest",
     fmt: "uv run ruff format .",
-    konsistent: `uv run --with ${PYTHON_KONSISTENT_PATH} konsistent check`
+    konsistent: `uv run --with ${PYTHON_KONSISTENT_PATH} konpy check`
   },
   agentsRules: [
     "Use `uv` for Python dependency and command execution.",

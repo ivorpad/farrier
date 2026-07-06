@@ -58,7 +58,7 @@ const pythonFastapiFiles = [
   ".claude/hooks/prompts/quality-judge-v1.txt",
   ".claude/hooks/prompts/stop-judge-v1.txt",
   "justfile",
-  "konsistent.json",
+  "konpy.json",
   ".farrier.json",
   ".gitignore"
 ];
@@ -87,6 +87,21 @@ const railsFiles = [
   ".farrier.json",
   ".gitignore"
 ];
+
+function serveRegistryDir(root: string) {
+  return Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const name = new URL(request.url).pathname.replace(/^\//, "");
+      try {
+        const text = await readFile(join(root, name), "utf8");
+        return new Response(text, { headers: { "content-type": "application/json" } });
+      } catch {
+        return new Response("missing", { status: 404 });
+      }
+    }
+  });
+}
 
 describe("CLI e2e", () => {
   test("writes python-fastapi harness into target directory", async () => {
@@ -167,7 +182,7 @@ dependencies = ["fastapi"]
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Dry run: would write 23 files");
     expect(result.stdout).toContain(".claude/skills/harness-advisor/SKILL.md");
-    expect(result.stdout).toContain("konsistent.json");
+    expect(result.stdout).toContain("konpy.json");
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
   });
 
@@ -334,6 +349,57 @@ dependencies = ["fastapi"]
     expect(update.exitCode).toBe(0);
     expect(update.stderr).toBe("");
     expect(update.stdout).toContain("(cached)");
+  });
+
+  test("renders the committed @acme example registry end to end", async () => {
+    const dir = await tempDir();
+    const cacheDir = await tempDir();
+    const server = serveRegistryDir(join(repoRoot(), "examples", "registries", "acme"));
+    const env = { FARRIER_CACHE_DIR: cacheDir };
+
+    try {
+      await writeFile(
+        join(dir, "farrier.config.json"),
+        `${JSON.stringify(
+          {
+            registries: {
+              "@acme": `http://127.0.0.1:${server.port}/{name}.json`
+            }
+          },
+          null,
+          2
+        )}\n`,
+        "utf8"
+      );
+
+      const list = await runCli(["registry", "list", "--dir", dir], { env });
+      expect(list.exitCode).toBe(0);
+      expect(list.stderr).toBe("");
+      expect(list.stdout).toContain("@acme: 3 items");
+
+      const dryRun = await runCli(["--stack", "@acme/demo", "--dry-run", "--dir", dir], { env });
+      expect(dryRun.exitCode).toBe(0);
+      expect(dryRun.stderr).toBe("");
+      expect(dryRun.stdout).toContain(".claude/hooks/secret-shield.py");
+      expect(dryRun.stdout).toContain(".claude/hooks/@acme/guard/guard.py");
+
+      const render = await runCli(["--stack", "@acme/demo", "--yes", "--dir", dir], { env });
+      expect(render.exitCode).toBe(0);
+      expect(render.stderr).toBe("");
+
+      const guardPath = join(dir, ".claude", "hooks", "@acme", "guard", "guard.py");
+      expect(existsSync(guardPath)).toBe(true);
+      expect(await readFile(guardPath, "utf8")).toContain("docker push");
+
+      const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8"));
+      expect(manifest.packIds).toEqual(["python-uv", "python-fastapi", "@acme/demo"]);
+      expect(manifest.hookIds).toContain("@acme/guard");
+      expect(manifest.registry.items["@acme/demo"].type).toBe("pack");
+      expect(manifest.registry.items["@acme/guard"].type).toBe("hook");
+      expect(manifest.registry.items["@acme/platform-skills"].type).toBe("skill");
+    } finally {
+      await server.stop(true);
+    }
   });
 
   test("update fails before writing when a required registry has no cache", async () => {

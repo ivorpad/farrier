@@ -128,6 +128,13 @@ export type Pack = {
   hooks: PackHookRef[];
   toolPolicyRules?: ToolPolicyRule[];
   konsistentTemplate?: KonsistentTemplate;
+  /**
+   * Name of the structure-linting tool the pack scaffolds. Drives the rendered
+   * config filename (`${konsistentTool}.json`), the justfile recipe name, and
+   * the AGENTS.md label. Python packs use "konpy"; TypeScript packs use the npm
+   * "konsistent" package. Defaults to "konsistent" when omitted.
+   */
+  konsistentTool?: string;
   verbs: PackVerbs;
   agentsRules?: string[];
   secondaryDetectors?: SecondaryDetector[];

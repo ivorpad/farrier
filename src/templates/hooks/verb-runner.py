@@ -14,6 +14,9 @@ from typing import Any
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 JUSTFILE_NAMES = ("justfile", "Justfile", ".justfile")
+# Structure-linting recipes farrier scaffolds, in priority order. Python packs
+# ship "konpy"; TypeScript packs ship "konsistent". A project has at most one.
+STRUCTURE_RECIPES = ("konpy", "konsistent")
 
 
 def read_payload() -> dict[str, Any]:
@@ -109,12 +112,12 @@ def emit_posttool_failure(output: str) -> None:
     )
 
 
-def emit_stop_block(output: str) -> None:
+def emit_stop_block(recipe: str, output: str) -> None:
     print(
         json.dumps(
             {
                 "decision": "block",
-                "reason": f"konsistent check failed:\n{output}",
+                "reason": f"{recipe} check failed:\n{output}",
             }
         )
     )
@@ -143,12 +146,13 @@ def main() -> int:
         if payload.get("stop_hook_active") is True:
             return 0
 
-        if not has_just_recipe(cwd, "konsistent"):
+        recipe = next((name for name in STRUCTURE_RECIPES if has_just_recipe(cwd, name)), None)
+        if recipe is None:
             return 0
 
-        ok, output = run_command(["just", "konsistent"], cwd)
+        ok, output = run_command(["just", recipe], cwd)
         if not ok:
-            emit_stop_block(output)
+            emit_stop_block(recipe, output)
         return 0
 
     return 0

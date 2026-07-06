@@ -7,7 +7,7 @@ AGENTS.md is the source of truth for agent behavior in this repository.
 - Check: `uv run ruff check . && uv run pytest`
 - Test: `uv run pytest`
 - Format: `uv run ruff format .`
-- Konsistent: `uv run --with /Users/ivor/src/tries/2026-07-02-konsistent-python konsistent check`
+- Konsistent: `uv run --with /Users/ivor/src/tries/2026-07-02-konsistent-python konpy check`
 
 ## Hard Rules
 
@@ -25,7 +25,7 @@ AGENTS.md is the source of truth for agent behavior in this repository.
 
 ## Accepted Risks
 
-- Python konsistent currently uses a local path dependency:
+- Python konpy currently uses a local path dependency:
 -   `/Users/ivor/src/tries/2026-07-02-konsistent-python`
 - Upgrade path: git dependency, then PyPI package.
 - Until that upgrade, generated Python projects are portable only on machines with that path.

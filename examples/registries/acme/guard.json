@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "type": "hook",
+  "name": "guard",
+  "version": "2026.07.03",
+  "description": "Denies `docker push` to anywhere except the internal registry",
+  "hook": {
+    "hookVersion": 1,
+    "runner": "python3",
+    "entry": "guard.py",
+    "events": [
+      { "event": "PreToolUse", "matcher": "Bash" }
+    ],
+    "files": [
+      {
+        "path": "guard.py",
+        "executable": true,
+        "content": "#!/usr/bin/env python3\n\"\"\"Acme PreToolUse(Bash) hook: keep container pushes on the internal registry.\n\nRegistry hooks are plain files with no farrier-specific runtime. This one\nfollows the same stdin-JSON / stdout-JSON protocol Claude Code uses for\nPreToolUse hooks -- the same protocol farrier's own built-in hook templates\nuse (see src/templates/hooks/secret-shield.py in the farrier repo).\n\"\"\"\n\nimport json\nimport re\nimport sys\n\nDENY_PATTERN = re.compile(r\"(^|[;&|()\\s])docker\\s+push\\b\")\nALLOWED_REGISTRY = \"registry.acme.internal\"\n\n\ndef emit_deny(reason: str) -> None:\n    print(\n        json.dumps(\n            {\n                \"hookSpecificOutput\": {\n                    \"hookEventName\": \"PreToolUse\",\n                    \"permissionDecision\": \"deny\",\n                    \"permissionDecisionReason\": reason,\n                }\n            }\n        )\n    )\n\n\ndef command_from_stdin() -> str:\n    raw = sys.stdin.read()\n    if not raw.strip():\n        return \"\"\n\n    try:\n        payload = json.loads(raw)\n    except json.JSONDecodeError:\n        return \"\"\n\n    tool_input = payload.get(\"tool_input\") if isinstance(payload, dict) else None\n    if isinstance(tool_input, dict):\n        return str(tool_input.get(\"command\", \"\"))\n    return \"\"\n\n\ndef main() -> None:\n    command = command_from_stdin()\n\n    if DENY_PATTERN.search(command) and ALLOWED_REGISTRY not in command:\n        emit_deny(\n            f\"Blocked `docker push` to a non-Acme registry. \"\n            f\"Redirect: push to {ALLOWED_REGISTRY}/<image> instead.\"\n        )\n\n    sys.exit(0)\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    ]
+  }
+}

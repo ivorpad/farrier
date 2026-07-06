@@ -13,7 +13,7 @@ import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../c
 import { builtinCatalog, loadPackCatalog, type PackCatalog } from "../registry/catalog";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
 import { nextEvalPolicy, type SkillEvalPolicy } from "./create-eval";
-import { runForgeWrite } from "./forge";
+import { runHarnessWrite } from "./harness-write";
 import { WizardDone } from "./wizard-done";
 import { createInitialWizardState, wizardReducer, type PackDefaults, type WizardState } from "./machine";
 import { StackStep } from "./StackStep";
@@ -293,7 +293,7 @@ function WizardApp(props: WizardAppProps) {
     const onCollision = createQueuedCollisionHandler({ signal: controller.signal, chainRef: collisionChainRef, setCollision });
 
     try {
-      const result = await runForgeWrite({
+      const result = await runHarnessWrite({
         reviewPlan,
         selectedSkills: state.selectedSkills,
         createRequests: state.createRequests,
@@ -406,6 +406,7 @@ function WizardApp(props: WizardAppProps) {
           targetDir={props.targetDir}
           packId={state.packId}
           verbs={selectedPack.verbs}
+          konsistentTool={selectedPack.konsistentTool}
           ruleCount={ruleCount}
           selectedSkills={state.selectedSkills}
           selectedHooks={state.selectedHooks}
@@ -484,7 +485,7 @@ export async function runWizard(targetDir: string, options?: { context?: string 
 
   try {
     // Default ctrl+c would destroy the renderer and orphan spawned agent
-    // runs mid-forge; WizardApp handles ctrl+c itself.
+    // runs mid-write; WizardApp handles ctrl+c itself.
     renderer = await createCliRenderer({ exitOnCtrlC: false });
     const cliRenderer = renderer;
 

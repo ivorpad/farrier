@@ -2,7 +2,9 @@
 
 Farrier registries let teams publish private harness packs, hook payloads, and skill bundles under namespaced refs such as `@acme/python`. A registry is static JSON served from a private GitHub, GitLab, or Bitbucket repo, or from any HTTPS endpoint.
 
-Registry items are fetched and validated as data. Hook files and generator commands are not executed while fetching or listing; hook files are written only when the user forges the harness.
+Registry items are fetched and validated as data. Hook files and generator commands are not executed while fetching or listing; hook files are written only when the user creates the harness.
+
+A registry is something the team that owns it builds and hosts: they pick which packs to publish, write hook payloads, and choose the exact skills to ship in a bundle. Farrier does not search or browse across registries — items are always referenced by an exact ref (`@acme/demo`). A complete, schema-valid worked example — the same shapes shown below — is checked into this repo at [`examples/registries/acme/`](../examples/registries/acme/); farrier's own test suite serves it over a local HTTP server and drives the CLI against it in `tests/cli-e2e.test.ts`.
 
 ## Configure a registry
 
@@ -122,7 +124,7 @@ Pack ids are derived from the namespace and item name. A pack item named `demo` 
 }
 ```
 
-The `pack` object uses the same JSON-serializable fields as built-in packs: `extends`, `detect`, `generator`, `skills`, `hooks`, `toolPolicyRules`, `konsistentTemplate`, `verbs`, `agentsRules`, and `secondaryDetectors`. `verbs` is required when the pack does not extend another pack.
+The `pack` object uses the same JSON-serializable fields as built-in packs: `extends`, `detect`, `generator`, `skills`, `hooks`, `toolPolicyRules`, `konsistentTemplate`, `konsistentTool`, `verbs`, `agentsRules`, and `secondaryDetectors`. `verbs` is required when the pack does not extend another pack. `konsistentTool` names the structure-linting tool (e.g. `"konpy"` for Python, defaults to `"konsistent"`); it drives the rendered config filename, justfile recipe name, and AGENTS.md label.
 
 Remote `extends` may reference built-in packs or other registry packs, including another namespace. Farrier rejects extends cycles.
 
@@ -216,7 +218,7 @@ Pins are drift detection, not an install lock. `farrier update` compares fresh r
 
 ## Trust model
 
-Configuring a namespace is a trust grant for that namespace. Registry JSON is inert while it is fetched and listed, but registry packs can cause executable hook files to be written at forge time. Remote packs may also define a `generator` command, which Farrier surfaces explicitly in `--dry-run` output and on the TUI Review step.
+Configuring a namespace is a trust grant for that namespace. Registry JSON is inert while it is fetched and listed, but registry packs can cause executable hook files to be written at harness-creation time. Remote packs may also define a `generator` command, which Farrier surfaces explicitly in `--dry-run` output and on the TUI Review step.
 
 Farrier enforces these boundaries:
 

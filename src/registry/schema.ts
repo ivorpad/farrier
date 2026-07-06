@@ -35,6 +35,7 @@ export type RegistryPackPayload = {
   hooks: string[];
   toolPolicyRules?: ToolPolicyRule[];
   konsistentTemplate?: KonsistentTemplate;
+  konsistentTool?: string;
   verbs?: PackVerbs;
   agentsRules?: string[];
   secondaryDetectors?: SecondaryDetector[];
@@ -357,6 +358,7 @@ function validatePackItem(record: Record<string, unknown>, base: Omit<RegistryPa
       hooks: stringArray(record.pack.hooks, "pack.hooks"),
       toolPolicyRules: validateToolPolicyRules(record.pack.toolPolicyRules, "pack.toolPolicyRules"),
       konsistentTemplate: validateKonsistentTemplate(record.pack.konsistentTemplate, "pack.konsistentTemplate"),
+      konsistentTool: optionalStringField(record.pack.konsistentTool, "pack.konsistentTool"),
       verbs,
       agentsRules: stringArray(record.pack.agentsRules, "pack.agentsRules"),
       secondaryDetectors: validateSecondaryDetectors(record.pack.secondaryDetectors, "pack.secondaryDetectors")

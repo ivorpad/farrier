@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "type": "skill",
+  "name": "platform-skills",
+  "version": "2026.07.03",
+  "description": "Skills the Acme platform team selected for this bundle",
+  "skill": {
+    "refs": [
+      "github:acme/skills@deploy-runbook",
+      "github:acme/skills@incident-review"
+    ]
+  }
+}

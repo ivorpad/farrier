@@ -21,7 +21,7 @@ type WizardCreateProps = {
 /**
  * The wizard's Create step with queue-time refinement: each queued skill gets
  * its clarifying questions immediately (while the details are fresh), so the
- * forge later runs unattended on already-pinned briefs.
+ * harness write later runs unattended on already-pinned briefs.
  */
 export function WizardCreate(props: WizardCreateProps) {
   const [refine, setRefine] = useState(true);

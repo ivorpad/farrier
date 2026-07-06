@@ -19,7 +19,7 @@ type WizardDoneProps = {
 };
 
 /**
- * The wizard's Done screen plus the per-agent eval flow: when the forge
+ * The wizard's Done screen plus the per-agent eval flow: when the harness run
  * produced a comparable pair and the user's policy isn't "skip", the eval
  * starts immediately; otherwise (or after "keep both") the summary screen
  * offers it via `e`. All eval screens own their own keys, including ctrl+c.

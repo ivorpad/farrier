@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "type": "pack",
+  "name": "demo",
+  "version": "2026.07.03",
+  "description": "FastAPI service defaults plus Acme house rules",
+  "pack": {
+    "extends": "python-fastapi",
+    "skills": ["@acme/platform-skills"],
+    "hooks": ["@acme/guard"],
+    "generator": {
+      "command": "uv",
+      "args": ["init", "--package", "."],
+      "onlyWhenEmptyDir": true
+    }
+  }
+}
