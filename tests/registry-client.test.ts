@@ -154,6 +154,65 @@ describe("RegistryClient", () => {
     }
   });
 
+  test("404 from a provider shorthand with no token set hints at the private-repo case", async () => {
+    // GitHub (and GitLab/Bitbucket) return 404, not 401/403, for unauthenticated
+    // access to a private repo -- so this is the error an enterprise actually sees
+    // if they forget to export GITHUB_TOKEN, not an auth-classified error.
+    const client = new RegistryClient({
+      cacheDir: await tempDir(),
+      env: {},
+      fetchImpl: (async () => new Response("no", { status: 404 })) as unknown as typeof fetch
+    });
+
+    let error: unknown;
+    try {
+      await client.fetchRegistryIndex("@acme", "github:acme-corp/private-registry");
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(RegistryError);
+    expect((error as RegistryError).kind).toBe("not-found");
+    expect((error as Error).message).toContain("If this is a private repository, set GITHUB_TOKEN");
+  });
+
+  test("404 from an explicit URL with no optional token stays a plain not-found", async () => {
+    const client = new RegistryClient({
+      cacheDir: await tempDir(),
+      env: {},
+      fetchImpl: (async () => new Response("no", { status: 404 })) as unknown as typeof fetch
+    });
+
+    let error: unknown;
+    try {
+      await client.fetchRegistryIndex("@acme", "https://harness.acme.dev/registry/{name}.json");
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(RegistryError);
+    expect((error as RegistryError).kind).toBe("not-found");
+    expect((error as Error).message).not.toContain("private repository");
+  });
+
+  test("404 from a provider shorthand with the token already set stays a plain not-found", async () => {
+    const client = new RegistryClient({
+      cacheDir: await tempDir(),
+      env: { GITHUB_TOKEN: "configured" },
+      fetchImpl: (async () => new Response("no", { status: 404 })) as unknown as typeof fetch
+    });
+
+    let error: unknown;
+    try {
+      await client.fetchRegistryIndex("@acme", "github:acme-corp/private-registry");
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(RegistryError);
+    expect((error as Error).message).not.toContain("private repository");
+  });
+
   test("uses disk cache fallback after the registry becomes unreachable", async () => {
     const cacheDir = await tempDir();
     const server = Bun.serve({
