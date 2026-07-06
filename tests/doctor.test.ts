@@ -302,18 +302,18 @@ describe("doctor engine", () => {
     });
   });
 
-  test("flags malformed konsistent json when expected", async () => {
+  test("flags malformed konpy json when expected", async () => {
     const dir = await tempDir();
     await renderPack(dir);
 
-    await writeFile(join(dir, "konsistent.json"), "{not json", "utf8");
+    await writeFile(join(dir, "konpy.json"), "{not json", "utf8");
 
     const report = await createDoctorReport({ targetDir: dir });
 
     expect(report.healthy).toBe(false);
     expectProblem(report, "konsistent", {
-      path: "konsistent.json",
-      message: expect.stringContaining("Unable to parse konsistent.json")
+      path: "konpy.json",
+      message: expect.stringContaining("Unable to parse konpy.json")
     });
   });
 });

@@ -7,17 +7,17 @@ import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { DetailPane, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
 import { CollisionPromptView, type CollisionPrompt } from "./collision";
 import type { PendingSkillEval } from "./create-eval";
-import { pickForgeVerb } from "./verbs";
+import { pickHarnessVerb } from "./verbs";
 
 type Zone = "content" | "buttons";
 
 // One verb per process so the writing spinner, escape hint, and done line
 // all speak the same word within a run.
-const runVerb = pickForgeVerb();
+const runVerb = pickHarnessVerb();
 
 const reviewButtons: ButtonSpec[] = [
   { id: "back", label: "← Back" },
-  { id: "confirm", label: "⚒ Forge" }
+  { id: "confirm", label: "⚒ Create harness" }
 ];
 
 // The manifest scrolls: at most this many rows render at once so header +
@@ -48,6 +48,7 @@ type ReviewStepProps = {
   targetDir: string;
   packId: string;
   verbs: PackVerbs;
+  konsistentTool?: string;
   ruleCount: number;
   selectedSkills: SkillRef[];
   selectedHooks: PackHookRef[];
@@ -86,6 +87,7 @@ type NoteContext = {
   skillCount: number;
   ruleCount: number;
   verbs: PackVerbs;
+  konsistentTool: string;
 };
 
 /**
@@ -101,13 +103,13 @@ function fileNote(path: string, ctx: NoteContext): string {
   if (base === "CLAUDE.md") return "one line → see AGENTS.md";
   if (base === "settings.json") return `${ctx.hookCount} hooks wired`;
   if (base === "justfile") {
-    const verbs = [ctx.verbs.check ? "check" : null, ctx.verbs.test ? "test" : null, ctx.verbs.fmt ? "fmt" : null, ctx.verbs.konsistent ? "konsistent" : null].filter(Boolean);
+    const verbs = [ctx.verbs.check ? "check" : null, ctx.verbs.test ? "test" : null, ctx.verbs.fmt ? "fmt" : null, ctx.verbs.konsistent ? ctx.konsistentTool : null].filter(Boolean);
     return verbs.join(" · ");
   }
   if (base === "skills-lock.json") return `${ctx.skillCount} skills pinned`;
   if (base === "tool-policy-rules.json") return "deny rules the agent reads";
   if (base === ".farrier.json") return `the plan itself · ${ctx.skillCount} skills pinned`;
-  if (base === "konsistent.json") return "structure conventions";
+  if (base === "konsistent.json" || base === "konpy.json") return "structure conventions";
   if (base === ".gitignore") return "keeps .env* out of git";
   if (base === "SKILL.md") return "harness advisor skill";
   if (base.endsWith(".txt") && path.includes("prompts/")) return "judge prompt (disabled by default)";
@@ -208,7 +210,8 @@ export function ReviewStep(props: ReviewStepProps) {
     hookCount: props.selectedHooks.length,
     skillCount: props.selectedSkills.length,
     ruleCount: props.ruleCount,
-    verbs: props.verbs
+    verbs: props.verbs,
+    konsistentTool: props.konsistentTool ?? "konsistent"
   };
   const clampedIndex = Math.min(focusedFileIndex, Math.max(props.files.length - 1, 0));
   const focusedFile = props.files[clampedIndex];
@@ -259,7 +262,7 @@ export function ReviewStep(props: ReviewStepProps) {
         <box style={{ flexDirection: "column", gap: 0 }}>
           <text>
             <span fg={palette.gold}>{String(props.createRequests.length)}</span>
-            <span fg={palette.muted}>{" skill(s) will be authored at forge time (agent runs — this takes minutes):"}</span>
+            <span fg={palette.muted}>{" skill(s) will be authored when the harness is created (agent runs — this takes minutes):"}</span>
           </text>
           {props.createRequests.map((request, index) => (
             <text key={`${request.description}-${index}`}>
@@ -284,8 +287,8 @@ export function ReviewStep(props: ReviewStepProps) {
       <ButtonBar
         buttons={reviewButtons}
         focusedId={zone === "buttons" ? focusedButtonId : undefined}
-        hint="enter forge it · ↑↓ inspect file · b back · q abandon"
-        emberActions={["forge it"]}
+        hint="enter create harness · ↑↓ inspect file · b back · q abandon"
+        emberActions={["create harness"]}
       />
     </box>
   );

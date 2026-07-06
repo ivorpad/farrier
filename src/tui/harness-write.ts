@@ -11,19 +11,19 @@ import { writeRenderPlan, type RenderPlan } from "../engine/render";
 import type { SkillRef } from "../packs/types";
 import type { ResolvedModelSettings } from "../config/farrier-config";
 
-export type ForgeWriteResult = {
+export type HarnessWriteResult = {
   message: string;
   installResults: InstallSkillResult[];
   createOutcomes: SkillCreationOutcome[];
 };
 
-export type ForgeWriteDeps = {
+export type HarnessWriteDeps = {
   writeRenderPlan?: typeof writeRenderPlan;
   installSkills?: typeof installSkills;
   createSkills?: typeof createSkills;
 };
 
-export async function runForgeWrite(
+export async function runHarnessWrite(
   input: {
     reviewPlan: RenderPlan;
     selectedSkills: SkillRef[];
@@ -33,8 +33,8 @@ export async function runForgeWrite(
     onCollision?: (info: { path: string; stagingPath: string }) => Promise<CollisionDecision>;
     modelSettings?: Partial<Record<CreateAgent, ResolvedModelSettings>>;
   },
-  deps: ForgeWriteDeps = {}
-): Promise<ForgeWriteResult> {
+  deps: HarnessWriteDeps = {}
+): Promise<HarnessWriteResult> {
   const writePlan = deps.writeRenderPlan ?? writeRenderPlan;
   const install = deps.installSkills ?? installSkills;
   const create = deps.createSkills ?? createSkills;

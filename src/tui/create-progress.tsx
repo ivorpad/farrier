@@ -3,10 +3,10 @@ import type { CreateAgent, SkillCreationOutcome, SkillCreationPhase, SkillCreati
 import { palette, truncateTo, useSpinner } from "./chrome";
 import { CollisionPromptView, type CollisionPrompt } from "./collision";
 import type { PendingSkillEval } from "./create-eval";
-import { pickForgeVerb } from "./verbs";
+import { pickHarnessVerb } from "./verbs";
 
 // One verb per process so the authoring spinner and done line match.
-const runVerb = pickForgeVerb();
+const runVerb = pickHarnessVerb();
 
 export type RequestStatus =
   | { kind: "pending" }

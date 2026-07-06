@@ -6,8 +6,8 @@ import type { WizardStep } from "./machine";
  * breadcrumb, a spinner hook, and small formatters. Pure view helpers —
  * nothing here touches the machine.
  *
- * Palette philosophy (the "forge" identity): ember is the single hot hue and
- * is spent only on the current step, focused controls, and the forge verb.
+ * Palette philosophy (the "smithy" identity): ember is the single hot hue and
+ * is spent only on the current step, focused controls, and the harness verb.
  * Gold marks keys, counts, and versions. Green/rust are semantic (pass/deny)
  * and never decorative.
  */
@@ -68,8 +68,8 @@ type StepHeaderProps = {
  * the current one burns ember, done steps cool to muted, upcoming steps stay
  * faint, and a step counter sits at the end so the user always knows how much
  * wizard is left. No brand badge — ember is reserved for the current step, the
- * cursor, and the forge verb; the breadcrumb opens the line directly. Only the
- * six flow steps get a breadcrumb; the forged screen leads with its headline.
+ * cursor, and the harness verb; the breadcrumb opens the line directly. Only the
+ * six flow steps get a breadcrumb; the done screen leads with its headline.
  */
 export function StepHeader(props: StepHeaderProps) {
   const currentIndex = (flowSteps as readonly string[]).indexOf(props.current);
@@ -189,8 +189,8 @@ export function KeyHints(props: { hint: string; emberActions?: string[] }) {
         const spaceIndex = segment.indexOf(" ");
         const key = spaceIndex === -1 ? segment : segment.slice(0, spaceIndex);
         const action = spaceIndex === -1 ? "" : segment.slice(spaceIndex);
-        // The forge verb is the only action that burns ember — palette rule:
-        // ember for the current step, the cursor, and the forge verb only.
+        // The harness verb is the only action that burns ember — palette rule:
+        // ember for the current step, the cursor, and the harness verb only.
         const isEmber = emberActions.includes(action.trim());
 
         return (

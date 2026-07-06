@@ -41,10 +41,16 @@ const pythonFastapiInventory = [
   ".claude/hooks/prompts/quality-judge-v1.txt",
   ".claude/hooks/prompts/stop-judge-v1.txt",
   "justfile",
-  "konsistent.json",
+  "konpy.json",
   ".farrier.json",
   ".gitignore"
 ];
+
+// ts-react-vite renders the same inventory as python-fastapi except the
+// structure-check config is konsistent.json (npm konsistent) instead of konpy.json.
+const tsReactViteInventory = pythonFastapiInventory.map((path) =>
+  path === "konpy.json" ? "konsistent.json" : path
+);
 
 const railsInventory = [
   "AGENTS.md",
@@ -127,13 +133,13 @@ describe("render engine", () => {
     expect(agents).toContain("# Project Agent Instructions");
     expect(agents).toContain("## Commands");
     expect(agents).toContain("## Hard Rules");
-    expect(agents).toContain("- Konsistent: `uv run --with /Users/ivor/src/tries/2026-07-02-konsistent-python konsistent check`");
+    expect(agents).toContain("- Konpy: `uv run --with /Users/ivor/src/tries/2026-07-02-konsistent-python konpy check`");
     expect(agents).toContain("tracked examples such as `.env.example` are allowed");
     expect(agents).toContain("Use `uv` for Python dependency and command execution");
     expect(agents).toContain("Do not use `pip install`, `pip3 install`, or `python -m pip`");
     expect(agents).toContain("Run Python scripts through `uv run python ...`");
     expect(agents).toContain("lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`");
-    expect(agents).toContain("Run `just konsistent` before stopping");
+    expect(agents).toContain("Run `just konpy` before stopping");
     expect(agents).toContain("quality.maxFileLines");
     expect(agents).toContain("LLM semantic judge hooks are present but disabled by default");
     expect(agents).toContain("## Accepted Risks");
@@ -211,7 +217,7 @@ describe("render engine", () => {
       ".claude/hooks/secret-shield.py",
       ".claude/hooks/test_secret_shield.py",
       "justfile",
-      "konsistent.json",
+      "konpy.json",
       ".farrier.json",
       ".gitignore"
     ]);
@@ -467,12 +473,12 @@ describe("render engine", () => {
     expect(manifest.farrierVersion).toBe("0.1.0");
   });
 
-  test("renders real konsistent v1 grammar with templated package name", async () => {
+  test("renders real konpy v1 grammar with templated package name", async () => {
     const dir = join(await tempDir(), "My FastAPI App");
     const pack = resolvePack("python-fastapi");
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
-    const file = plan.files.find((item) => item.path === "konsistent.json");
+    const file = plan.files.find((item) => item.path === "konpy.json");
     expect(file).toBeDefined();
 
     const konsistent = JSON.parse(file!.content);
@@ -494,7 +500,7 @@ describe("render engine", () => {
     const pack = resolvePack("ts-react-vite");
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
-    expect(plan.files.map((file) => file.path)).toEqual(pythonFastapiInventory);
+    expect(plan.files.map((file) => file.path)).toEqual(tsReactViteInventory);
     expect(plan.files).toHaveLength(23);
 
     const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";

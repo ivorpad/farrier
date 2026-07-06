@@ -3,10 +3,10 @@ import { createRoot, useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import { KeyHints, palette } from "./chrome";
 
-export type LaunchChoice = "forge" | "create" | "cancel";
+export type LaunchChoice = "harness" | "create" | "cancel";
 
 const rows: ReadonlyArray<{ choice: LaunchChoice; label: string; detail: string }> = [
-  { choice: "forge", label: "⚒ Forge the harness", detail: "the full wizard: stack, skills, hooks, learn, review" },
+  { choice: "harness", label: "⚒ Create the harness", detail: "the full wizard: stack, skills, hooks, learn, review" },
   { choice: "create", label: "✚ Create a skill", detail: "skip straight to authoring — vendor skill-creators, then install" }
 ];
 
@@ -34,8 +34,8 @@ function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void }) {
       return;
     }
 
-    if (key.name === "f") {
-      props.onChoice("forge");
+    if (key.name === "h") {
+      props.onChoice("harness");
       return;
     }
 
@@ -48,7 +48,7 @@ function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void }) {
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <box style={{ flexDirection: "column", gap: 0 }}>
         <text fg={palette.accent}>{"🐴 farrier"}</text>
-        <text fg={palette.muted}>What are we forging?</text>
+        <text fg={palette.muted}>What are we making?</text>
       </box>
       <box style={{ flexDirection: "column", gap: 0 }}>
         {rows.map((row, rowIndex) => {
@@ -63,7 +63,7 @@ function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void }) {
           );
         })}
       </box>
-      <KeyHints hint="enter choose · f forge · c create · ↑↓ move · q quit" />
+      <KeyHints hint="enter choose · h harness · c create · ↑↓ move · q quit" />
     </box>
   );
 }

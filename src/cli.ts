@@ -609,7 +609,7 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
           return await runCreateWizard(resolve(renderOptions.dir));
         }
 
-        if (choice === "forge") {
+        if (choice === "harness") {
           const { runWizard } = await import("./tui/app");
           return await runWizard(resolve(renderOptions.dir), { context: renderOptions.context });
         }

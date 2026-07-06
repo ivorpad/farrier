@@ -18,7 +18,7 @@ export const pythonLambdaPowertoolsPack: Pack = {
     check: "uv run ruff check . && uv run pytest",
     test: "uv run pytest",
     fmt: "uv run ruff format .",
-    konsistent: `uv run --with ${PYTHON_KONSISTENT_PATH} konsistent check`
+    konsistent: `uv run --with ${PYTHON_KONSISTENT_PATH} konpy check`
   },
   agentsRules: [
     "Do not make live AWS calls in tests.",

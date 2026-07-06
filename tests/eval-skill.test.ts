@@ -10,7 +10,7 @@ import type { SkillCreationOutcome, SkillCreationRequest } from "../src/engine/c
 import type { CommandRunner, CommandRunnerInput } from "../src/engine/skills";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "../src/tui/collision";
 import { eligiblePerAgentEvals } from "../src/tui/create-eval";
-import { runForgeWrite } from "../src/tui/forge";
+import { runHarnessWrite } from "../src/tui/harness-write";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-eval-skill-"));
@@ -499,13 +499,13 @@ describe("per-agent skill eval engine", () => {
     ]);
   });
 
-  test("forge write forwards an onCollision handler into createSkills", async () => {
+  test("harness write forwards an onCollision handler into createSkills", async () => {
     const dir = await tempDir();
     const request: SkillCreationRequest = { description: "x", agents: ["claude"], mode: "author-claude" };
     const decisions: string[] = [];
     const outcome: SkillCreationOutcome = { request, name: "x", files: [], installed: false, notes: [] };
 
-    await runForgeWrite(
+    await runHarnessWrite(
       {
         reviewPlan: { targetDir: dir, files: [] },
         selectedSkills: [],

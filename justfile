@@ -9,4 +9,4 @@ fmt:
 
 konsistent:
   # Temporary local path dependency; upgrade path: git dependency, then PyPI.
-  uv run --with /Users/ivor/src/tries/2026-07-02-konsistent-python konsistent check
+  uv run --with /Users/ivor/src/tries/2026-07-02-konsistent-python konpy check

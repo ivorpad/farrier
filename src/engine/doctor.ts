@@ -703,22 +703,22 @@ async function addToolPolicyProblems(
 
 async function addKonsistentProblems(
   targetDir: string,
-  expectedKonsistent: boolean,
+  configFile: string | undefined,
   problems: DoctorProblem[]
 ): Promise<void> {
-  if (!expectedKonsistent) {
+  if (!configFile) {
     return;
   }
 
-  const path = join(targetDir, "konsistent.json");
+  const path = join(targetDir, configFile);
 
   if (!(await fileExists(path))) {
     problems.push({
       group: "konsistent",
       severity: "error",
-      path: "konsistent.json",
-      message: "Expected konsistent.json is missing",
-      remediation: "Run farrier update --yes to restore konsistent.json."
+      path: configFile,
+      message: `Expected ${configFile} is missing`,
+      remediation: `Run farrier update --yes to restore ${configFile}.`
     });
     return;
   }
@@ -728,9 +728,9 @@ async function addKonsistentProblems(
     problems.push({
       group: "konsistent",
       severity: "error",
-      path: "konsistent.json",
-      message: `Unable to parse konsistent.json: ${parsed.message}`,
-      remediation: "Fix the JSON or restore the generated konsistent.json."
+      path: configFile,
+      message: `Unable to parse ${configFile}: ${parsed.message}`,
+      remediation: `Fix the JSON or restore the generated ${configFile}.`
     });
     return;
   }
@@ -739,9 +739,9 @@ async function addKonsistentProblems(
     problems.push({
       group: "konsistent",
       severity: "error",
-      path: "konsistent.json",
-      message: "konsistent.json root must be an object",
-      remediation: "Restore the generated Konsistent v1 shape."
+      path: configFile,
+      message: `${configFile} root must be an object`,
+      remediation: "Restore the generated structure-check v1 shape."
     });
     return;
   }
@@ -750,9 +750,9 @@ async function addKonsistentProblems(
     problems.push({
       group: "konsistent",
       severity: "error",
-      path: "konsistent.json",
-      message: 'konsistent.json version must be "v1"',
-      remediation: "Restore the generated Konsistent v1 shape."
+      path: configFile,
+      message: `${configFile} version must be "v1"`,
+      remediation: "Restore the generated structure-check v1 shape."
     });
   }
 
@@ -760,9 +760,9 @@ async function addKonsistentProblems(
     problems.push({
       group: "konsistent",
       severity: "error",
-      path: "konsistent.json",
-      message: "konsistent.json conventions must be an array",
-      remediation: "Restore the generated Konsistent v1 shape."
+      path: configFile,
+      message: `${configFile} conventions must be an array`,
+      remediation: "Restore the generated structure-check v1 shape."
     });
   }
 }
@@ -838,9 +838,10 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
   );
 
   await addToolPolicyProblems(targetDir, manifest.hookIds.includes("tool-policy"), problems);
+  const konsistentConfigFile = `${basePack.konsistentTool ?? "konsistent"}.json`;
   await addKonsistentProblems(
     targetDir,
-    expectedPlan.files.some((file) => file.path === "konsistent.json"),
+    expectedPlan.files.some((file) => file.path === konsistentConfigFile) ? konsistentConfigFile : undefined,
     problems
   );
 

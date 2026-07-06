@@ -111,6 +111,31 @@ konsistent:
     assert "drift found" in data["reason"]
 
 
+def test_stop_runs_konpy_and_blocks_on_failure(tmp_path: Path) -> None:
+    write_justfile(
+        tmp_path,
+        """check:
+  echo check
+
+konpy:
+  echo konpy
+""",
+    )
+
+    code, stdout, stderr = run_hook(
+        stop_payload(tmp_path),
+        tmp_path,
+        'test "$1" = "konpy" || exit 7\necho "drift found"\nexit 1',
+    )
+
+    assert code == 0
+    assert stderr == ""
+    data = json.loads(stdout)
+    assert data["decision"] == "block"
+    assert "konpy check failed" in data["reason"]
+    assert "drift found" in data["reason"]
+
+
 def test_stop_is_silent_when_konsistent_recipe_is_missing(tmp_path: Path) -> None:
     write_justfile(
         tmp_path,

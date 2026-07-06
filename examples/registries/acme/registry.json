@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "name": "@acme",
+  "description": "Acme internal Farrier harnesses — worked example, also used by farrier's own test suite",
+  "items": [
+    {
+      "name": "demo",
+      "type": "pack",
+      "description": "FastAPI service defaults plus Acme house rules",
+      "version": "2026.07.03"
+    },
+    {
+      "name": "guard",
+      "type": "hook",
+      "description": "Keeps container pushes on the internal registry",
+      "version": "2026.07.03"
+    },
+    {
+      "name": "platform-skills",
+      "type": "skill",
+      "description": "Skills the Acme platform team selected for this bundle",
+      "version": "2026.07.03"
+    }
+  ]
+}

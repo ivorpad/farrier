@@ -158,6 +158,19 @@ function renderKonsistent(template: KonsistentTemplate, targetDir: string): stri
   return `${JSON.stringify(rendered, null, 2)}\n`;
 }
 
+/**
+ * The structure-linting tool a pack scaffolds. Python packs use "konpy"; TS
+ * packs use the npm "konsistent" package. Drives the config filename, justfile
+ * recipe name, and AGENTS.md label so the generated harness speaks one name.
+ */
+function konsistentToolName(pack: ResolvedPack): string {
+  return pack.konsistentTool ?? "konsistent";
+}
+
+function capitalize(value: string): string {
+  return value.length === 0 ? value : `${value[0].toUpperCase()}${value.slice(1)}`;
+}
+
 function bulletList(values: string[]): string {
   return values.map((value) => `- ${value}`).join("\n");
 }
@@ -172,7 +185,7 @@ export function agentsHardRules(pack: ResolvedPack): string[] {
     ...pack.agentsRules,
     "Do not directly edit protected generated/owned files: lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`.",
     "Run `just check` after edits.",
-    ...(pack.verbs.konsistent ? ["Run `just konsistent` before stopping."] : []),
+    ...(pack.verbs.konsistent ? [`Run \`just ${konsistentToolName(pack)}\` before stopping.`] : []),
     "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
     "Keep generated hook scripts and their tests together.",
     "LLM semantic judge hooks are present but disabled by default in `.farrier.json`; deterministic checks still run where configured.",
@@ -188,14 +201,14 @@ function renderAgentsMd(pack: ResolvedPack): string {
   ];
 
   if (pack.verbs.konsistent) {
-    commandLines.push(`- Konsistent: \`${pack.verbs.konsistent}\``);
+    commandLines.push(`- ${capitalize(konsistentToolName(pack))}: \`${pack.verbs.konsistent}\``);
   }
 
   const hardRules = agentsHardRules(pack);
 
   const acceptedRisks = pack.packIds.includes("python-uv") && pack.verbs.konsistent
     ? [
-        "Python konsistent currently uses a local path dependency:",
+        `Python ${konsistentToolName(pack)} currently uses a local path dependency:`,
         `  \`${PYTHON_KONSISTENT_PATH}\``,
         "Upgrade path: git dependency, then PyPI package.",
         "Until that upgrade, generated Python projects are portable only on machines with that path."
@@ -222,7 +235,11 @@ ${acceptedRisksSection}`;
 }
 
 function renderClaudeMd(): string {
-  return "See AGENTS.md for the source-of-truth agent instructions.\n";
+  // `@AGENTS.md` is Claude Code's documented import syntax -- it loads AGENTS.md's
+  // full content into context every session, the same way Codex reads AGENTS.md
+  // directly. A plain pointer sentence here would only be advisory: Claude would
+  // have to decide to go read the file, not load it automatically.
+  return "<!-- Source of truth is AGENTS.md; this import keeps Claude Code and Codex reading the same instructions. -->\n@AGENTS.md\n";
 }
 
 function commandHook(command: string): ClaudeCommandHook {
@@ -354,7 +371,7 @@ function renderJustfile(pack: ResolvedPack): string {
       ? "  # Temporary local path dependency; upgrade path: git dependency, then PyPI.\n"
       : "";
 
-    recipes.push(`konsistent:
+    recipes.push(`${konsistentToolName(pack)}:
 ${comment}  ${pack.verbs.konsistent}`);
   }
 
@@ -596,7 +613,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
 
   if (options.pack.konsistentTemplate) {
     files.push({
-      path: "konsistent.json",
+      path: `${konsistentToolName(options.pack)}.json`,
       content: renderKonsistent(options.pack.konsistentTemplate, options.targetDir)
     });
   }
