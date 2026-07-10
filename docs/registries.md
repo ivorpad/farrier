@@ -2,7 +2,7 @@
 
 Farrier registries let teams publish private harness packs, hook payloads, and skill bundles under namespaced refs such as `@acme/python`. A registry is static JSON served from a private GitHub, GitLab, or Bitbucket repo, or from any HTTPS endpoint.
 
-Registry items are fetched and validated as data. Hook files and generator commands are not executed while fetching or listing; hook files are written only when the user creates the harness.
+Registry items are fetched and validated as data. Hook files are written only through an accepted harness-creation plan. Declared generator commands are metadata: Farrier reports them during creation but does not execute them while fetching, listing, previewing, or applying a harness.
 
 A registry is something the team that owns it builds and hosts: they pick which packs to publish, write hook payloads, and choose the exact skills to ship in a bundle. Farrier does not search or browse across registries — items are always referenced by an exact ref (`@acme/demo`). A complete, schema-valid worked example — the same shapes shown below — is checked into this repo at [`examples/registries/acme/`](../examples/registries/acme/); farrier's own test suite serves it over a local HTTP server and drives the CLI against it in `tests/cli-e2e.test.ts`.
 
@@ -67,6 +67,8 @@ farrier --stack @acme/demo --dry-run --dir .
 farrier --stack @acme/demo --yes --dir .
 ```
 
+The dry run identifies the explicitly selected pack, shows any detected stacks and their matched evidence, explains the harness behavior contributed by the resolved registry lineage, and classifies every file action. `--yes` applies only a clean plan. Review differing existing files first and use `--yes --force` only when replacement is intended; originals are copied to `.farrier-staging/backups/<timestamp>/`. Staged atomic commits revalidate the target and parents, and rollback preserves concurrent edits rather than overwriting them. Unsafe path blockers cannot be forced. If the target already contains `.farrier.json`, use `farrier update --dir .` instead of creation.
+
 The GitHub shorthand fetches `https://raw.githubusercontent.com/acme/farrier-registry/main/{name}.json`. Farrier adds `Authorization: Bearer ${GITHUB_TOKEN}` only when `GITHUB_TOKEN` is set and the config entry does not define explicit headers.
 
 Provider shorthands:
@@ -126,7 +128,7 @@ Pack ids are derived from the namespace and item name. A pack item named `demo` 
 }
 ```
 
-The `pack` object uses the same JSON-serializable fields as built-in packs: `extends`, `detect`, `generator`, `skills`, `hooks`, `toolPolicyRules`, `konsistentTemplate`, `konsistentTool`, `verbs`, `agentsRules`, and `secondaryDetectors`. `verbs` is required when the pack does not extend another pack. `konsistentTool` names the structure-linting tool (e.g. `"konpy"` for Python, defaults to `"konsistent"`); it drives the rendered config filename, justfile recipe name, and AGENTS.md label.
+The `pack` object uses the same JSON-serializable fields as built-in packs: `extends`, `detect`, `generator`, `skills`, `hooks`, `toolPolicyRules`, `konsistentTemplate`, `konsistentTool`, `verbs`, `agentsRules`, and `secondaryDetectors`. `verbs` is required when the pack does not extend another pack. `konsistentTool` names the structure-linting tool (e.g. `"konpy"` for Python, defaults to `"konsistent"`); it drives the rendered config filename, justfile recipe name, and AGENTS.md label. `generator` documents the native scaffolding command associated with the pack. The creation plan surfaces its command and source as `declared-not-run`; Farrier never executes it, so users and automation retain control over project-code generation.
 
 Remote `extends` may reference built-in packs or other registry packs, including another namespace. Farrier rejects extends cycles.
 
@@ -161,7 +163,7 @@ Hook items carry full file payloads. Farrier writes them under `.claude/hooks/@<
 
 `runner` defaults to `python3` and may be `python3`, `bash`, or `bun`. `entry` must match one file path. File paths must be relative and cannot contain `..`, start with `/`, or start with `\`. The entry file is always rendered executable; other files follow their `executable` flag.
 
-The TUI Review step labels registry hook files with `registry hook — review contents before forging`. CLI `--dry-run` lists the same paths before anything is written.
+The TUI Review step identifies registry hooks as executable files supplied by the configured registry and previews their opening content. CLI `--dry-run` shows the same path, its purpose, and whether it will be created, left unchanged, safely merged, replaced after force, or blocked before anything is written. Full payload/diff review is still a trust-model follow-up; the current CLI plan does not print entire executable files.
 
 ## Skill item schema
 
@@ -183,7 +185,7 @@ Skill items are bundles of existing skill refs. They do not embed `SKILL.md` con
 }
 ```
 
-When a pack includes `@acme/platform-skills` in its `skills`, Farrier expands the bundle to its `refs`. Installation still uses the existing `skills` CLI and `skills-lock.json` flow.
+When a pack includes `@acme/platform-skills` in its `skills`, Farrier expands the bundle to its `refs`. Headless creation installs those selected refs for Claude Code and Codex by default using the existing `skills` CLI and `skills-lock.json` flow. If some installs fail after the harness files are applied, creation exits nonzero and prints an exact retry command for each failed ref. `--no-skills` is the explicit offline opt-out: refs remain recorded, but installation and lockfile changes are skipped. Both preview and apply support `--json`.
 
 ## Cache and pins
 
@@ -220,7 +222,7 @@ Pins are drift detection, not an install lock. `farrier update` compares fresh r
 
 ## Trust model
 
-Configuring a namespace is a trust grant for that namespace. Registry JSON is inert while it is fetched and listed, but registry packs can cause executable hook files to be written at harness-creation time. Remote packs may also define a `generator` command, which Farrier surfaces explicitly in `--dry-run` output and on the TUI Review step.
+Configuring a namespace is a trust grant for that namespace. Registry JSON is inert while it is fetched and listed, but registry packs can cause executable hook files to be written through an accepted harness-creation plan. Remote packs may also define a `generator` command, which Farrier surfaces explicitly in `--dry-run` output and on the TUI Review step but does not execute.
 
 Farrier enforces these boundaries:
 
@@ -228,11 +230,15 @@ Farrier enforces these boundaries:
 - Header values are never logged or stored in manifests.
 - Remote items cannot claim built-in ids.
 - Hook file paths cannot escape their namespaced hook directory.
-- Hook payloads are visible before writing in both CLI dry-run and TUI Review.
+- Hook payload paths, purposes, and actions are visible before writing; the TUI also previews opening content. Full executable payload/diff review remains a V1 limitation.
+- Existing differing files require reviewed `--force` replacement and receive recoverable backups; path blockers remain unforceable.
+- Existing Farrier manifests route to `farrier update` rather than being reset by creation.
 - Existing all-built-in `.farrier.json` manifests stay version 1 and parse unchanged.
 
 V1 exclusions:
 
 - Skill items cannot embed skill contents.
 - Registry pins are not enforced by the skills install lock.
+- Pack generator commands are declared and reported, not executed by harness creation.
+- CLI dry-run does not yet print full registry hook payloads or diffs.
 - Provider shorthands target public hosted GitHub, GitLab, and Bitbucket only; self-hosted services use full URL templates.

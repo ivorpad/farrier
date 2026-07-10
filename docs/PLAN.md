@@ -6,10 +6,10 @@ Every new project (Python, TypeScript, Rails…) needs the same agents-first har
 
 ## Decisions (user interview, all locked)
 
-1. **Harness-first; delegate scaffolding.** Native generators (`uv init`, `create-vite`, `create-next-app`, `rails new`, SAM/CDK) create project code; farrier owns only harness artifacts. Works on new AND existing repos (detect stack → layer harness).
+1. **Harness-first; delegate scaffolding.** Native generators (`uv init`, `create-vite`, `create-next-app`, `rails new`, SAM/CDK) create project code; farrier owns only harness artifacts. A pack may declare its native generator so Farrier can report the command and source, but harness creation never executes it. Works on new AND existing repos (detect stack → layer harness).
 2. **Output = checked-in, agent-agnostic files.** AGENTS.md is the single source of truth (CLAUDE.md is a pointer/symlink); `.agents/` shared assets; `.claude/settings.json` + hooks; `.codex/` config. No plugin layer. Hooks are a Claude-only mechanism → same policies land in AGENTS.md rules + CI/just checks for Codex.
 3. **Deterministic core + LLM advisor.** Hooks/settings ship as tested templates in farrier. `claude -p` / `codex exec` (pluggable backend) produces **data only** (skill recommendations, draft konsistent conventions, AGENTS.md content, secondary-stack detection) — never executable hook code at harness-creation time. Shipped hooks MAY call an LLM at runtime as a judge (see hook catalog).
-4. **CLI surface: context-aware wizard + headless flags.** Bare `farrier` → TUI wizard (empty dir → full flow; existing repo → detect, skip to skills/hooks). Every step has a flag (`--stack`, `--skills`, `--hooks`, `--yes`) for agents/CI. Subcommands: `farrier` (wizard), `farrier update`, `farrier learn`, `farrier doctor` (doctor = validate harness: hooks executable, lockfile hashes match, konsistent passes).
+4. **CLI surface: context-aware wizard + headless plan/apply.** Bare `farrier` → TUI wizard. Headless creation supports explicit or detected stacks, `--dry-run`, `--yes`, reviewed `--force`, offline `--no-skills`, and `--json`. Preview and apply share one creation-plan model: detected evidence and assumptions, harness behavior, and per-file actions. This is intentionally not called a work contract: goal, definition-of-done, evidence, delegation, and autonomy remain future `HarnessSpec` work. Subcommands: `farrier` (wizard), `farrier update`, `farrier learn`, `farrier doctor` (doctor performs static harness-shape checks; runtime commands, prerequisites, and skill-lock readiness remain separate work).
 5. **V1 stacks (broad, data-driven):** Python/uv → FastAPI, Lambda+Powertools; TypeScript → React (Vite), Next.js, Lambda (SAM/CDK); Rails (+hotwire secondary detection). Packs are declarative — adding one is data, not code — plus a **generic fallback pack** (LLM advisor suggests skills for unrecognized stacks).
 6. **Hook catalog v1** (all selected): secret shield (block reading `.env*`/keys), verb runner (`just check` on PostToolUse(Edit|Write), `konsistent run` on Stop), tool policy (wrong-tool bans with redirect messages: npx→pnpm dlx, pip→uv), protected-file write guard (lockfiles, .git, skills-lock.json), **semantic quality** (max LOC per file, cohesion/"no business logic dumped in unrelated modules", language best practices).
 7. **Semantic judge: tiered.** Cheap fast model (haiku) per-edit for gross violations; full judge (sonnet or gpt-5.5, pluggable via `claude -p`/`codex exec`) at Stop reviewing the whole turn's diff; blocks with actionable feedback when serious.
@@ -45,7 +45,7 @@ farrier/
 │   │   ├── SkillsStep.tsx  # live-search input → skills.sh/api/search + pack-recommended preselection
 │   │   ├── HooksStep.tsx   # catalog multi-select, judge model pickers
 │   │   ├── LearnStep.tsx   # end-of-wizard: enable self-learning loop toggle
-│   │   └── ReviewStep.tsx  # dry-run diff of files to be written
+│   │   └── ReviewStep.tsx  # creation plan: purpose + create/merge/unchanged/replace/blocked actions
 │   ├── packs/              # DECLARATIVE stack packs (one .ts data module each)
 │   │   ├── types.ts        # Pack = {id, detect: globs/files, generator: cmd, skills: skillRefs[], hooks: hookIds[], konsistent: template, verbs: {check, test, fmt}}
 │   │   ├── python-uv.ts, python-fastapi.ts, python-lambda-powertools.ts
@@ -53,7 +53,8 @@ farrier/
 │   │   ├── rails.ts        # + hotwire secondary detector
 │   │   └── generic.ts      # fallback: LLM-advisor-driven skill suggestions
 │   ├── engine/
-│   │   ├── detect.ts       # stack detection over existing repos (pyproject/package.json/Gemfile + secondary globs)
+│   │   ├── detect.ts       # ordered stack detection + truthful matched-signal evidence
+│   │   ├── create-plan.ts  # inspect actions/blockers, require reviewed force, backup + rollback writes
 │   │   ├── render.ts       # template rendering → AGENTS.md, CLAUDE.md pointer, .claude/settings.json, .codex/, .agents/, justfile, konsistent.json
 │   │   ├── skills.ts       # skills.sh API client + `skills` CLI shell-out
 │   │   ├── advisor.ts      # LLM backend abstraction: claude -p | codex exec; JSON-schema'd outputs only
@@ -78,14 +79,15 @@ konsistent.json              # from pack template, LLM-draft-refined for existin
 skills-lock.json             # owned by `skills` CLI
 justfile                     # check/test/fmt verbs bound to stack tools
 .farrier.json                # manifest: pack ids, hook ids + versions, judge config → enables `update`/`learn`/`doctor` diffing
+.farrier-staging/backups/    # recoverable originals from explicitly forced creation replacements; gitignored
 ```
 
-**Flow (wizard = headless, same pipeline):** detect context → pick pack (+sub-flavor) → run native generator (new dirs only) → skills step (recommended preselected + live search) → hooks step (catalog + judge tiers) → learn toggle → review dry-run diff → write files → `skills add` → `git init` if needed → print next steps.
+**Creation flow (wizard and headless share the same plan):** detect context with matched evidence → select a pack and state assumptions → explain the resulting harness behavior → classify every file as create/unchanged/safe merge/metadata update/replace/blocked → preview without mutation → apply a clean plan with `--yes`, or reviewed replacements with `--yes --force` and backups → atomically commit staged files after path revalidation, with conflict-aware rollback → install selected skills for Claude Code and Codex unless `--no-skills` was chosen → report retry commands and a partial-failure status when installation fails → recommend `farrier doctor`. Path blockers cannot be forced. An existing `.farrier.json` routes to `farrier update`; declared project generators are reported but never run.
 
 ## Milestones
 
-- **M1 — engine skeleton + one golden path:** packs/types, python-uv+fastapi pack, render engine, headless `farrier --stack python-fastapi --yes` producing the full harness in a temp dir. Hook templates: secret shield + verb runner (with tests).
-- **M2 — TUI wizard** (opentui react): all steps over the M1 engine; skills live search against skills.sh API; dry-run review screen.
+- **M1 — engine skeleton + one golden path:** packs/types, python-uv+fastapi pack, render engine, safe creation-plan inspection/application, and headless `farrier --stack python-fastapi --yes` producing the full harness and installing selected pack skills in a temp dir. Hook templates: secret shield + verb runner (with tests).
+- **M2 — TUI wizard** (opentui react): all steps over the M1 engine; skills live search against skills.sh API; Review consumes the same per-file creation plan as headless dry-run.
 - **M3 — full hook catalog:** tool policy, write guard, semantic quality (deterministic LOC + tiered LLM judge via advisor.ts). Judge prompts as versioned templates.
 - **M4 — remaining packs:** ts-react-vite, nextjs, lambda (py-powertools, ts), rails+hotwire secondary detection, generic fallback.
 - **M5 — existing-repo mode + `farrier update` + harness-advisor skill** (shared drift-detection engine).
@@ -94,6 +96,7 @@ justfile                     # check/test/fmt verbs bound to stack tools
 ## Verification
 
 - `bun test` for engine (pack detection fixtures: sample pyproject/package.json/Gemfile trees); `uv run pytest` for hook templates.
-- E2E golden-path: run `farrier --stack python-fastapi --yes` into a scratchpad dir; assert file inventory; then launch `claude -p` in the generated project and verify (a) reading `.env` is blocked, (b) `just check` runs, (c) konsistent Stop hook fires.
+- E2E golden-path: preview and apply `farrier --stack python-fastapi` into a scratchpad dir; assert evidence, harness behavior, file actions, rendered inventory, and default skill installs; then launch `claude -p` in the generated project and verify (a) reading `.env` is blocked, (b) `just check` runs, (c) konsistent Stop hook fires.
+- Creation safety E2E: differing files refuse `--yes`, reviewed `--force` creates recoverable backups, blockers remain unforceable, existing manifests route to update, JSON mirrors the human plan, and partial skill failures exit nonzero with retry commands.
 - TUI: drive with the run skill / expect-style script for the wizard happy path.
 - Dogfood: farrier's own repo gets a farrier-generated harness (self-hosting, like konsistent dogfooding itself).

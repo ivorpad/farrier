@@ -17,6 +17,11 @@ type ProjectSignals = {
   gemfileText?: string;
 };
 
+export type DetectedPackEvidence = {
+  packId: string;
+  evidence: string[];
+};
+
 type DetectRequirements = {
   files: Set<string>;
   globs: Set<string>;
@@ -25,18 +30,10 @@ type DetectRequirements = {
   needsGemfile: boolean;
 };
 
-const autoDetectOrder = [
-  "python-lambda-powertools",
-  "python-fastapi",
-  "python-uv",
-  "ts-nextjs",
-  "ts-react-vite",
-  "ts-lambda",
-  "ts-base",
-  "rails"
-];
+const autoDetectOrder = ["python-lambda-powertools", "python-fastapi", "python-uv", "ts-nextjs", "ts-react-vite", "ts-lambda", "ts-base", "rails"];
 
 const ignoredWalkDirectories = new Set([".git", ".venv", "node_modules", "vendor"]);
+const maxGlobEvidencePaths = 20;
 
 function normalizeRelativePath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
@@ -64,11 +61,7 @@ function addRequirements(requirements: DetectRequirements, detect: PackDetect): 
     requirements.files.add("pyproject.toml");
   }
 
-  if (
-    (detect.packageJsonDependencies ?? []).length > 0 ||
-    (detect.packageJsonDevDependencies ?? []).length > 0 ||
-    (detect.packageJsonAnyDependencies ?? []).length > 0
-  ) {
+  if ((detect.packageJsonDependencies ?? []).length > 0 || (detect.packageJsonDevDependencies ?? []).length > 0 || (detect.packageJsonAnyDependencies ?? []).length > 0) {
     requirements.needsPackageJson = true;
     requirements.files.add("package.json");
   }
@@ -89,7 +82,7 @@ function collectRequirements(detects: PackDetect[]): DetectRequirements {
     globs: new Set(),
     needsPyproject: false,
     needsPackageJson: false,
-    needsGemfile: false
+    needsGemfile: false,
   };
 
   for (const detect of detects) {
@@ -134,7 +127,7 @@ function parsePackageJson(text: string | undefined): PackageJsonSignals | undefi
 
     return {
       dependencies: dependencySet(parsed.dependencies),
-      devDependencies: dependencySet(parsed.devDependencies)
+      devDependencies: dependencySet(parsed.devDependencies),
     };
   } catch {
     return undefined;
@@ -183,16 +176,10 @@ async function scanProject(dir: string, detects: PackDetect[]): Promise<ProjectS
   }
 
   const [pyprojectText, packageJsonText, gemfileText, allRelativeFiles] = await Promise.all([
-    requirements.needsPyproject || requirements.files.has("pyproject.toml")
-      ? readOptionalText(join(dir, "pyproject.toml"))
-      : Promise.resolve(undefined),
-    requirements.needsPackageJson || requirements.files.has("package.json")
-      ? readOptionalText(join(dir, "package.json"))
-      : Promise.resolve(undefined),
-    requirements.needsGemfile || requirements.files.has("Gemfile")
-      ? readOptionalText(join(dir, "Gemfile"))
-      : Promise.resolve(undefined),
-    requirements.globs.size > 0 ? walkProject(dir) : Promise.resolve([])
+    requirements.needsPyproject || requirements.files.has("pyproject.toml") ? readOptionalText(join(dir, "pyproject.toml")) : Promise.resolve(undefined),
+    requirements.needsPackageJson || requirements.files.has("package.json") ? readOptionalText(join(dir, "package.json")) : Promise.resolve(undefined),
+    requirements.needsGemfile || requirements.files.has("Gemfile") ? readOptionalText(join(dir, "Gemfile")) : Promise.resolve(undefined),
+    requirements.globs.size > 0 ? walkProject(dir) : Promise.resolve([]),
   ]);
 
   return {
@@ -200,7 +187,7 @@ async function scanProject(dir: string, detects: PackDetect[]): Promise<ProjectS
     allRelativeFiles,
     pyprojectText,
     packageJson: parsePackageJson(packageJsonText),
-    gemfileText
+    gemfileText,
   };
 }
 
@@ -210,10 +197,7 @@ function containsPyprojectDependency(pyprojectText: string | undefined, dependen
   }
 
   const escaped = escapeRegExp(dependency);
-  const pattern = new RegExp(
-    `(^|["'\\s,\\[])(?:${escaped})(?:\\[[A-Za-z0-9_,.-]+\\])?(?=\\s*(?:[<>=!~]=|=|;)|["'\\s,\\]])`,
-    "im"
-  );
+  const pattern = new RegExp(`(^|["'\\s,\\[])(?:${escaped})(?:\\[[A-Za-z0-9_,.-]+\\])?(?=\\s*(?:[<>=!~]=|=|;)|["'\\s,\\]])`, "im");
 
   return pattern.test(pyprojectText);
 }
@@ -281,88 +265,137 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${pattern}$`);
 }
 
-function matchesGlob(signals: ProjectSignals, glob: string): boolean {
+function matchingGlobPaths(signals: ProjectSignals, glob: string): string[] {
   const pattern = globToRegExp(glob);
-  return signals.allRelativeFiles.some((path) => pattern.test(path));
+  return signals.allRelativeFiles.filter((path) => pattern.test(path)).sort();
 }
 
-function matchesDetect(signals: ProjectSignals, detect: PackDetect): boolean {
-  if ((detect.files ?? []).some((file) => !signals.existingFiles.has(normalizeRelativePath(file)))) {
-    return false;
+function appendUnique(target: string[], values: string[]): void {
+  const seen = new Set(target);
+
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      target.push(value);
+    }
+  }
+}
+
+function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetect): string[] | undefined {
+  const evidence: string[] = [];
+
+  for (const file of detect.files ?? []) {
+    const normalized = normalizeRelativePath(file);
+    if (!signals.existingFiles.has(normalized)) {
+      return undefined;
+    }
+
+    appendUnique(evidence, [normalized]);
   }
 
   if ((detect.anyFiles ?? []).length > 0) {
-    const hasAnyFile = detect.anyFiles?.some((file) => signals.existingFiles.has(normalizeRelativePath(file))) ?? false;
-    if (!hasAnyFile) {
-      return false;
+    const presentFiles = (detect.anyFiles ?? []).map(normalizeRelativePath).filter((file) => signals.existingFiles.has(file));
+
+    if (presentFiles.length === 0) {
+      return undefined;
     }
+
+    appendUnique(evidence, presentFiles);
   }
 
-  if ((detect.globs ?? []).some((glob) => !matchesGlob(signals, glob))) {
-    return false;
+  for (const glob of detect.globs ?? []) {
+    const matches = matchingGlobPaths(signals, glob);
+    if (matches.length === 0) {
+      return undefined;
+    }
+
+    appendUnique(evidence, matches.slice(0, maxGlobEvidencePaths));
   }
 
-  if (
-    (detect.pyprojectDependencies ?? []).some(
-      (dependency) => !containsPyprojectDependency(signals.pyprojectText, dependency)
-    )
-  ) {
-    return false;
+  for (const dependency of detect.pyprojectDependencies ?? []) {
+    if (!containsPyprojectDependency(signals.pyprojectText, dependency)) {
+      return undefined;
+    }
+
+    appendUnique(evidence, [`pyproject.toml dependency: ${dependency}`]);
   }
 
-  if (
-    (detect.packageJsonDependencies ?? []).some(
-      (dependency) => !containsPackageJsonDependency(signals.packageJson, dependency)
-    )
-  ) {
-    return false;
+  for (const dependency of detect.packageJsonDependencies ?? []) {
+    if (!containsPackageJsonDependency(signals.packageJson, dependency)) {
+      return undefined;
+    }
+
+    appendUnique(evidence, [`package.json dependency: ${dependency}`]);
   }
 
-  if (
-    (detect.packageJsonDevDependencies ?? []).some(
-      (dependency) => !containsPackageJsonDevDependency(signals.packageJson, dependency)
-    )
-  ) {
-    return false;
+  for (const dependency of detect.packageJsonDevDependencies ?? []) {
+    if (!containsPackageJsonDevDependency(signals.packageJson, dependency)) {
+      return undefined;
+    }
+
+    appendUnique(evidence, [`package.json devDependency: ${dependency}`]);
   }
 
-  if (
-    (detect.packageJsonAnyDependencies ?? []).some(
-      (dependency) => !containsPackageJsonAnyDependency(signals.packageJson, dependency)
-    )
-  ) {
-    return false;
+  for (const dependency of detect.packageJsonAnyDependencies ?? []) {
+    if (!containsPackageJsonAnyDependency(signals.packageJson, dependency)) {
+      return undefined;
+    }
+
+    const sections = [
+      containsPackageJsonDependency(signals.packageJson, dependency) ? `package.json dependency: ${dependency}` : undefined,
+      containsPackageJsonDevDependency(signals.packageJson, dependency) ? `package.json devDependency: ${dependency}` : undefined,
+    ].filter((value): value is string => value !== undefined);
+    appendUnique(evidence, sections);
   }
 
-  if ((detect.gemfileGems ?? []).some((gem) => !containsGemfileGem(signals.gemfileText, gem))) {
-    return false;
+  for (const gem of detect.gemfileGems ?? []) {
+    if (!containsGemfileGem(signals.gemfileText, gem)) {
+      return undefined;
+    }
+
+    appendUnique(evidence, [`Gemfile gem: ${gem}`]);
   }
 
   if ((detect.any ?? []).length > 0) {
-    return detect.any?.some((child) => matchesDetect(signals, child)) ?? false;
+    const matchedBranches = (detect.any ?? []).map((child) => matchedDetectEvidence(signals, child)).filter((branch): branch is string[] => branch !== undefined);
+
+    if (matchedBranches.length === 0) {
+      return undefined;
+    }
+
+    for (const branch of matchedBranches) {
+      appendUnique(evidence, branch);
+    }
   }
 
-  return true;
+  return evidence;
 }
 
-export async function detectPacks(dir: string, catalog?: PackCatalog): Promise<string[]> {
+function matchesDetect(signals: ProjectSignals, detect: PackDetect): boolean {
+  return matchedDetectEvidence(signals, detect) !== undefined;
+}
+
+export async function detectPacksWithEvidence(dir: string, catalog?: PackCatalog): Promise<DetectedPackEvidence[]> {
   const packIds = catalog ? catalog.detectablePackIds() : autoDetectOrder;
-  const packs = packIds
-    .map((id) => (catalog ? catalog.getPack(id) : getPack(id)))
-    .filter((pack): pack is NonNullable<typeof pack> => pack !== undefined);
+  const packs = packIds.map((id) => (catalog ? catalog.getPack(id) : getPack(id))).filter((pack): pack is NonNullable<typeof pack> => pack !== undefined);
 
   const signals = await scanProject(
     dir,
-    packs.map((pack) => pack.detect)
+    packs.map((pack) => pack.detect),
   );
 
-  return packs.filter((pack) => matchesDetect(signals, pack.detect)).map((pack) => pack.id);
+  return packs.flatMap((pack) => {
+    const evidence = matchedDetectEvidence(signals, pack.detect);
+    return evidence === undefined ? [] : [{ packId: pack.id, evidence }];
+  });
 }
 
-export async function detectSecondary(
-  dir: string,
-  pack: Pick<ResolvedPack, "secondaryDetectors">
-): Promise<SecondaryDetectionFinding[]> {
+export async function detectPacks(dir: string, catalog?: PackCatalog): Promise<string[]> {
+  const detected = await detectPacksWithEvidence(dir, catalog);
+  return detected.map((pack) => pack.packId);
+}
+
+export async function detectSecondary(dir: string, pack: Pick<ResolvedPack, "secondaryDetectors">): Promise<SecondaryDetectionFinding[]> {
   const detectors = pack.secondaryDetectors ?? [];
 
   if (detectors.length === 0) {
@@ -371,7 +404,7 @@ export async function detectSecondary(
 
   const signals = await scanProject(
     dir,
-    detectors.map((detector) => detector.detect)
+    detectors.map((detector) => detector.detect),
   );
 
   return detectors
@@ -381,6 +414,6 @@ export async function detectSecondary(
       description: detector.description,
       suggestSkills: detector.suggestSkills ?? [],
       suggestPackIds: detector.suggestPackIds ?? [],
-      notes: detector.notes ?? []
+      notes: detector.notes ?? [],
     }));
 }

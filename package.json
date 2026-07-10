@@ -1,10 +1,39 @@
 {
   "name": "farrier",
   "version": "0.1.0",
-  "private": true,
+  "description": "Create, understand, validate, and evolve reliable coding-agent harnesses.",
   "type": "module",
   "bin": {
     "farrier": "./src/cli.ts"
+  },
+  "files": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/templates/**/*.py",
+    "src/templates/**/*.txt",
+    "src/templates/**/*.md",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ivorpad/farrier.git"
+  },
+  "homepage": "https://github.com/ivorpad/farrier#readme",
+  "bugs": {
+    "url": "https://github.com/ivorpad/farrier/issues"
+  },
+  "keywords": [
+    "ai-agents",
+    "coding-agents",
+    "claude-code",
+    "codex",
+    "developer-tools"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "bun test",

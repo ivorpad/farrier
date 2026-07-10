@@ -1,12 +1,14 @@
 import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
+import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
-import type { PackHookRef, PackVerbs, SkillRef } from "../packs/types";
 import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
 import { DetailPane, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
 import { CollisionPromptView, type CollisionPrompt } from "./collision";
 import type { PendingSkillEval } from "./create-eval";
+import type { WizardWriteStatus } from "./machine";
+import { SkillInstallFailureDetails } from "./skill-install-failures";
 import { pickHarnessVerb } from "./verbs";
 
 type Zone = "content" | "buttons";
@@ -17,7 +19,7 @@ const runVerb = pickHarnessVerb();
 
 const reviewButtons: ButtonSpec[] = [
   { id: "back", label: "← Back" },
-  { id: "confirm", label: "⚒ Create harness" }
+  { id: "confirm", label: "⚒ Create harness" },
 ];
 
 // The manifest scrolls: at most this many rows render at once so header +
@@ -40,40 +42,34 @@ const maxPathColWidth = 44;
 
 export type ReviewFile = {
   path: string;
-  exists: boolean;
   content: string;
+  action: "create" | "unchanged" | "merge" | "update" | "replace" | "blocked";
+  purpose: string;
+  reason?: string;
+  requiresForce: boolean;
 };
 
 type ReviewStepProps = {
-  targetDir: string;
-  packId: string;
-  verbs: PackVerbs;
-  konsistentTool?: string;
-  ruleCount: number;
-  selectedSkills: SkillRef[];
-  selectedHooks: PackHookRef[];
   createRequests: SkillCreationRequest[];
-  learnEnabled: boolean;
   generator?: {
     source: string;
     command: string;
   };
   files: ReviewFile[];
+  existingHarness: boolean;
+  blockerCount: number;
   loading: boolean;
   error?: string;
   canConfirm: boolean;
-  onConfirm: () => void;
+  onConfirm: (forceReplace: boolean) => void;
   onBack: () => void;
 };
 
 type DoneStepProps = {
-  writeStatus?: {
-    ok: boolean;
-    message: string;
-  };
+  writeStatus?: WizardWriteStatus;
+  applyResult?: ApplyHarnessChangePlanResult;
   installResults: InstallSkillResult[];
   createOutcomes: SkillCreationOutcome[];
-  fileCount: number;
   hookCount: number;
   skillCount: number;
   ruleCount: number;
@@ -82,65 +78,78 @@ type DoneStepProps = {
   onExit: () => void;
 };
 
-type NoteContext = {
-  hookCount: number;
-  skillCount: number;
-  ruleCount: number;
-  verbs: PackVerbs;
-  konsistentTool: string;
-};
-
-/**
- * One-line reason for each manifest entry — evidence-first, carrying the real
- * count or the concrete verbs, so the manifest reads as an argument, not an
- * inventory.
- */
-function fileNote(path: string, ctx: NoteContext): string {
-  const base = path.split("/").pop() ?? path;
-
-  if (base === "AGENTS.md") return `${ctx.ruleCount} rules · source of truth`;
-  if (path.startsWith(".claude/hooks/@")) return "registry hook — review contents before forging";
-  if (base === "CLAUDE.md") return "one line → see AGENTS.md";
-  if (base === "settings.json") return `${ctx.hookCount} hooks wired`;
-  if (base === "justfile") {
-    const verbs = [ctx.verbs.check ? "check" : null, ctx.verbs.test ? "test" : null, ctx.verbs.fmt ? "fmt" : null, ctx.verbs.konsistent ? ctx.konsistentTool : null].filter(Boolean);
-    return verbs.join(" · ");
+function actionView(action: ReviewFile["action"]): {
+  marker: string;
+  label: string;
+  fg: string;
+} {
+  switch (action) {
+    case "create":
+      return { marker: "A ", label: "create", fg: palette.success };
+    case "unchanged":
+      return { marker: "= ", label: "unchanged", fg: palette.faint };
+    case "merge":
+      return { marker: "M ", label: "merge safely", fg: palette.success };
+    case "update":
+      return {
+        marker: "U ",
+        label: "restore executable permission",
+        fg: palette.gold,
+      };
+    case "replace":
+      return { marker: "R ", label: "replace existing file", fg: palette.warn };
+    case "blocked":
+      return { marker: "! ", label: "blocked", fg: palette.warn };
   }
-  if (base === "skills-lock.json") return `${ctx.skillCount} skills pinned`;
-  if (base === "tool-policy-rules.json") return "deny rules the agent reads";
-  if (base === ".farrier.json") return `the plan itself · ${ctx.skillCount} skills pinned`;
-  if (base === "konsistent.json" || base === "konpy.json") return "structure conventions";
-  if (base === ".gitignore") return "keeps .env* out of git";
-  if (base === "SKILL.md") return "harness advisor skill";
-  if (base.endsWith(".txt") && path.includes("prompts/")) return "judge prompt (disabled by default)";
-  if (path.includes("hooks/")) return "rendered from tested template";
-
-  return "";
 }
 
-function previewLines(content: string): PaneLine[] {
-  const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  const shown = lines.slice(0, previewLineCount);
+function previewLines(file: ReviewFile): PaneLine[] {
+  const action = actionView(file.action);
+  const reasonFg = file.action === "replace" || file.action === "blocked" ? palette.warn : palette.muted;
+  const metadata: PaneLine[] = [{ fg: action.fg, text: `${action.label} — ${file.purpose}` }, ...(file.reason ? [{ fg: reasonFg, text: file.reason }] : [])];
+  const content = file.content
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => ({ fg: palette.muted, text: line.trimEnd() }));
+  const lines = [...metadata, ...content].slice(0, previewLineCount);
 
-  if (shown.length === 0) {
-    return [{ fg: palette.faint, text: "(empty file)" }];
-  }
-
-  return shown.map((line) => ({ fg: palette.muted, text: line.trimEnd() }));
+  return lines.length > 0 ? lines : [{ fg: palette.faint, text: "(empty file)" }];
 }
 
 export function ReviewStep(props: ReviewStepProps) {
   const [zone, setZone] = useState<Zone>("content");
   const [focusedButtonId, setFocusedButtonId] = useState<string>(reviewButtons[0].id);
   const [focusedFileIndex, setFocusedFileIndex] = useState<number>(0);
+  const [replaceConfirmationArmed, setReplaceConfirmationArmed] = useState(false);
+  const replacements = props.files.filter((file) => file.requiresForce);
+  const hasReplacements = replacements.length > 0;
+
+  function backOrDisarm(): void {
+    if (replaceConfirmationArmed) {
+      setReplaceConfirmationArmed(false);
+      return;
+    }
+
+    props.onBack();
+  }
 
   function moveFile(delta: -1 | 1): void {
     setFocusedFileIndex((current) => Math.min(Math.max(current + delta, 0), Math.max(props.files.length - 1, 0)));
   }
 
   useKeyboard((key) => {
-    if (key.name === "escape" || key.name === "q") {
+    if (key.name === "escape") {
+      backOrDisarm();
+      return;
+    }
+
+    if (key.name === "q") {
       props.onBack();
+      return;
+    }
+
+    if (key.name === "r" && replaceConfirmationArmed && props.canConfirm && hasReplacements) {
+      props.onConfirm(true);
       return;
     }
 
@@ -173,13 +182,13 @@ export function ReviewStep(props: ReviewStepProps) {
           setFocusedButtonId((current) => adjacentButtonId(reviewButtons, current, -1) ?? current);
         }
       } else {
-        props.onBack();
+        backOrDisarm();
       }
       return;
     }
 
     if (key.name === "b" && zone === "content") {
-      props.onBack();
+      backOrDisarm();
       return;
     }
 
@@ -195,46 +204,86 @@ export function ReviewStep(props: ReviewStepProps) {
       }
 
       if (props.canConfirm) {
-        props.onConfirm();
+        if (hasReplacements) {
+          setReplaceConfirmationArmed(true);
+        } else {
+          props.onConfirm(false);
+        }
       }
     }
   });
 
   const pathWidth = Math.min(
     props.files.reduce((width, file) => Math.max(width, file.path.length), 0),
-    maxPathColWidth
+    maxPathColWidth,
   );
-  // What's left for "   note" after the cursor (2) + A/M flag (2) + path column.
+  // What's left for "   note" after the cursor (2) + action flag (2) + path column.
   const noteBudget = manifestInnerWidth - 4 - pathWidth - 3;
-  const noteContext: NoteContext = {
-    hookCount: props.selectedHooks.length,
-    skillCount: props.selectedSkills.length,
-    ruleCount: props.ruleCount,
-    verbs: props.verbs,
-    konsistentTool: props.konsistentTool ?? "konsistent"
-  };
   const clampedIndex = Math.min(focusedFileIndex, Math.max(props.files.length - 1, 0));
   const focusedFile = props.files[clampedIndex];
   const fileWindow = scrollWindow(clampedIndex, props.files.length, maxVisibleFiles);
   const visibleFiles = props.files.slice(fileWindow.start, fileWindow.end);
+  const unchangedCount = props.files.filter((file) => file.action === "unchanged").length;
+  const blockedCount = Math.max(props.blockerCount, props.files.filter((file) => file.action === "blocked").length);
+  const changedCount = props.files.filter((file) => file.action !== "unchanged" && file.action !== "blocked").length;
+  const keyHint = props.existingHarness
+    ? "↑↓ inspect file · b back · q abandon"
+    : blockedCount > 0
+      ? "↑↓ inspect blocker · b back · q abandon"
+      : replaceConfirmationArmed
+        ? "r replace & create · esc cancel replacement · ↑↓ inspect"
+        : hasReplacements
+          ? "enter review replacements · ↑↓ inspect file · b back · q abandon"
+          : "enter create harness · ↑↓ inspect file · b back · q abandon";
 
   return (
-    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
+    <box
+      style={{
+        border: true,
+        padding: 1,
+        flexDirection: "column",
+        gap: 1,
+        width: "100%",
+        height: "100%",
+      }}
+    >
       <StepHeader current="Review" subtitle="The full manifest before the strike." />
 
       {props.loading ? <text fg={palette.muted}>Building the manifest…</text> : null}
       {props.error ? <text fg={palette.warn}>✗ Render plan failed: {props.error}</text> : null}
+      {props.existingHarness ? <text fg={palette.warn}>✗ This project already has a Farrier harness. Use `farrier update`; create is disabled.</text> : null}
+      {!props.existingHarness && blockedCount > 0 ? (
+        <text fg={palette.warn}>{`✗ ${blockedCount} unsafe path${blockedCount === 1 ? " is" : "s are"} blocked. Inspect the ! rows; create is disabled.`}</text>
+      ) : null}
+      {!props.existingHarness && blockedCount === 0 && hasReplacements ? (
+        <text fg={replaceConfirmationArmed ? palette.warn : palette.gold}>
+          {replaceConfirmationArmed
+            ? `Replacement armed for ${replacements.length} file(s). Press r to replace and create; esc cancels.`
+            : `${replacements.length} existing file(s) require replacement. Backups stay in .farrier-staging/backups/. Press Enter, then r.`}
+        </text>
+      ) : null}
 
       {props.files.length > 0 ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
           <text>
-            <span fg={palette.muted}>{"farrier will write "}</span>
-            <span fg={palette.gold}>{String(props.files.length)}</span>
-            <span fg={palette.muted}>{" files. Nothing has been written yet."}</span>
+            <span fg={palette.muted}>{"Plan: "}</span>
+            <span fg={palette.gold}>{String(changedCount)}</span>
+            <span fg={palette.muted}>{changedCount === 1 ? " change · " : " changes · "}</span>
+            <span fg={palette.faint}>{String(unchangedCount)}</span>
+            <span fg={palette.muted}>{" unchanged"}</span>
+            {blockedCount > 0 ? (
+              <>
+                <span fg={palette.muted}>{" · "}</span>
+                <span fg={palette.warn}>{String(blockedCount)}</span>
+                <span fg={palette.muted}>{" blocked"}</span>
+              </>
+            ) : null}
+            <span fg={palette.muted}>{". Nothing has been written yet."}</span>
           </text>
           {visibleFiles.map((file, offset) => {
             const index = fileWindow.start + offset;
-            const note = fileNote(file.path, noteContext);
+            const note = file.reason ? `${file.purpose} · ${file.reason}` : file.purpose;
+            const action = actionView(file.action);
             const focused = index === clampedIndex && zone === "content";
             const bg = focused ? palette.selBg : undefined;
             const cursor = index === clampedIndex ? "▸ " : "  ";
@@ -244,17 +293,13 @@ export function ReviewStep(props: ReviewStepProps) {
             return (
               <text key={file.path} bg={bg}>
                 <span fg={palette.accent}>{cursor}</span>
-                <span fg={file.exists ? palette.gold : palette.success}>{file.exists ? "M " : "A "}</span>
+                <span fg={action.fg}>{action.marker}</span>
                 <span fg={palette.text}>{truncateTo(file.path, pathWidth).padEnd(pathWidth)}</span>
                 {showNote ? <span fg={palette.faint}>{`   ${truncateTo(note, noteBudget)}`}</span> : null}
               </text>
             );
           })}
-          {props.files.length > maxVisibleFiles ? (
-            <text fg={palette.faint}>
-              {`      showing ${fileWindow.start + 1}–${fileWindow.end} of ${props.files.length} · ↑↓ scrolls`}
-            </text>
-          ) : null}
+          {props.files.length > maxVisibleFiles ? <text fg={palette.faint}>{`      showing ${fileWindow.start + 1}–${fileWindow.end} of ${props.files.length} · ↑↓ scrolls`}</text> : null}
         </box>
       ) : null}
 
@@ -276,19 +321,19 @@ export function ReviewStep(props: ReviewStepProps) {
 
       {props.generator ? (
         <text>
-          <span fg={palette.gold}>{"Generator will run: "}</span>
+          <span fg={palette.gold}>{"Declared project generator: "}</span>
           <span fg={palette.text}>{truncateTo(props.generator.command, 42)}</span>
-          <span fg={palette.faint}>{` (from ${props.generator.source})`}</span>
+          <span fg={palette.faint}>{` (from ${props.generator.source}) · not run by harness creation`}</span>
         </text>
       ) : null}
 
-      {focusedFile ? <DetailPane title={focusedFile.path} lines={previewLines(focusedFile.content)} /> : null}
+      {focusedFile ? <DetailPane title={focusedFile.path} lines={previewLines(focusedFile)} /> : null}
 
       <ButtonBar
         buttons={reviewButtons}
         focusedId={zone === "buttons" ? focusedButtonId : undefined}
-        hint="enter create harness · ↑↓ inspect file · b back · q abandon"
-        emberActions={["create harness"]}
+        hint={keyHint}
+        emberActions={replaceConfirmationArmed ? ["replace & create"] : hasReplacements ? ["review replacements"] : ["create harness"]}
       />
     </box>
   );
@@ -311,7 +356,16 @@ export function WritingStep(props: { creatingCount?: number; cancelling?: boolea
   });
 
   return (
-    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
+    <box
+      style={{
+        border: true,
+        padding: 1,
+        flexDirection: "column",
+        gap: 1,
+        width: "100%",
+        height: "100%",
+      }}
+    >
       {props.cancelling ? (
         <text fg={palette.warn}>{`${spinner}  Cancelling skill authoring — killing the agent runs… (files already written stay on disk)`}</text>
       ) : (
@@ -328,6 +382,9 @@ export function DoneStep(props: DoneStepProps) {
   const failedInstalls = props.installResults.filter((result) => !result.ok);
   const installed = props.installResults.length - failedInstalls.length;
   const ok = props.writeStatus?.ok !== false;
+  const partial = props.writeStatus?.partial === true;
+  const writtenCount = props.applyResult?.writtenFiles.length ?? 0;
+  const unchangedCount = props.applyResult?.unchangedFiles.length ?? 0;
 
   useKeyboard((key) => {
     if (key.name === "e" && props.evalCandidate && props.onEvaluate) {
@@ -341,14 +398,25 @@ export function DoneStep(props: DoneStepProps) {
   });
 
   return (
-    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      {ok ? (
+    <box
+      style={{
+        border: true,
+        padding: 1,
+        flexDirection: "column",
+        gap: 1,
+        width: "100%",
+        height: "100%",
+      }}
+    >
+      {ok || partial ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
-          <text fg={palette.accent}>{`  ⚒  Harness ${runVerb.past}.`}</text>
+          <text fg={partial ? palette.warn : palette.accent}>{partial ? "  ⚠  Harness files applied; skill installation needs attention." : `  ⚒  Harness ${runVerb.past}.`}</text>
           <text> </text>
           <text>
-            <span fg={palette.gold}>{String(props.fileCount)}</span>
-            <span fg={palette.muted}>{" files written · "}</span>
+            <span fg={palette.gold}>{String(writtenCount)}</span>
+            <span fg={palette.muted}>{" file changes · "}</span>
+            <span fg={palette.gold}>{String(unchangedCount)}</span>
+            <span fg={palette.muted}>{" unchanged · "}</span>
             <span fg={palette.gold}>{String(props.hookCount)}</span>
             <span fg={palette.muted}>{" hooks · "}</span>
             <span fg={palette.gold}>{String(props.skillCount)}</span>
@@ -358,8 +426,10 @@ export function DoneStep(props: DoneStepProps) {
           </text>
           <text>
             <span fg={palette.success}>{"✓ "}</span>
-            <span fg={palette.muted}>{`${props.fileCount} files written to disk`}</span>
+            <span fg={palette.muted}>{`${writtenCount} file change(s) written; ${unchangedCount} left unchanged`}</span>
           </text>
+          {props.applyResult?.backupDir ? <text fg={palette.gold}>{`Backups: ${props.applyResult.backupDir}`}</text> : null}
+          {partial ? <text fg={palette.warn}>{props.writeStatus?.message}</text> : null}
           {props.installResults.length > 0 ? (
             <text>
               <span fg={installed > 0 ? palette.success : palette.warn}>{installed > 0 ? "✓ " : "✗ "}</span>
@@ -370,9 +440,7 @@ export function DoneStep(props: DoneStepProps) {
             <text key={`${outcome.name ?? outcome.request.description}-${index}`}>
               <span fg={outcome.error ? palette.warn : palette.success}>{outcome.error ? "✗ " : "✓ "}</span>
               <span fg={palette.muted}>
-                {outcome.error
-                  ? `skill creation failed: ${outcome.error}`
-                  : `created ${outcome.name}${outcome.installed ? " (installed)" : ""} — ${outcome.files.length} file(s)`}
+                {outcome.error ? `skill creation failed: ${outcome.error}` : `created ${outcome.name}${outcome.installed ? " (installed)" : ""} — ${outcome.files.length} file(s)`}
               </span>
             </text>
           ))}
@@ -405,12 +473,7 @@ export function DoneStep(props: DoneStepProps) {
         </box>
       ) : null}
 
-      {failedInstalls.length > 0 ? <text fg={palette.warn}>Some skill installs failed non-fatally:</text> : null}
-      {failedInstalls.map((result) => (
-        <text key={result.ref} fg={palette.muted}>
-          {`  • ${result.ref}: ${result.error ?? result.stderr ?? "unknown failure"}`}
-        </text>
-      ))}
+      <SkillInstallFailureDetails results={props.installResults} />
 
       {props.evalCandidate ? (
         <text fg={palette.gold}>
