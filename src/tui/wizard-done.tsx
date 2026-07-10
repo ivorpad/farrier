@@ -1,15 +1,17 @@
 import { useState } from "react";
+import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import type { CreateAgent, SkillCreationOutcome } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
 import { eligiblePerAgentEvals, SkillEvalFlow, type PendingSkillEval, type SkillEvalPolicy } from "./create-eval";
+import type { WizardWriteStatus } from "./machine";
 import { DoneStep } from "./ReviewStep";
 
 type WizardDoneProps = {
   targetDir: string;
-  writeStatus?: { ok: boolean; message: string };
+  writeStatus?: WizardWriteStatus;
+  applyResult?: ApplyHarnessChangePlanResult;
   installResults: InstallSkillResult[];
   createOutcomes: SkillCreationOutcome[];
-  fileCount: number;
   hookCount: number;
   skillCount: number;
   ruleCount: number;
@@ -18,6 +20,10 @@ type WizardDoneProps = {
   onExit: (code: number) => void;
 };
 
+export function wizardWriteExitCode(writeStatus: WizardWriteStatus | undefined): number {
+  return writeStatus?.ok === false ? 1 : 0;
+}
+
 /**
  * The wizard's Done screen plus the per-agent eval flow: when the harness run
  * produced a comparable pair and the user's policy isn't "skip", the eval
@@ -25,10 +31,8 @@ type WizardDoneProps = {
  * offers it via `e`. All eval screens own their own keys, including ctrl+c.
  */
 export function WizardDone(props: WizardDoneProps) {
-  const candidate = eligiblePerAgentEvals(props.createOutcomes)[0];
-  const [pendingEval, setPendingEval] = useState<PendingSkillEval | null>(
-    props.evalPolicy !== "skip" && props.writeStatus?.ok !== false ? candidate ?? null : null
-  );
+  const candidate = props.writeStatus?.ok === false ? undefined : eligiblePerAgentEvals(props.createOutcomes)[0];
+  const [pendingEval, setPendingEval] = useState<PendingSkillEval | null>(props.evalPolicy !== "skip" ? (candidate ?? null) : null);
 
   if (pendingEval) {
     return (
@@ -38,7 +42,7 @@ export function WizardDone(props: WizardDoneProps) {
         backend={props.evalBackend}
         autoApply={props.evalPolicy === "auto"}
         onClose={() => setPendingEval(null)}
-        onExit={() => props.onExit(0)}
+        onExit={() => props.onExit(wizardWriteExitCode(props.writeStatus))}
       />
     );
   }
@@ -46,9 +50,9 @@ export function WizardDone(props: WizardDoneProps) {
   return (
     <DoneStep
       writeStatus={props.writeStatus}
+      applyResult={props.applyResult}
       installResults={props.installResults}
       createOutcomes={props.createOutcomes}
-      fileCount={props.fileCount}
       hookCount={props.hookCount}
       skillCount={props.skillCount}
       ruleCount={props.ruleCount}
@@ -58,7 +62,7 @@ export function WizardDone(props: WizardDoneProps) {
           setPendingEval(candidate);
         }
       }}
-      onExit={() => props.onExit(props.writeStatus?.ok === false ? 1 : 0)}
+      onExit={() => props.onExit(wizardWriteExitCode(props.writeStatus))}
     />
   );
 }

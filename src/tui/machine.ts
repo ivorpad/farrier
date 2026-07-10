@@ -1,5 +1,6 @@
 import type { AdviseBackend, SkillRecommendation } from "../engine/advise";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
+import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import type { InstallSkillResult, SkillSearchResult } from "../engine/skills";
 import type { PackHookRef, SkillRef } from "../packs/types";
 
@@ -16,6 +17,12 @@ export type PackDefaults = Record<
     hooks: PackHookRef[];
   }
 >;
+
+export type WizardWriteStatus = {
+  ok: boolean;
+  message: string;
+  partial?: boolean;
+};
 
 export type WizardState = {
   step: WizardStep;
@@ -45,10 +52,8 @@ export type WizardState = {
   adviseError?: string;
   recommendations: SkillRecommendation[];
 
-  writeStatus?: {
-    ok: boolean;
-    message: string;
-  };
+  writeStatus?: WizardWriteStatus;
+  applyResult?: ApplyHarnessChangePlanResult;
 
   installResults: InstallSkillResult[];
 };
@@ -71,8 +76,15 @@ export type WizardEvent =
   | { type: "NEXT" }
   | { type: "BACK" }
   | { type: "START_WRITING" }
-  | { type: "WRITE_DONE"; message: string; installResults: InstallSkillResult[]; createOutcomes?: SkillCreationOutcome[] }
-  | { type: "WRITE_FAILED"; message: string; installResults?: InstallSkillResult[]; createOutcomes?: SkillCreationOutcome[] };
+  | {
+      type: "WRITE_DONE";
+      message: string;
+      partial?: boolean;
+      applyResult?: ApplyHarnessChangePlanResult;
+      installResults: InstallSkillResult[];
+      createOutcomes?: SkillCreationOutcome[];
+    }
+  | { type: "WRITE_FAILED"; message: string; applyResult?: ApplyHarnessChangePlanResult; installResults?: InstallSkillResult[]; createOutcomes?: SkillCreationOutcome[] };
 
 export type CreateInitialWizardStateInput = {
   availablePackIds: string[];
@@ -94,13 +106,13 @@ function packDefaultFor(input: CreateInitialWizardStateInput, packId: string): {
   if (explicit) {
     return {
       skills: [...explicit.skills],
-      hooks: [...explicit.hooks]
+      hooks: [...explicit.hooks],
     };
   }
 
   return {
     skills: [...(input.defaultSkills ?? [])],
-    hooks: [...(input.defaultHooks ?? [])]
+    hooks: [...(input.defaultHooks ?? [])],
   };
 }
 
@@ -111,12 +123,9 @@ export function createInitialWizardState(input: CreateInitialWizardStateInput): 
     throw new Error("createInitialWizardState requires at least one available pack or a default pack");
   }
 
-  const availablePackIds = input.availablePackIds.includes(fallbackPackId)
-    ? [...input.availablePackIds]
-    : [fallbackPackId, ...input.availablePackIds];
+  const availablePackIds = input.availablePackIds.includes(fallbackPackId) ? [...input.availablePackIds] : [fallbackPackId, ...input.availablePackIds];
 
-  const detectedPackId =
-    input.detectedPackId && availablePackIds.includes(input.detectedPackId) ? input.detectedPackId : undefined;
+  const detectedPackId = input.detectedPackId && availablePackIds.includes(input.detectedPackId) ? input.detectedPackId : undefined;
 
   const selectedPackId = detectedPackId ?? fallbackPackId;
   const defaults = packDefaultFor(input, selectedPackId);
@@ -144,7 +153,8 @@ export function createInitialWizardState(input: CreateInitialWizardStateInput): 
     adviseError: undefined,
     recommendations: [],
     writeStatus: undefined,
-    installResults: []
+    applyResult: undefined,
+    installResults: [],
   };
 }
 
@@ -205,7 +215,7 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         selectedHooks: [...event.hooks],
         adviseStatus: "idle",
         adviseError: undefined,
-        recommendations: []
+        recommendations: [],
       };
 
     case "SET_SKILL_QUERY":
@@ -216,9 +226,9 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
           ? {
               skillResults: [],
               skillSearchStatus: "idle" as const,
-              skillSearchError: undefined
+              skillSearchError: undefined,
             }
-          : {})
+          : {}),
       };
 
     case "SKILL_SEARCH_STARTED":
@@ -229,7 +239,7 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
       return {
         ...state,
         skillSearchStatus: "loading",
-        skillSearchError: undefined
+        skillSearchError: undefined,
       };
 
     case "SKILL_SEARCH_SUCCEEDED":
@@ -241,7 +251,7 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         ...state,
         skillResults: [...event.results],
         skillSearchStatus: "ready",
-        skillSearchError: undefined
+        skillSearchError: undefined,
       };
 
     case "SKILL_SEARCH_FAILED":
@@ -253,37 +263,37 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         ...state,
         skillResults: [],
         skillSearchStatus: "error",
-        skillSearchError: event.error
+        skillSearchError: event.error,
       };
 
     case "TOGGLE_SKILL":
       return {
         ...state,
-        selectedSkills: toggle(state.selectedSkills, event.ref)
+        selectedSkills: toggle(state.selectedSkills, event.ref),
       };
 
     case "ADD_CREATE_REQUEST":
       return {
         ...state,
-        createRequests: [...state.createRequests, event.request]
+        createRequests: [...state.createRequests, event.request],
       };
 
     case "REMOVE_CREATE_REQUEST":
       return {
         ...state,
-        createRequests: state.createRequests.filter((_, index) => index !== event.index)
+        createRequests: state.createRequests.filter((_, index) => index !== event.index),
       };
 
     case "TOGGLE_HOOK":
       return {
         ...state,
-        selectedHooks: toggle(state.selectedHooks, event.hook)
+        selectedHooks: toggle(state.selectedHooks, event.hook),
       };
 
     case "TOGGLE_LEARN":
       return {
         ...state,
-        learnEnabled: !state.learnEnabled
+        learnEnabled: !state.learnEnabled,
       };
 
     case "TOGGLE_ADVISE": {
@@ -297,8 +307,8 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
           : {
               adviseStatus: "idle" as const,
               adviseError: undefined,
-              recommendations: []
-            })
+              recommendations: [],
+            }),
       };
     }
 
@@ -310,7 +320,7 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
       return {
         ...state,
         adviseStatus: "running",
-        adviseError: undefined
+        adviseError: undefined,
       };
 
     case "ADVISE_SUCCEEDED":
@@ -321,7 +331,7 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
       return {
         ...state,
         adviseStatus: "ready",
-        recommendations: [...event.recommendations]
+        recommendations: [...event.recommendations],
       };
 
     case "ADVISE_FAILED":
@@ -332,19 +342,19 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
       return {
         ...state,
         adviseStatus: "error",
-        adviseError: event.error
+        adviseError: event.error,
       };
 
     case "NEXT":
       return {
         ...state,
-        step: nextStep(state.step)
+        step: nextStep(state.step),
       };
 
     case "BACK":
       return {
         ...state,
-        step: previousStep(state.step)
+        step: previousStep(state.step),
       };
 
     case "START_WRITING":
@@ -356,8 +366,9 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         ...state,
         step: "Writing",
         writeStatus: undefined,
+        applyResult: undefined,
         installResults: [],
-        createOutcomes: []
+        createOutcomes: [],
       };
 
     case "WRITE_DONE":
@@ -368,12 +379,10 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
       return {
         ...state,
         step: "Done",
-        writeStatus: {
-          ok: true,
-          message: event.message
-        },
+        writeStatus: event.partial ? { ok: false, partial: true, message: event.message } : { ok: true, message: event.message },
+        applyResult: event.applyResult,
         installResults: [...event.installResults],
-        createOutcomes: [...(event.createOutcomes ?? [])]
+        createOutcomes: [...(event.createOutcomes ?? [])],
       };
 
     case "WRITE_FAILED":
@@ -386,10 +395,11 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         step: "Done",
         writeStatus: {
           ok: false,
-          message: event.message
+          message: event.message,
         },
+        applyResult: event.applyResult,
         installResults: [...(event.installResults ?? [])],
-        createOutcomes: [...(event.createOutcomes ?? [])]
+        createOutcomes: [...(event.createOutcomes ?? [])],
       };
   }
 }

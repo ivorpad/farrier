@@ -1,19 +1,17 @@
-import { access } from "node:fs/promises";
-import { join } from "node:path";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { adviseSkills, detectAgentBackend, resolveContext, type AdviseBackend } from "../engine/advise";
 import { probeAgents, type AgentAvailability } from "../engine/backend";
-import { detectPacks } from "../engine/detect";
-import { agentsHardRules, createRenderPlan, type RenderPlan } from "../engine/render";
+import { detectPacksWithEvidence, type DetectedPackEvidence } from "../engine/detect";
+import { agentsHardRules } from "../engine/render";
 import { searchSkills, type SkillSearchResult } from "../engine/skills";
-import type { ResolvedPack } from "../packs/types";
 import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
 import { builtinCatalog, loadPackCatalog, type PackCatalog } from "../registry/catalog";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
 import { nextEvalPolicy, type SkillEvalPolicy } from "./create-eval";
 import { runHarnessWrite } from "./harness-write";
+import { generatorPresentation, selectedPackForWizard } from "./pack-presentation";
 import { WizardDone } from "./wizard-done";
 import { createInitialWizardState, wizardReducer, type PackDefaults, type WizardState } from "./machine";
 import { StackStep } from "./StackStep";
@@ -21,11 +19,12 @@ import { SkillsStep } from "./SkillsStep";
 import { WizardCreate } from "./wizard-create";
 import { HooksStep } from "./HooksStep";
 import { LearnStep } from "./LearnStep";
-import { ReviewStep, WritingStep, type ReviewFile } from "./ReviewStep";
+import { ReviewStep, WritingStep } from "./ReviewStep";
+import { useHarnessReview } from "./use-harness-review";
 
 type WizardAppProps = {
   targetDir: string;
-  detectedPackId?: string;
+  detectedPacks: DetectedPackEvidence[];
   contextText?: string;
   contextSource?: string;
   adviseBackend?: AdviseBackend;
@@ -36,21 +35,11 @@ type WizardAppProps = {
   onExit: (code: number) => void;
 };
 
-function selectedPackFromState(state: WizardState, catalog: PackCatalog): ResolvedPack {
-  const pack = catalog.resolvePack(state.packId);
-  return {
-    ...pack,
-    hooks: [...state.selectedHooks]
-  };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 function WizardApp(props: WizardAppProps) {
   const packIds = useMemo(() => props.catalog.packIds(), [props.catalog]);
-  const defaultPackId = packIds.includes("python-fastapi") ? "python-fastapi" : packIds[0] ?? "python-uv";
+  const defaultPackId = packIds.includes("python-fastapi") ? "python-fastapi" : (packIds[0] ?? "python-uv");
 
   const packDefaults = useMemo<PackDefaults>(() => {
     return Object.fromEntries(
@@ -60,10 +49,10 @@ function WizardApp(props: WizardAppProps) {
           packId,
           {
             skills: pack.skills,
-            hooks: pack.hooks
-          }
+            hooks: pack.hooks,
+          },
         ];
-      })
+      }),
     );
   }, [packIds, props.catalog]);
 
@@ -72,20 +61,17 @@ function WizardApp(props: WizardAppProps) {
       createInitialWizardState({
         availablePackIds: packIds,
         fallbackPackId: defaultPackId,
-        detectedPackId: props.detectedPackId,
+        detectedPackId: props.detectedPacks[0]?.packId,
         packDefaults,
         contextText: props.contextText,
         contextSource: props.contextSource,
         adviseBackend: props.adviseBackend,
-        adviseAutoStart: props.adviseAutoStart
+        adviseAutoStart: props.adviseAutoStart,
       }),
-    [defaultPackId, packDefaults, packIds, props.adviseAutoStart, props.adviseBackend, props.contextSource, props.contextText, props.detectedPackId]
+    [defaultPackId, packDefaults, packIds, props.adviseAutoStart, props.adviseBackend, props.contextSource, props.contextText, props.detectedPacks],
   );
 
   const [state, dispatch] = useReducer(wizardReducer, initialState);
-  const [reviewPlan, setReviewPlan] = useState<RenderPlan | null>(null);
-  const [reviewFiles, setReviewFiles] = useState<ReviewFile[]>([]);
-  const [reviewError, setReviewError] = useState<string | undefined>(undefined);
   const [agentAvailability, setAgentAvailability] = useState<AgentAvailability | undefined>(undefined);
   const [createCancelling, setCreateCancelling] = useState(false);
   const [collision, setCollision] = useState<CollisionPrompt | null>(null);
@@ -134,8 +120,19 @@ function WizardApp(props: WizardAppProps) {
     };
   }, []);
 
-  const selectedPack = useMemo(() => selectedPackFromState(state, props.catalog), [props.catalog, state.packId, state.selectedHooks]);
+  const selectedPack = useMemo(() => selectedPackForWizard(props.catalog.resolvePack(state.packId), state.selectedHooks), [props.catalog, state.packId, state.selectedHooks]);
   const ruleCount = useMemo(() => agentsHardRules(selectedPack).length, [selectedPack]);
+  const review = useHarnessReview({
+    active: state.step === "Review",
+    targetDir: props.targetDir,
+    catalog: props.catalog,
+    pack: selectedPack,
+    packId: state.packId,
+    selectedSkills: state.selectedSkills,
+    selectedHooks: state.selectedHooks,
+    learnEnabled: state.learnEnabled,
+    ruleCount,
+  });
 
   const searchCache = useRef(new Map<string, SkillSearchResult[]>());
 
@@ -173,7 +170,11 @@ function WizardApp(props: WizardAppProps) {
             return;
           }
 
-          dispatch({ type: "SKILL_SEARCH_FAILED", query, error: errorMessage(error) });
+          dispatch({
+            type: "SKILL_SEARCH_FAILED",
+            query,
+            error: errorMessage(error),
+          });
         });
     }, 300);
 
@@ -196,7 +197,11 @@ function WizardApp(props: WizardAppProps) {
     dispatch({ type: "ADVISE_STARTED" });
 
     const adviseBackend = state.adviseBackend ?? "claude";
-    const adviseSettings = resolveModelSettings({ models: props.models, backend: adviseBackend, role: "advise" });
+    const adviseSettings = resolveModelSettings({
+      models: props.models,
+      backend: adviseBackend,
+      role: "advise",
+    });
 
     adviseSkills({
       targetDir: props.targetDir,
@@ -204,11 +209,14 @@ function WizardApp(props: WizardAppProps) {
       contextText: state.contextText ?? "",
       backend: adviseBackend,
       model: adviseSettings.model,
-      reasoningEffort: adviseSettings.reasoningEffort
+      reasoningEffort: adviseSettings.reasoningEffort,
     })
       .then((result) => {
         if (!cancelled) {
-          dispatch({ type: "ADVISE_SUCCEEDED", recommendations: result.recommendations });
+          dispatch({
+            type: "ADVISE_SUCCEEDED",
+            recommendations: result.recommendations,
+          });
         }
       })
       .catch((error) => {
@@ -222,66 +230,18 @@ function WizardApp(props: WizardAppProps) {
     };
   }, [props.targetDir, state.adviseBackend, state.adviseEnabled, state.contextText, state.packId]);
 
-  useEffect(() => {
-    if (state.step !== "Review") {
-      return;
-    }
-
-    let cancelled = false;
-
-    setReviewPlan(null);
-    setReviewFiles([]);
-    setReviewError(undefined);
-
-    createRenderPlan({
-      targetDir: props.targetDir,
-      pack: selectedPack,
-      skills: state.selectedSkills,
-      learnEnabled: state.learnEnabled,
-      registryPins: props.catalog.registryPins()
-    })
-      .then(async (plan) => {
-        // A/M markers for the manifest: A = new file, M = overwrites one
-        // already on disk.
-        const files = await Promise.all(
-          plan.files.map(async (file) => ({
-            path: file.path,
-            content: file.content,
-            exists: await access(join(plan.targetDir, file.path)).then(
-              () => true,
-              () => false
-            )
-          }))
-        );
-
-        if (!cancelled) {
-          setReviewPlan(plan);
-          setReviewFiles(files);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setReviewError(errorMessage(error));
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [props.catalog, props.targetDir, selectedPack, state.learnEnabled, state.selectedSkills, state.step]);
-
   function selectPack(packId: string): void {
     const pack = props.catalog.resolvePack(packId);
     dispatch({
       type: "SELECT_PACK",
       packId,
       skills: pack.skills,
-      hooks: pack.hooks
+      hooks: pack.hooks,
     });
   }
 
-  async function confirmWrite(): Promise<void> {
-    if (!reviewPlan || state.step !== "Review") {
+  async function confirmWrite(forceReplace: boolean): Promise<void> {
+    if (!review.plan || state.step !== "Review") {
       return;
     }
 
@@ -290,32 +250,47 @@ function WizardApp(props: WizardAppProps) {
     setCollision(null);
     const controller = new AbortController();
     createAbortRef.current = controller;
-    const onCollision = createQueuedCollisionHandler({ signal: controller.signal, chainRef: collisionChainRef, setCollision });
+    const onCollision = createQueuedCollisionHandler({
+      signal: controller.signal,
+      chainRef: collisionChainRef,
+      setCollision,
+    });
 
     try {
       const result = await runHarnessWrite({
-        reviewPlan,
+        reviewPlan: review.plan,
         selectedSkills: state.selectedSkills,
         createRequests: state.createRequests,
         targetDir: props.targetDir,
         signal: controller.signal,
+        forceReplace,
         onCollision,
         modelSettings: {
-          claude: resolveModelSettings({ models: props.models, backend: "claude", role: "skillCreation" }),
-          codex: resolveModelSettings({ models: props.models, backend: "codex", role: "skillCreation" })
-        }
+          claude: resolveModelSettings({
+            models: props.models,
+            backend: "claude",
+            role: "skillCreation",
+          }),
+          codex: resolveModelSettings({
+            models: props.models,
+            backend: "codex",
+            role: "skillCreation",
+          }),
+        },
       });
 
       dispatch({
         type: "WRITE_DONE",
         message: result.message,
+        partial: result.partial,
+        applyResult: result.applyResult,
         installResults: result.installResults,
-        createOutcomes: result.createOutcomes
+        createOutcomes: result.createOutcomes,
       });
     } catch (error) {
       dispatch({
         type: "WRITE_FAILED",
-        message: `Write failed: ${errorMessage(error)}`
+        message: `Write failed: ${errorMessage(error)}`,
       });
     } finally {
       createAbortRef.current = null;
@@ -328,10 +303,9 @@ function WizardApp(props: WizardAppProps) {
         <StackStep
           packIds={state.availablePackIds}
           listings={props.catalog.listings()}
-          catalog={props.catalog}
           warnings={props.registryWarnings}
           selectedPackId={state.packId}
-          detectedPackId={state.detectedPackId}
+          detectedPacks={props.detectedPacks}
           onSelectPack={selectPack}
           onNext={() => dispatch({ type: "NEXT" })}
           onCancel={() => props.onExit(1)}
@@ -403,27 +377,14 @@ function WizardApp(props: WizardAppProps) {
     case "Review":
       return (
         <ReviewStep
-          targetDir={props.targetDir}
-          packId={state.packId}
-          verbs={selectedPack.verbs}
-          konsistentTool={selectedPack.konsistentTool}
-          ruleCount={ruleCount}
-          selectedSkills={state.selectedSkills}
-          selectedHooks={state.selectedHooks}
           createRequests={state.createRequests}
-          learnEnabled={state.learnEnabled}
-          generator={
-            selectedPack.generator && selectedPack.packIds.some((packId) => packId.startsWith("@"))
-              ? {
-                  source: [...selectedPack.packIds].reverse().find((packId) => packId.startsWith("@")) ?? selectedPack.id,
-                  command: [selectedPack.generator.command, ...selectedPack.generator.args].join(" ")
-                }
-              : undefined
-          }
-          files={reviewFiles}
-          loading={!reviewPlan && !reviewError}
-          error={reviewError}
-          canConfirm={Boolean(reviewPlan && !reviewError)}
+          generator={generatorPresentation(selectedPack, props.catalog)}
+          files={review.files}
+          existingHarness={review.existingHarness}
+          blockerCount={review.blockerCount}
+          loading={!review.plan && !review.error}
+          error={review.error}
+          canConfirm={Boolean(review.plan && !review.error && !review.existingHarness && review.blockerCount === 0)}
           onConfirm={confirmWrite}
           onBack={() => dispatch({ type: "BACK" })}
         />
@@ -437,9 +398,9 @@ function WizardApp(props: WizardAppProps) {
         <WizardDone
           targetDir={props.targetDir}
           writeStatus={state.writeStatus}
+          applyResult={state.applyResult}
           installResults={state.installResults}
           createOutcomes={state.createOutcomes}
-          fileCount={reviewPlan?.files.length ?? 0}
           hookCount={state.selectedHooks.length}
           skillCount={state.selectedSkills.length}
           ruleCount={ruleCount}
@@ -470,11 +431,12 @@ export async function runWizard(targetDir: string, options?: { context?: string 
     registryWarnings = [`Registry loading failed; showing built-in packs only: ${errorMessage(error)}`];
   }
 
-  const detectedPackId = await detectPacks(targetDir, catalog)
-    .then((detected) => detected[0])
-    .catch(() => undefined);
+  const detectedPacks = await detectPacksWithEvidence(targetDir, catalog).catch(() => []);
 
-  const resolvedContext = await resolveContext({ targetDir, context: options?.context }).catch(() => undefined);
+  const resolvedContext = await resolveContext({
+    targetDir,
+    context: options?.context,
+  }).catch(() => undefined);
   const adviseBackend = (() => {
     try {
       return detectAgentBackend();
@@ -505,7 +467,7 @@ export async function runWizard(targetDir: string, options?: { context?: string 
       createRoot(cliRenderer).render(
         <WizardApp
           targetDir={targetDir}
-          detectedPackId={detectedPackId}
+          detectedPacks={detectedPacks}
           contextText={resolvedContext?.text}
           contextSource={resolvedContext?.source}
           adviseBackend={adviseBackend}
@@ -514,7 +476,7 @@ export async function runWizard(targetDir: string, options?: { context?: string 
           registryWarnings={registryWarnings}
           models={models}
           onExit={finish}
-        />
+        />,
       );
     });
   } catch (error) {

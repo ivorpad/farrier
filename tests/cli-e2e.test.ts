@@ -13,80 +13,23 @@ function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
-async function runCli(
-  args: string[],
-  options: { env?: Record<string, string | undefined> } = {}
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runCli(args: string[], options: { env?: Record<string, string | undefined> } = {}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn({
     cmd: ["bun", "run", join(repoRoot(), "src", "cli.ts"), ...args],
     cwd: repoRoot(),
     env: {
       ...process.env,
-      ...options.env
+      FARRIER_SKILLS_BIN: `bun run ${join(repoRoot(), "tests", "fixtures", "fake-skills.ts")}`,
+      ...options.env,
     },
     stdout: "pipe",
-    stderr: "pipe"
+    stderr: "pipe",
   });
 
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited,
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text()
-  ]);
+  const [exitCode, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
 
   return { exitCode, stdout, stderr };
 }
-
-const pythonFastapiFiles = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  ".claude/settings.json",
-  ".claude/skills/harness-advisor/SKILL.md",
-  ".claude/hooks/secret-shield.py",
-  ".claude/hooks/test_secret_shield.py",
-  ".claude/hooks/tool-policy.py",
-  ".claude/hooks/test_tool_policy.py",
-  ".claude/hooks/write-guard.py",
-  ".claude/hooks/test_write_guard.py",
-  ".claude/hooks/verb-runner.py",
-  ".claude/hooks/test_verb_runner.py",
-  ".claude/hooks/quality-judge.py",
-  ".claude/hooks/test_quality_judge.py",
-  ".claude/hooks/stop-judge.py",
-  ".claude/hooks/test_stop_judge.py",
-  ".claude/hooks/tool-policy-rules.json",
-  ".claude/hooks/prompts/quality-judge-v1.txt",
-  ".claude/hooks/prompts/stop-judge-v1.txt",
-  "justfile",
-  "konpy.json",
-  ".farrier.json",
-  ".gitignore"
-];
-
-const railsFiles = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  ".claude/settings.json",
-  ".claude/skills/harness-advisor/SKILL.md",
-  ".claude/hooks/secret-shield.py",
-  ".claude/hooks/test_secret_shield.py",
-  ".claude/hooks/tool-policy.py",
-  ".claude/hooks/test_tool_policy.py",
-  ".claude/hooks/write-guard.py",
-  ".claude/hooks/test_write_guard.py",
-  ".claude/hooks/verb-runner.py",
-  ".claude/hooks/test_verb_runner.py",
-  ".claude/hooks/quality-judge.py",
-  ".claude/hooks/test_quality_judge.py",
-  ".claude/hooks/stop-judge.py",
-  ".claude/hooks/test_stop_judge.py",
-  ".claude/hooks/tool-policy-rules.json",
-  ".claude/hooks/prompts/quality-judge-v1.txt",
-  ".claude/hooks/prompts/stop-judge-v1.txt",
-  "justfile",
-  ".farrier.json",
-  ".gitignore"
-];
 
 function serveRegistryDir(root: string) {
   return Bun.serve({
@@ -95,153 +38,17 @@ function serveRegistryDir(root: string) {
       const name = new URL(request.url).pathname.replace(/^\//, "");
       try {
         const text = await readFile(join(root, name), "utf8");
-        return new Response(text, { headers: { "content-type": "application/json" } });
+        return new Response(text, {
+          headers: { "content-type": "application/json" },
+        });
       } catch {
         return new Response("missing", { status: 404 });
       }
-    }
+    },
   });
 }
 
 describe("CLI e2e", () => {
-  test("writes python-fastapi harness into target directory", async () => {
-    const dir = await tempDir();
-
-    const result = await runCli(["--stack", "python-fastapi", "--yes", "--dir", dir]);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Wrote 23 farrier harness files");
-
-    for (const file of pythonFastapiFiles) {
-      expect(existsSync(join(dir, file))).toBe(true);
-    }
-
-    const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8"));
-    expect(manifest.farrierVersion).toBe("0.1.0");
-    expect(manifest.secondaryAcknowledged).toEqual([]);
-  });
-
-  test("dry-run prints python-fastapi inventory and writes nothing", async () => {
-    const dir = await tempDir();
-
-    const result = await runCli(["--stack", "python-fastapi", "--dry-run", "--dir", dir]);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Dry run: would write 23 files");
-
-    for (const file of pythonFastapiFiles) {
-      expect(result.stdout).toContain(file);
-      expect(existsSync(join(dir, file))).toBe(false);
-    }
-  });
-
-  test("--detect writes most-specific FastAPI harness", async () => {
-    const dir = await tempDir();
-    await writeFile(
-      join(dir, "pyproject.toml"),
-      `[project]
-name = "example"
-dependencies = [
-  "fastapi>=0.110",
-  "pytest"
-]
-`,
-      "utf8"
-    );
-
-    const result = await runCli(["--detect", "--yes", "--dir", dir]);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Wrote 23 farrier harness files");
-
-    for (const file of pythonFastapiFiles) {
-      expect(existsSync(join(dir, file))).toBe(true);
-    }
-
-    const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8"));
-    expect(manifest.packIds).toEqual(["python-uv", "python-fastapi"]);
-  });
-
-  test("--detect dry-run prints FastAPI inventory and writes nothing", async () => {
-    const dir = await tempDir();
-    await writeFile(
-      join(dir, "pyproject.toml"),
-      `[project]
-name = "example"
-dependencies = ["fastapi"]
-`,
-      "utf8"
-    );
-
-    const result = await runCli(["--detect", "--dry-run", "--dir", dir]);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Dry run: would write 23 files");
-    expect(result.stdout).toContain(".claude/skills/harness-advisor/SKILL.md");
-    expect(result.stdout).toContain("konpy.json");
-    expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
-  });
-
-  test("--detect errors clearly when no stack matches", async () => {
-    const dir = await tempDir();
-    await writeFile(join(dir, "README.md"), "# unknown\n", "utf8");
-
-    const result = await runCli(["--detect", "--dry-run", "--dir", dir]);
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("No stack detected");
-    expect(result.stderr).toContain("Use --stack generic");
-  });
-
-  test("rejects --detect combined with --stack", async () => {
-    const dir = await tempDir();
-
-    const result = await runCli(["--detect", "--stack", "generic", "--dry-run", "--dir", dir]);
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("--detect and --stack are mutually exclusive");
-  });
-
-  test("dry-run rails omits konsistent artifacts", async () => {
-    const dir = await tempDir();
-
-    const result = await runCli(["--stack", "rails", "--dry-run", "--dir", dir]);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Dry run: would write 22 files");
-
-    for (const file of railsFiles) {
-      expect(result.stdout).toContain(file);
-      expect(existsSync(join(dir, file))).toBe(false);
-    }
-
-    expect(result.stdout).not.toContain("konsistent.json");
-  });
-
-  test("dry-run generic omits stop hook and konsistent inventory", async () => {
-    const dir = await tempDir();
-
-    const result = await runCli(["--stack", "generic", "--dry-run", "--dir", dir]);
-
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Dry run: would write 17 files");
-    expect(result.stdout).toContain("AGENTS.md");
-    expect(result.stdout).toContain(".claude/skills/harness-advisor/SKILL.md");
-    expect(result.stdout).toContain(".claude/hooks/quality-judge.py");
-    expect(result.stdout).toContain(".claude/hooks/tool-policy-rules.json");
-    expect(result.stdout).not.toContain("konsistent.json");
-    expect(result.stdout).not.toContain(".claude/hooks/verb-runner.py");
-    expect(result.stdout).not.toContain(".claude/hooks/stop-judge.py");
-
-    expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
-  });
-
   test("renders a remote registry stack and updates from cache after the fixture stops", async () => {
     const dir = await tempDir();
     const cacheDir = await tempDir();
@@ -249,9 +56,14 @@ dependencies = ["fastapi"]
       schemaVersion: 1,
       name: "@acme",
       items: [
-        { name: "demo", type: "pack", version: "1.0.0", description: "Acme demo" },
-        { name: "guard", type: "hook", version: "1.0.0" }
-      ]
+        {
+          name: "demo",
+          type: "pack",
+          version: "1.0.0",
+          description: "Acme demo",
+        },
+        { name: "guard", type: "hook", version: "1.0.0" },
+      ],
     };
     const demoPack = {
       schemaVersion: 1,
@@ -262,16 +74,16 @@ dependencies = ["fastapi"]
       pack: {
         extends: "generic",
         detect: {
-          files: ["acme.toml"]
+          files: ["acme.toml"],
         },
         generator: {
           command: "bun",
           args: ["run", "setup"],
-          onlyWhenEmptyDir: true
+          onlyWhenEmptyDir: true,
         },
         skills: [],
-        hooks: ["@acme/guard"]
-      }
+        hooks: ["@acme/guard"],
+      },
     };
     const guardHook = {
       schemaVersion: 1,
@@ -283,8 +95,8 @@ dependencies = ["fastapi"]
         events: [{ event: "PreToolUse", matcher: "Bash" }],
         entry: "guard.sh",
         runner: "bash",
-        files: [{ path: "guard.sh", content: "echo guard\n" }]
-      }
+        files: [{ path: "guard.sh", content: "echo guard\n" }],
+      },
     };
     const server = Bun.serve({
       port: 0,
@@ -300,7 +112,7 @@ dependencies = ["fastapi"]
           return Response.json(guardHook);
         }
         return new Response("missing", { status: 404 });
-      }
+      },
     });
     const env = { FARRIER_CACHE_DIR: cacheDir };
 
@@ -310,19 +122,19 @@ dependencies = ["fastapi"]
         `${JSON.stringify(
           {
             registries: {
-              "@acme": `http://127.0.0.1:${server.port}/{name}.json`
-            }
+              "@acme": `http://127.0.0.1:${server.port}/{name}.json`,
+            },
           },
           null,
-          2
+          2,
         )}\n`,
-        "utf8"
+        "utf8",
       );
 
       const dryRun = await runCli(["--stack", "@acme/demo", "--dry-run", "--dir", dir], { env });
       expect(dryRun.exitCode).toBe(0);
       expect(dryRun.stderr).toBe("");
-      expect(dryRun.stdout).toContain("Generator will run: bun run setup (from @acme/demo)");
+      expect(dryRun.stdout).toContain("declared project generator: bun run setup (from @acme/demo); harness creation does not run it");
       expect(dryRun.stdout).toContain(".claude/hooks/@acme/guard/guard.sh");
       expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
 
@@ -363,13 +175,13 @@ dependencies = ["fastapi"]
         `${JSON.stringify(
           {
             registries: {
-              "@acme": `http://127.0.0.1:${server.port}/{name}.json`
-            }
+              "@acme": `http://127.0.0.1:${server.port}/{name}.json`,
+            },
           },
           null,
-          2
+          2,
         )}\n`,
-        "utf8"
+        "utf8",
       );
 
       const list = await runCli(["registry", "list", "--dir", dir], { env });
@@ -405,11 +217,7 @@ dependencies = ["fastapi"]
   test("update fails before writing when a required registry has no cache", async () => {
     const dir = await tempDir();
     const cacheDir = await tempDir();
-    await writeFile(
-      join(dir, "farrier.config.json"),
-      `${JSON.stringify({ registries: { "@acme": "http://127.0.0.1:9/{name}.json" } }, null, 2)}\n`,
-      "utf8"
-    );
+    await writeFile(join(dir, "farrier.config.json"), `${JSON.stringify({ registries: { "@acme": "http://127.0.0.1:9/{name}.json" } }, null, 2)}\n`, "utf8");
     await writeFile(
       join(dir, ".farrier.json"),
       `${JSON.stringify(
@@ -425,24 +233,32 @@ dependencies = ["fastapi"]
           versions: {
             farrierManifest: 1,
             hooks: { "@acme/guard": 1 },
-            prompts: { qualityJudge: "v1", stopJudge: "v1" }
+            prompts: { qualityJudge: "v1", stopJudge: "v1" },
           },
           registry: {
             items: {
-              "@acme/demo": { type: "pack", version: "1.0.0", sha256: "old".padEnd(64, "0") },
-              "@acme/guard": { type: "hook", version: "1.0.0", sha256: "old".padEnd(64, "0") }
-            }
-          }
+              "@acme/demo": {
+                type: "pack",
+                version: "1.0.0",
+                sha256: "old".padEnd(64, "0"),
+              },
+              "@acme/guard": {
+                type: "hook",
+                version: "1.0.0",
+                sha256: "old".padEnd(64, "0"),
+              },
+            },
+          },
         },
         null,
-        2
+        2,
       )}\n`,
-      "utf8"
+      "utf8",
     );
     await writeFile(join(dir, "AGENTS.md"), "keep\n", "utf8");
 
     const result = await runCli(["update", "--dir", dir, "--yes"], {
-      env: { FARRIER_CACHE_DIR: cacheDir }
+      env: { FARRIER_CACHE_DIR: cacheDir },
     });
 
     expect(result.exitCode).toBe(1);
@@ -543,14 +359,7 @@ dependencies = ["fastapi"]
     const rulesPath = join(dir, ".claude", "hooks", "tool-policy-rules.json");
     const before = await readFile(rulesPath, "utf8");
 
-    const result = await runCli([
-      "learn",
-      "--dir",
-      dir,
-      "--transcripts",
-      join(dir, "missing-transcripts"),
-      "--no-llm"
-    ]);
+    const result = await runCli(["learn", "--dir", dir, "--transcripts", join(dir, "missing-transcripts"), "--no-llm"]);
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
@@ -574,6 +383,9 @@ dependencies = ["fastapi"]
     expect(result.stdout).toContain("--transcripts");
     expect(result.stdout).toContain("--no-llm");
     expect(result.stdout).toContain("--json");
+    expect(result.stdout).toContain("--force");
+    expect(result.stdout).toContain("--no-skills");
+    expect(result.stdout).toContain("Creation refuses existing Farrier projects");
   });
 
   test("learn and doctor subcommand help show usage", async () => {

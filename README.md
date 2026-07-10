@@ -19,7 +19,17 @@ Everything is declarative data + tested templates. The LLM never writes hook cod
 
 ## 5-minute quickstart
 
-Prereqs: [bun](https://bun.sh), [uv](https://docs.astral.sh/uv/) (for Python stacks + hook tests), [just](https://github.com/casey/just) (verification verbs). The [skills](https://www.npmjs.com/package/skills) CLI ships as a farrier dependency (`bun install` pulls it into `node_modules/.bin/skills`), so skill installs work offline without a global install; override with `FARRIER_SKILLS_BIN` if you need a different binary.
+Prereqs: [bun](https://bun.sh), [uv](https://docs.astral.sh/uv/) (for Python stacks + hook tests), [just](https://github.com/casey/just) (verification verbs). The [skills](https://www.npmjs.com/package/skills) CLI ships as a farrier dependency (`bun install` pulls it into `node_modules/.bin/skills`), so no global CLI install is required; fetching a skill source can still require network access. Override with `FARRIER_SKILLS_BIN` if you need a different binary.
+
+Run the published CLI with any npm-compatible launcher:
+
+```bash
+bunx farrier
+pnpm dlx farrier
+npx farrier
+```
+
+Every launcher accepts the same headless flags, for example `bunx farrier --detect --dry-run --dir .`. Bun is still required because the published executable runs Farrier's TypeScript entry point directly.
 
 ```bash
 cd ~/src/tries/2026-07-02-farrier
@@ -50,17 +60,27 @@ Step by step:
 - *Skills*: recommended skills are pre-ticked; type to live-search skills.sh; Space/Enter toggles.
 - *Hooks*: all six protections, pre-ticked; toggle any off.
 - *Learn*: opt this project into the self-learning loop (records intent in `.farrier.json`; see the learn walkthrough below).
-- *Review*: exact file inventory shown before anything is written. Enter writes the harness + installs skills (into `.claude/skills/` and `.agents/skills/` — Claude Code and Codex; farrier never scatters skills across every agent directory the skills CLI knows).
+- *Review*: the same creation plan used by headless mode, including per-file create/merge/unchanged/replace/blocked actions and why each file exists. Enter writes only an accepted plan, then installs skills into `.claude/skills/` and `.agents/skills/` for Claude Code and Codex.
 
 ### B. New project, headless (for scripts, CI, or agents driving farrier)
 
 ```bash
-farrier --stack python-fastapi --yes --dir ./my-api      # explicit stack
-farrier --detect --yes --dir ./existing-repo             # detect the stack
-farrier --stack rails --dry-run --dir ./app              # preview, write nothing
+farrier --detect --dry-run --dir ./existing-repo          # inspect evidence and every planned action
+farrier --detect --yes --dir ./existing-repo              # apply a clean detected plan + install skills
+farrier --stack python-fastapi --yes --dir ./my-api       # apply a clean explicitly selected plan
+farrier --stack rails --dry-run --json --dir ./app        # machine-readable preview
+farrier --stack python-fastapi --yes --no-skills --dir .  # offline: write files, record skills, skip install
 ```
 
-(Substitute `bun run src/cli.ts` for `farrier` until it's linked/published: `bun link` in this repo makes `farrier` available globally.)
+(When developing from this repository, substitute `bun run src/cli.ts` for `farrier`; `bun link` also makes the checkout available globally.)
+
+Creation is deliberately **plan, then apply**. `--dry-run` shows the selected stack, every detected stack with the signals that actually matched, any selection assumptions, the resulting harness behavior (rules, hooks, commands, skills, judge defaults), and each file's action and purpose. Add `--json` to either preview or apply for the same information as structured output, including machine-readable failures.
+
+`--yes` by itself accepts only a clean plan: new files, unchanged files, safe `.gitignore` additions, and metadata/permission updates. If an existing file differs, review it in `--dry-run`, then opt into replacement with `--yes --force`; Farrier first copies the old version under `.farrier-staging/backups/<timestamp>/`. Writes are staged, path identities are revalidated, and complete files are committed atomically so symlinks and hard-linked peers are not followed or mutated. If rollback encounters a concurrent edit, Farrier preserves it, retains an ignored recovery backup, and reports the incomplete state instead of overwriting the edit. `--force` cannot bypass unsafe paths such as symlinks, directories where files belong, or non-directory parents. If `.farrier.json` already exists, creation refuses even with `--force` and directs you to `farrier update --dir <target>` so lifecycle settings are not reset.
+
+Headless creation installs the selected pack skills for Claude Code and Codex by default. A failed install is an explicit partial result: harness files remain applied, Farrier reports an exact `skills add ...` retry command for each failure (in human and JSON output), and the process exits nonzero. Use `--no-skills` when deliberately working offline; the selected refs remain in the manifest, but no install or lockfile mutation is attempted.
+
+Some packs declare a native project generator such as `uv init` or `rails new`. Farrier reports that command in the harness behavior summary but does **not** execute it; run the project generator yourself before or after creating the harness as appropriate.
 
 ### C. See it work
 
@@ -82,7 +102,7 @@ Meanwhile every edit triggers `just check`, and when the agent tries to end its 
 
 ### How skill search & installs run
 
-The wizard's Skills step is tuned so neither the network nor the skills CLI ever makes you wait twice:
+The wizard's Skills step is tuned so neither the network nor the skills CLI ever makes you wait twice. Headless creation uses the same installer for the pack's selected defaults unless `--no-skills` is present:
 
 - **Search** is debounced (300 ms), and a superseded keystroke *aborts* the in-flight HTTP request rather than just discarding its result. Results are cached per query for the wizard session, so backspacing to an earlier query renders instantly. Search runs concurrently with agent advise — neither blocks the other.
 - **Installs** are grouped by source: one `skills add <source> -s a b c` per source, so each source repo is cloned once no matter how many of its skills you picked. Different sources install concurrently (capped at 4 via [Effect](https://effect.website)).
@@ -92,7 +112,7 @@ The wizard's Skills step is tuned so neither the network nor the skills CLI ever
 
 ## What got generated (and why each file exists)
 
-For `python-fastapi`, 23 files:
+For `python-fastapi`, 23 rendered harness files, plus the selected installed skills and their `skills-lock.json` entries:
 
 | File | Job |
 |---|---|
