@@ -29,6 +29,8 @@ pnpm dlx farrier
 npx farrier
 ```
 
+Bare `farrier` on a terminal opens exactly three primary workflows: **⚒ Create a harness**, **✚ Create a skill**, and **✦ Advise this project**. Advice inspects the project and optionally its exact-project Claude/Codex sessions, then reports configuration improvements without changing the project.
+
 Every launcher accepts the same headless flags, for example `bunx farrier --detect --dry-run --dir .`. Bun is still required because the published executable runs Farrier's TypeScript entry point directly.
 
 ```bash
@@ -112,7 +114,7 @@ The wizard's Skills step is tuned so neither the network nor the skills CLI ever
 
 ## What got generated (and why each file exists)
 
-For `python-fastapi`, 23 rendered harness files, plus the selected installed skills and their `skills-lock.json` entries:
+For `python-fastapi`, 33 rendered harness files, plus the selected installed skills and their `skills-lock.json` entries:
 
 | File | Job |
 |---|---|
@@ -123,12 +125,14 @@ For `python-fastapi`, 23 rendered harness files, plus the selected installed ski
 | `.claude/hooks/tool-policy-rules.json` | **Declarative** wrong-tool rules (this is where `farrier learn` appends). |
 | `.claude/hooks/prompts/*.txt` | Versioned prompts for the LLM judges. |
 | `.claude/skills/harness-advisor/SKILL.md` | Teaches the in-session agent to manage the harness itself. |
+| `.claude/skills/claude-automation-recommender/` | Claude wrapper plus an unchanged, pinned Anthropic reference snapshot with Apache-2.0 attribution, provenance, and SHA-256 hashes. |
+| `.agents/skills/farrier-project-advisor/SKILL.md` | Codex-native wrapper for the same shared, report-only advice engine. |
 | `justfile` | The stable verbs: `just check` / `test` / `fmt` / `konpy` (Python) or `konsistent` (TypeScript). |
 | `konpy.json` / `konsistent.json` | Structure conventions (v1 grammar) enforced at Stop — `konpy.json` on Python, `konsistent.json` on TypeScript. |
 | `.farrier.json` | Manifest: packs, hooks, skills, judge config. **Never edit by hand.** |
 | `.gitignore` | Gains `.env`, `.env.*`, `!.env.example`. |
 
-Rails renders 22 (no structure linter — konpy/konsistent are TS/Python-only), `generic` renders 17.
+Rails renders 32 (no structure linter — konpy/konsistent are TS/Python-only), `generic` renders 27.
 
 ### The six hooks
 
@@ -222,20 +226,44 @@ farrier doctor --dir . --json
 
 Static checks: manifest parses, all inventory files exist, hooks are executable, `settings.json` doesn't reference missing scripts, every tool-policy regex compiles, judge/quality config is shape-valid. Good in CI: `farrier doctor --dir . || exit 1`.
 
-### `farrier advise` — recommend skills from project context
+### `farrier advise` — evidence-backed project advice
 
-Give farrier a PRP or any free-text description of the project and it researches skills.sh on your behalf, using whichever agent backend is on `PATH` (`claude -p`, else `codex exec`):
+Farrier deterministically profiles the resolved project directory—stack, languages, tests, CI, services, structure, and existing agent configuration—then recommends high-value guidance, hooks, skills, subagents, plugins, and MCP servers:
 
 ```bash
-farrier advise --dir .                              # uses PRP.md / PRP.txt / docs/PRP.md if present
-farrier advise --dir . --context ./docs/brief.md    # explicit file
-farrier advise --dir . --context "a FastAPI billing service"   # literal text
-farrier advise --dir . --backend codex --json
+farrier advise --dir .
+farrier advise --dir . --sessions none                         # codebase evidence only
+farrier advise --dir . --since 14d                             # exact-project sessions from the past 14 days
+farrier advise --dir . --since all                             # explicit full-history opt-in
+farrier advise --dir . --targets claude,codex
+farrier advise --dir . --only guidance,hooks,mcp
+farrier advise --dir . --backend codex --model <name> --json
 ```
 
-It runs two backend calls — generate 2-4 registry search queries, then pick at most 6 skills from the candidates — and validates every returned ref against the candidate set before printing it, so a hallucinated ref never reaches an install. Exits 1 when there is no context, no backend available, or the backend call fails; otherwise it always prints (even zero recommendations).
+With `--sessions auto` (the default), Farrier includes only the past 7 days of exact-project sessions. Use `--since 14d` for a two-week window or `--since all` to opt into full history. Claude JSONL is accepted only from the matching project directory. Codex history is read through Codex App Server: Farrier pages `thread/list` newest-first by `updated_at` with the exact resolved `cwd`, applies the window before any `thread/read`, verifies the returned directory, and calls read-only `thread/read`. It consumes visible prompts, responses, corrections, tool events, failures, and outcomes; reasoning records are ignored. Equivalent events are normalized into bounded patterns with separate occurrence and distinct-session counts. Secrets and personal identifiers are redacted locally, and at most 40 patterns—not complete transcripts—reach the recommendation backend. Evidence selection is balanced across requested sources before the global limit, so one high-volume source cannot starve another. If no matching sessions exist, the same command cleanly falls back to codebase-only analysis.
 
-The same context and backend detection power a toggle on the wizard's Skills step. Passing `--context` on the bare `farrier` invocation enables it immediately — research starts at launch (searches run in parallel) so recommendations are ready by the time you reach Skills. With only an auto-detected `PRP.md` the toggle stays **off by default**; press `a` to run it. Recommendations merge into the picker as ★ proposals — nothing is auto-selected, and failures only show a warning, never blocking the wizard.
+Session count measures input volume; it does not measure recommendation strength. Recurring actionable patterns across distinct sessions determine strength. Reports expose the full funnel by source—sessions discovered, eligible, read, and parsed; visible events; filtering, redaction, deduplication, malformed-record, and limit drops; recurring patterns; and backend acceptance or rejection. A compact summary such as `34 sessions → 187 visible events → 12 recurring patterns → 5 supported recommendations` makes low-output runs explainable.
+
+The interactive advice workflow starts with a visible **Reasoning backend** picker and shows Claude/Codex counts for **past 7 days**, **past 14 days**, and **all history**. When both backends are available, Claude is initially selected for compatibility and Left/Right switches to Codex; when only one is available, Farrier selects it and labels the other unavailable. This choice controls only the process that analyzes evidence—it does not determine recommendation target vendors, session evidence sources, session lookback, or recommendation scope. Move to a visible setup control with Up/Down or Tab, then use Left/Right to change that control's value. In the report, Up/Down selects a recommendation and immediately shows the observed problem, expected value, strongest evidence, and exact artifact Farrier would create. PageUp/PageDown scrolls the full report. The visible action row contains **Create selected** and **Create all (N)**; Left/Right focuses an action and Enter activates it, so individual creation remains the default.
+
+**Create all** coordinates every supported recommendation in the report. Farrier plans file recommendations and authors skill recommendations concurrently, with at most three backend jobs running at once. The backend recorded in `report.backend` authors every job, including skills; target vendors and session sources never select the authoring backend. Model and reasoning settings for that backend are reloaded when the batch starts, and a backend failure is reported without falling back to the other agent. Unsupported/manual routes such as unverified plugin installation are retained in the result as **skipped** with an explanation. Each recommendation shows queued/running progress followed by **planned**, **created**, **skipped**, **failed**, or **cancelled**; retry runs only failed/cancelled work and preserves successful work.
+
+Concurrent backend work does not mean concurrent filesystem commits. Skill-creator output stays in disposable staging and becomes reviewed project files; cancellation before confirmation leaves no project artifact. Farrier rejects different plans for the same path as an explicit conflict instead of choosing a last writer. All conflict-free results appear in one aggregated review with the exact create/update/replace manifest and complete paged content previews. Nothing is written until confirmation. One transaction then applies the reviewed files, retains backups for replacements, detects changes since review, and rolls back on failure. Any creator installation or other lock-sensitive preparation is serialized.
+
+While batch planning/authoring runs, Ctrl+C or Command-Z requests cancellation through the batch's one abort signal, stops queued work, terminates running backend process groups, and waits for all jobs to settle. A cancellation arriving after the atomic file transaction begins does not interrupt it mid-commit; the transaction finishes or rolls back first. OpenTUI exposes Command as the `super` modifier, so the binding is `super+z`, never plain `z`. The host terminal must deliver an enhanced Super-modified key event (for example through the Kitty keyboard protocol); terminals that intercept Command-Z or cannot encode Super will not deliver it, and Ctrl+C remains the portable cancellation key. Headless users continue to choose with `--backend claude|codex`; headless advice remains report-only, progress stages go to stderr, and `--json` stdout remains valid machine-readable JSON.
+
+Every accepted recommendation has a stable ID, category, target vendors, concise evidence-backed reason, distinct expected benefit, validated project/session evidence IDs, confidence, and a catalogued implementation route. The reason says what observed problem or opportunity triggered the recommendation; the benefit says how the user or workflow improves if it is implemented. Registry references must match Farrier's candidate catalog. Malformed, duplicated, unsupported, hallucinated, or over-limit results are dropped with reasons. The normal report is capped at two recommendations per applicable category; a focused single category may return up to five. Every requested category reports one outcome: accepted, no evidence, weak evidence, supported evidence without a route, backend omission, or validation rejection. Low-confidence ideas appear under **Weak leads**, with the missing evidence stated, rather than counting as successful recommendations. When at least three categories have recurring support but the broad response returns fewer than three medium/high-confidence items, Farrier may make one recovery call limited to omitted supported categories; session volume alone never triggers recovery. Hook output is declarative—the LLM never supplies executable hook code.
+
+Advice analysis is always read-only, and headless advice remains report-only. The interactive TUI may create one selected recommendation or a reviewed batch only after opening a separate review screen and receiving explicit confirmation; no report result is applied automatically. Human and JSON output remain two renderings of the same validated report.
+
+The earlier skills.sh advisor remains available through both spellings:
+
+```bash
+farrier advise skills --dir . --context ./docs/brief.md
+farrier advise --dir . --only skills --backend codex --json
+```
+
+It generates registry queries, validates every selected ref against the returned candidates, and also remains available as the optional ★ advice toggle in the harness wizard's Skills step.
 
 ### `farrier skill new` — create a skill with each vendor's own skill-creator
 
@@ -247,11 +275,31 @@ The wizard has a **Create** step (Stack → Skills → Create → Hooks → Lear
 - **Codex authors, install to both** — same, codex writes the canonical copy.
 - **Each agent authors its own copy** — claude writes `.claude/skills/<name>/`, codex writes `.agents/skills/<name>/`; truest to each vendor, but the copies may diverge and are not lock-tracked.
 
-Vague briefs make dumb skills, so the standalone create flow **asks first**: before authoring, farrier makes one read-only backend call (`claude -p` / `codex exec`) that proposes 2–4 concrete questions about whatever the description leaves open — language, specific libraries, input/output formats — each with recommended options, a "let the creator decide" escape hatch, and free-text input (`s` skips a question, esc skips them all). Your answers are folded into the brief as an "Implementation decisions (follow these exactly)" block before it reaches the skill-creator. Toggle it off with the "ask clarifying questions first" checkbox; the wizard's Create step asks the same questions at queue time. Headless `farrier skill new` asks only with `--refine` (interactive: numbers pick options, free text is used verbatim, empty lets the creator decide) — otherwise put the decisions in the description yourself. If the authored skill's directory already exists, the standalone flow and the harness wizard both pause and ask whether to **replace** it or keep the existing copy (the new one stays in `.farrier-staging/`); headless replaces only with `--force`.
+Vague briefs make dumb skills, so the standalone create flow **asks first**: before authoring, farrier makes one read-only backend call (`claude -p` / `codex exec`) that proposes 2–4 concrete questions about whatever the description leaves open — language, specific libraries, input/output formats — each with recommended options, a "let the creator decide" escape hatch, and free-text input. Escape leaves a focused text field first; outside the field, Escape or `b` finishes the interview with the answers so far. Your answers are folded into the brief as an "Implementation decisions (follow these exactly)" block before it reaches the skill-creator. Toggle it off with the "ask clarifying questions first" checkbox; the wizard's Create step asks the same questions at queue time. Headless `farrier skill new` asks only with `--refine` (interactive: numbers pick options, free text is used verbatim, empty lets the creator decide) — otherwise put the decisions in the description yourself. If the authored skill's directory already exists, the standalone flow and the harness wizard both pause with the shared confirmation grammar: `y` replaces it, while `n` or Escape keeps the existing copy (the new one stays in `.farrier-staging/`); headless replaces only with `--force`.
 
-You don't need the full wizard to create a skill: bare `farrier` now opens a launcher — **⚒ Create the harness** (the full wizard) or **✚ Create a skill** (straight to authoring) — and bare `farrier skill new` (optionally with `--dir`) on a terminal opens the same standalone create flow directly: describe → check agents → ⚒ Create → per-skill results.
+You don't need the full wizard to create a skill: bare `farrier` opens the three-workflow launcher—**⚒ Create a harness**, **✚ Create a skill**, or **✦ Advise this project**—and bare `farrier skill new` (optionally with `--dir`) on a terminal opens the same standalone create flow directly: describe → check agents → ⚒ Create → per-skill results.
 
-Queue as many skills as you like (each enter queues another; empty + enter starts). They are authored **in parallel** — up to 3 agent runs at once, each in its own staging root so runs can't cross-contaminate, with lockfile-touching installs serialized — while a progress screen shows each skill's phase (pinning creator → authoring via claude/codex → validating → installing → ✓/✗). Each run is a full agent session, so expect minutes. Headless:
+#### Interactive keyboard grammar
+
+| Key | Behavior |
+| --- | --- |
+| Up / Down | Move through the focused list. |
+| Left / Right | Change the value inside the focused control; never change wizard pages. |
+| Tab / Shift+Tab | Move between visible focus zones. |
+| Space | Toggle the focused option. |
+| Enter | Activate the focused row or visible action. |
+| Escape / `b` | Leave a text field first, otherwise go back or close the transient screen. |
+| `q` | Quit when a text field is not focused. |
+| Ctrl+C | Interrupt running work and its child processes; otherwise quit. |
+| Command-Z | Cancel advice batch planning/authoring when the terminal delivers OpenTUI's `super+z` event. |
+| PageUp / PageDown | Scroll long reports and file previews. |
+| `r` | Retry or rerun only. |
+| `y` | Confirm replacement, overwrite, deletion, or another destructive operation. |
+| `n` / Escape | Reject a destructive operation. |
+
+Every screen renders its hints from the same typed bindings used by its handler. Ordinary letters stay in a focused text field, and Enter in the skill-description field only leaves that field—it cannot submit the workflow. Use Tab to focus the visible **Queue another** or **Create/Next** action, then Enter to activate it.
+
+Queue as many skills as you like with the visible **Queue another** action, then activate **Create**. They are authored **in parallel** — up to 3 agent runs at once, each in its own staging root so runs can't cross-contaminate, with lockfile-touching installs serialized — while a progress screen shows each skill's phase (pinning creator → authoring via claude/codex → validating → installing → ✓/✗). Each run is a full agent session, so expect minutes. Headless:
 
 ```bash
 farrier skill new "Convert financial tables to markdown before sending them to the LLM" --yes
@@ -268,6 +316,8 @@ When `per-agent` creates both copies successfully, Farrier compares them and ask
 ### The harness-advisor skill
 
 Every generated project carries `.claude/skills/harness-advisor/SKILL.md`, so the *in-session agent* knows this loop too: it runs `farrier update` when it notices new file types, suggests skills.sh searches for new frameworks, points at `skill-creator` when you repeat yourself, and refuses to hand-edit `.farrier.json`.
+
+Generated projects also carry a Claude automation-recommender wrapper and a Codex-native project-advisor skill. Both delegate to `farrier advise --sessions auto --since 7d` instead of implementing separate transcript or recommendation logic. The Claude skill includes Anthropic's upstream `claude-automation-recommender` from commit `a5c7fb5d86a4cd34c4f47819658654c3d8f08dda` unchanged under `upstream/`, together with every reference file, the Apache-2.0 license, source provenance, and per-file SHA-256 hashes.
 
 ---
 

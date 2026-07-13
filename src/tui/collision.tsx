@@ -1,6 +1,13 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { CollisionDecision, CollisionInfo } from "../engine/create-skill";
-import { palette } from "./chrome";
+import { KeyHints, palette } from "./chrome";
+import { binding, bindingsHint, defineBindings } from "./keymap";
+
+export const collisionBindings = defineBindings(
+  binding("y", "replace", "replace"),
+  binding(["n", "escape"], "keep", "keep existing"),
+  binding("b", "keep", "close prompt")
+);
 
 export type CollisionPrompt = {
   path: string;
@@ -49,12 +56,8 @@ export function CollisionPromptView(props: { collision: CollisionPrompt }) {
         <span fg={palette.warn}>{"! "}</span>
         <span fg={palette.text}>{`${props.collision.path} already exists.`}</span>
       </text>
-      <text>
-        <span fg={palette.gold}>{"r"}</span>
-        <span fg={palette.muted}>{" replace it with the new copy  ·  "}</span>
-        <span fg={palette.gold}>{"k"}</span>
-        <span fg={palette.muted}>{` keep the existing one (${stagingText})`}</span>
-      </text>
+      <text fg={palette.muted}>{`Keeping the existing file means ${stagingText}.`}</text>
+      <KeyHints hint={bindingsHint(collisionBindings)} />
     </box>
   );
 }

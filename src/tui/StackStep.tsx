@@ -2,8 +2,9 @@ import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import type { DetectedPackEvidence } from "../engine/detect";
 import type { PackListing } from "../registry/catalog";
-import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
+import { ButtonBar } from "./ButtonBar";
 import { palette, StepHeader } from "./chrome";
+import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 import { detectedPackPresentations, stackSelectionAssumption } from "./pack-presentation";
 
 type StackStepProps = {
@@ -17,12 +18,12 @@ type StackStepProps = {
   onCancel: () => void;
 };
 
-type Zone = "list" | "buttons";
-
-const buttons: ButtonSpec[] = [
-  { id: "cancel", label: "Exit" },
-  { id: "next", label: "Continue →" },
-];
+const stackBindings = defineBindings(
+  binding(["up", "down"], "move", "move"),
+  binding("enter", "choose", "choose"),
+  binding(["escape", "b"], "back", "back"),
+  binding(["q", "ctrl+c"], "quit", "quit")
+);
 
 /**
  * Human one-line summaries for each real pack, shown in muted text next to the
@@ -50,8 +51,6 @@ function summaryFor(packId: string, listings: PackListing[]): string {
 }
 
 export function StackStep(props: StackStepProps) {
-  const [zone, setZone] = useState<Zone>("list");
-  const [focusedButtonId, setFocusedButtonId] = useState<string>(buttons[0].id);
   const [focusedIndex, setFocusedIndex] = useState<number>(Math.max(props.packIds.indexOf(props.selectedPackId), 0));
 
   const nameWidth = props.packIds.reduce((width, packId) => Math.max(width, packId.length), 0);
@@ -71,69 +70,20 @@ export function StackStep(props: StackStepProps) {
   }
 
   useKeyboard((key) => {
-    if (key.name === "escape" || key.name === "q") {
+    const intent = resolveIntent(stackBindings, key);
+    if (intent === "back" || intent === "quit") {
       props.onCancel();
       return;
     }
-
-    if (key.name === "tab") {
-      setZone((current) => (current === "list" ? "buttons" : "list"));
+    if (intent === "move" && key.name === "down") {
+      moveFocus(1);
       return;
     }
-
-    if (key.name === "down") {
-      if (zone === "list") {
-        moveFocus(1);
-      }
+    if (intent === "move") {
+      moveFocus(-1);
       return;
     }
-
-    if (key.name === "up") {
-      if (zone === "buttons") {
-        setZone("list");
-      } else {
-        moveFocus(-1);
-      }
-      return;
-    }
-
-    if (key.name === "left") {
-      if (zone === "buttons") {
-        if (focusedButtonId === buttons[0].id) {
-          setZone("list");
-        } else {
-          setFocusedButtonId((current) => adjacentButtonId(buttons, current, -1) ?? current);
-        }
-      }
-      return;
-    }
-
-    if (key.name === "right") {
-      if (zone === "buttons") {
-        setFocusedButtonId((current) => adjacentButtonId(buttons, current, 1) ?? current);
-      } else {
-        props.onNext();
-      }
-      return;
-    }
-
-    if (key.name === "n" && zone === "list") {
-      props.onNext();
-      return;
-    }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-      if (zone === "buttons") {
-        if (focusedButtonId === "cancel") {
-          props.onCancel();
-        } else {
-          props.onNext();
-        }
-        return;
-      }
-
-      props.onNext();
-    }
+    if (intent === "choose") props.onNext();
   });
 
   return (
@@ -150,7 +100,7 @@ export function StackStep(props: StackStepProps) {
       ) : null}
       <box style={{ flexDirection: "column", gap: 0 }}>
         {props.packIds.map((packId, index) => {
-          const focused = index === focusedIndex && zone === "list";
+          const focused = index === focusedIndex;
           const detected = detectedByPack.get(packId);
           const bg = focused ? palette.selBg : undefined;
           const cursor = index === focusedIndex ? "▸ " : "  ";
@@ -173,7 +123,7 @@ export function StackStep(props: StackStepProps) {
       </box>
       <text fg={props.selectedPackId === props.detectedPacks[0]?.packId ? palette.faint : palette.gold}>{stackSelectionAssumption(props.selectedPackId, props.detectedPacks)}</text>
       <text fg={palette.faint}>The pack decides everything downstream: which hooks make sense, which skills exist for it, what `just check` runs.</text>
-      <ButtonBar buttons={buttons} focusedId={zone === "buttons" ? focusedButtonId : undefined} hint="↑↓ move · enter choose · q quit" />
+      <ButtonBar hint={bindingsHint(stackBindings)} />
     </box>
   );
 }

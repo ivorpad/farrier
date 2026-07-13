@@ -11,7 +11,8 @@ import {
   type SkillWinnerResolution
 } from "../engine/eval-skill";
 import { nativeSkillRoots } from "../engine/create-skill";
-import { palette, truncateTo, useSpinner } from "./chrome";
+import { KeyHints, palette, truncateTo, useSpinner } from "./chrome";
+import { binding, bindingsHint, defineBindings, destructiveConfirmationBindings, resolveIntent, runningCancellationBindings } from "./keymap";
 
 export type PendingSkillEval = SkillEvalCandidate;
 
@@ -34,41 +35,44 @@ export function nextEvalPolicy(current: SkillEvalPolicy): SkillEvalPolicy {
   return current === "ask" ? "auto" : current === "auto" ? "skip" : "ask";
 }
 
-export function EvalProgressScreen(props: { skillName: string; onCancel: () => void }) {
+export function EvalProgressScreen(props: { skillName: string; onCancel: () => void; onQuit: () => void }) {
   const spinner = useSpinner(true);
+  const bindings = defineBindings(
+    ...runningCancellationBindings,
+    binding(["escape", "b"], "back", "cancel evaluation"),
+    binding("q", "quit", "quit")
+  );
 
   useKeyboard((key) => {
-    if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q") {
-      props.onCancel();
-    }
+    const intent = resolveIntent(bindings, key);
+    if (intent === "back") props.onCancel();
+    else if (intent === "quit" || intent === "interrupt") props.onQuit();
   });
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <text fg={palette.accent}>{`${spinner}  Evaluating ${props.skillName} copies with the pinned skill-creator guidance…`}</text>
       <text fg={palette.muted}>This is read-only. The recommendation is advisory until you explicitly pick a winner.</text>
-      <text fg={palette.gold}>
-        {"esc "}
-        <span fg={palette.muted}>cancel</span>
-      </text>
+      <KeyHints hint={bindingsHint(bindings)} />
     </box>
   );
 }
 
-export function EvalErrorScreen(props: { message: string; onBack: () => void }) {
+export function EvalErrorScreen(props: { message: string; onBack: () => void; onQuit: () => void }) {
+  const bindings = defineBindings(
+    binding(["enter", "escape", "b"], "back", "back to results"),
+    binding(["q", "ctrl+c"], "quit", "quit")
+  );
   useKeyboard((key) => {
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
-      props.onBack();
-    }
+    const intent = resolveIntent(bindings, key);
+    if (intent === "back") props.onBack();
+    else if (intent === "quit") props.onQuit();
   });
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <text fg={palette.warn}>{`✗ Eval failed: ${props.message}`}</text>
-      <text fg={palette.gold}>
-        {"enter "}
-        <span fg={palette.muted}>back to results</span>
-      </text>
+      <KeyHints hint={bindingsHint(bindings)} />
     </box>
   );
 }
@@ -77,18 +81,23 @@ export function EvalVerdictScreen(props: {
   verdict: SkillEvalVerdict;
   onPick: (winner: CreateAgent) => void;
   onKeepBoth: () => void;
+  onQuit: () => void;
 }) {
-  // Deliberately no enter/esc fall-through: every way out of this screen is a
-  // named choice, so keeping both is a decision rather than a reflex. Ctrl+c
-  // is the non-destructive escape and also keeps both.
+  const [choice, setChoice] = useState(0);
+  const choices = ["claude", "codex", "both"] as const;
+  const bindings = defineBindings(
+    binding(["up", "down"], "move", "move"),
+    binding("enter", "activate", "choose"),
+    binding(["escape", "b"], "back", "keep both and go back"),
+    binding(["q", "ctrl+c"], "quit", "quit")
+  );
   useKeyboard((key) => {
-    if (key.name === "c" && !key.ctrl) {
-      props.onPick("claude");
-    } else if (key.name === "x") {
-      props.onPick("codex");
-    } else if (key.name === "k" || (key.ctrl && key.name === "c")) {
-      props.onKeepBoth();
-    }
+    const intent = resolveIntent(bindings, key);
+    if (intent === "move") setChoice((current) => Math.min(Math.max(current + (key.name === "down" ? 1 : -1), 0), choices.length - 1));
+    else if (intent === "activate" && choices[choice] === "both") props.onKeepBoth();
+    else if (intent === "activate") props.onPick(choices[choice] as CreateAgent);
+    else if (intent === "back") props.onKeepBoth();
+    else if (intent === "quit") props.onQuit();
   });
 
   return (
@@ -100,12 +109,13 @@ export function EvalVerdictScreen(props: {
         <span fg={palette.faint}>{"  (advisory — nothing happens until you choose)"}</span>
       </text>
       <text fg={palette.muted}>{truncateTo(props.verdict.rationale, 110)}</text>
-      {(["claude", "codex"] as const).map((agent) => {
+      {(["claude", "codex"] as const).map((agent, index) => {
         const copy = props.verdict.copies[agent];
         const mark = props.verdict.recommendedWinner === agent ? "★ " : "  ";
         return (
           <box key={agent} style={{ flexDirection: "column", gap: 0 }}>
-            <text>
+            <text bg={choice === index ? palette.selBg : undefined}>
+              <span fg={palette.accent}>{choice === index ? "▸ " : "  "}</span>
               <span fg={palette.gold}>{mark}</span>
               <span fg={palette.text}>{`${agent} ${copy.score}/10`}</span>
               <span fg={palette.faint}>{`  ${copy.path}`}</span>
@@ -122,29 +132,30 @@ export function EvalVerdictScreen(props: {
       {props.verdict.reportPaths ? (
         <text fg={palette.muted}>{`Full reports: ${props.verdict.reportPaths.claude} · ${props.verdict.reportPaths.codex}`}</text>
       ) : null}
-      <text fg={palette.gold}>
-        {"c "}
-        <span fg={palette.muted}>pick claude · </span>
-        <span fg={palette.gold}>{"x "}</span>
-        <span fg={palette.muted}>pick codex · </span>
-        <span fg={palette.gold}>{"k "}</span>
-        <span fg={palette.muted}>keep both — an explicit choice is required</span>
+      <text bg={choice === 2 ? palette.selBg : undefined}>
+        <span fg={palette.accent}>{choice === 2 ? "▸ " : "  "}</span>
+        <span fg={palette.text}>Keep both copies</span>
       </text>
+      <KeyHints hint={bindingsHint(bindings)} />
     </box>
   );
 }
 
-export function EvalConfirmScreen(props: { names: PerAgentSkillNames; winner: CreateAgent; onConfirm: () => void; onBack: () => void }) {
+export function EvalConfirmScreen(props: { names: PerAgentSkillNames; winner: CreateAgent; onConfirm: () => void; onBack: () => void; onQuit: () => void }) {
   const loser = props.winner === "claude" ? "codex" : "claude";
   const deletePath = `${nativeSkillRoots[loser]}/${props.names[loser]}`;
   const linkPath = `${nativeSkillRoots[loser]}/${props.names[props.winner]}`;
 
+  const bindings = defineBindings(
+    ...destructiveConfirmationBindings,
+    binding("b", "reject", "back"),
+    binding(["q", "ctrl+c"], "quit", "quit")
+  );
   useKeyboard((key) => {
-    if (key.name === "y" && !key.ctrl) {
-      props.onConfirm();
-    } else if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "n" || key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
-      props.onBack();
-    }
+    const intent = resolveIntent(bindings, key);
+    if (intent === "confirm") props.onConfirm();
+    else if (intent === "reject") props.onBack();
+    else if (intent === "quit") props.onQuit();
   });
 
   return (
@@ -155,10 +166,7 @@ export function EvalConfirmScreen(props: { names: PerAgentSkillNames; winner: Cr
           ? `${deletePath} will be replaced by a relative symlink.`
           : `${deletePath} will be deleted; ${linkPath} will become a relative symlink.`}
       </text>
-      <text fg={palette.gold}>
-        {"y "}
-        <span fg={palette.muted}>delete + symlink · enter keep both</span>
-      </text>
+      <KeyHints hint={bindingsHint(bindings)} />
     </box>
   );
 }
@@ -185,6 +193,7 @@ export function SkillEvalFlow(props: {
   const [resolution, setResolution] = useState<SkillWinnerResolution | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const closeAfterApplyRef = useRef(false);
 
   const backend = props.backend;
 
@@ -250,9 +259,17 @@ export function SkillEvalFlow(props: {
         confirmDeleteAndLink: true,
         retainBackupInTrash
       });
+      if (closeAfterApplyRef.current) {
+        props.onExit();
+        return;
+      }
       setResolution(applied);
       setPhase("applied");
     } catch (cause) {
+      if (closeAfterApplyRef.current) {
+        props.onExit();
+        return;
+      }
       setError(cause instanceof Error ? cause.message : String(cause));
       setPhase("error");
     }
@@ -267,6 +284,10 @@ export function SkillEvalFlow(props: {
             abortRef.current?.abort();
             props.onClose();
           }}
+          onQuit={() => {
+            abortRef.current?.abort();
+            props.onExit();
+          }}
         />
       );
 
@@ -279,9 +300,10 @@ export function SkillEvalFlow(props: {
             setPhase("confirm");
           }}
           onKeepBoth={props.onClose}
+          onQuit={props.onExit}
         />
       ) : (
-        <EvalErrorScreen message="Eval finished without a verdict." onBack={props.onClose} />
+        <EvalErrorScreen message="Eval finished without a verdict." onBack={props.onClose} onQuit={props.onExit} />
       );
 
     case "confirm":
@@ -291,35 +313,49 @@ export function SkillEvalFlow(props: {
           winner={winner}
           onConfirm={() => void applyWinner(winner, false)}
           onBack={() => setPhase("verdict")}
+          onQuit={props.onExit}
         />
       ) : (
-        <EvalErrorScreen message="No winner is selected." onBack={props.onClose} />
+        <EvalErrorScreen message="No winner is selected." onBack={props.onClose} onQuit={props.onExit} />
       );
 
     case "applying":
       return (
-        <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-          <text fg={palette.accent}>{`Applying the recommended winner for ${props.candidate.skillName}…`}</text>
-        </box>
+        <EvalApplyingScreen skillName={props.candidate.skillName} onCloseAfterApply={() => { closeAfterApplyRef.current = true; }} />
       );
 
     case "applied":
       return resolution ? (
         <EvalAppliedScreen resolution={resolution} onExit={props.onExit} />
       ) : (
-        <EvalErrorScreen message="Winner resolution finished without a report." onBack={props.onClose} />
+        <EvalErrorScreen message="Winner resolution finished without a report." onBack={props.onClose} onQuit={props.onExit} />
       );
 
     case "error":
-      return <EvalErrorScreen message={error ?? "Unknown eval error."} onBack={props.onClose} />;
+      return <EvalErrorScreen message={error ?? "Unknown eval error."} onBack={props.onClose} onQuit={props.onExit} />;
   }
 }
 
-export function EvalAppliedScreen(props: { resolution: SkillWinnerResolution; onExit: () => void }) {
+function EvalApplyingScreen(props: { skillName: string; onCloseAfterApply: () => void }) {
+  const bindings = defineBindings(binding(["ctrl+c", "q"], "interrupt", "close after transaction"));
   useKeyboard((key) => {
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
-      props.onExit();
-    }
+    if (resolveIntent(bindings, key) === "interrupt") props.onCloseAfterApply();
+  });
+  return (
+    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
+      <text fg={palette.accent}>{`Applying the recommended winner for ${props.skillName}…`}</text>
+      <KeyHints hint={bindingsHint(bindings)} />
+    </box>
+  );
+}
+
+export function EvalAppliedScreen(props: { resolution: SkillWinnerResolution; onExit: () => void }) {
+  const bindings = defineBindings(
+    binding(["enter", "escape", "b"], "close", "close"),
+    binding(["q", "ctrl+c"], "quit", "quit")
+  );
+  useKeyboard((key) => {
+    if (resolveIntent(bindings, key)) props.onExit();
   });
 
   return (
@@ -334,10 +370,7 @@ export function EvalAppliedScreen(props: { resolution: SkillWinnerResolution; on
       {props.resolution.backupPath ? (
         <text fg={palette.muted}>{`Deleted copy kept at ${props.resolution.backupPath} in case you change your mind.`}</text>
       ) : null}
-      <text fg={palette.gold}>
-        {"enter "}
-        <span fg={palette.muted}>close</span>
-      </text>
+      <KeyHints hint={bindingsHint(bindings)} />
     </box>
   );
 }

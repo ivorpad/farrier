@@ -21,6 +21,7 @@ import { HooksStep } from "./HooksStep";
 import { LearnStep } from "./LearnStep";
 import { ReviewStep, WritingStep } from "./ReviewStep";
 import { useHarnessReview } from "./use-harness-review";
+import { idleExitBindings, resolveIntent } from "./keymap";
 
 type WizardAppProps = {
   targetDir: string;
@@ -83,7 +84,7 @@ function WizardApp(props: WizardAppProps) {
   // spawned agent runs), so ctrl+c is handled here: quit on ordinary steps,
   // abort-and-kill skill authoring while forging.
   useKeyboard((key) => {
-    if (!(key.ctrl && key.name === "c")) {
+    if (resolveIntent(idleExitBindings, key) !== "quit") {
       return;
     }
 
@@ -325,6 +326,7 @@ function WizardApp(props: WizardAppProps) {
           onToggleSkill={(ref) => dispatch({ type: "TOGGLE_SKILL", ref })}
           onNext={() => dispatch({ type: "NEXT" })}
           onBack={() => dispatch({ type: "BACK" })}
+          onQuit={() => props.onExit(1)}
           adviseAvailable={Boolean(state.contextText && state.adviseBackend)}
           adviseBackend={state.adviseBackend}
           adviseEnabled={state.adviseEnabled}
@@ -348,6 +350,7 @@ function WizardApp(props: WizardAppProps) {
           onRemove={(index) => dispatch({ type: "REMOVE_CREATE_REQUEST", index })}
           onNext={() => dispatch({ type: "NEXT" })}
           onBack={() => dispatch({ type: "BACK" })}
+          onQuit={() => props.onExit(1)}
         />
       );
 
@@ -360,6 +363,7 @@ function WizardApp(props: WizardAppProps) {
           onToggleHook={(hook) => dispatch({ type: "TOGGLE_HOOK", hook })}
           onNext={() => dispatch({ type: "NEXT" })}
           onBack={() => dispatch({ type: "BACK" })}
+          onQuit={() => props.onExit(1)}
         />
       );
 
@@ -371,6 +375,7 @@ function WizardApp(props: WizardAppProps) {
           onToggleLearn={() => dispatch({ type: "TOGGLE_LEARN" })}
           onNext={() => dispatch({ type: "NEXT" })}
           onBack={() => dispatch({ type: "BACK" })}
+          onQuit={() => props.onExit(1)}
         />
       );
 
@@ -387,11 +392,23 @@ function WizardApp(props: WizardAppProps) {
           canConfirm={Boolean(review.plan && !review.error && !review.existingHarness && review.blockerCount === 0)}
           onConfirm={confirmWrite}
           onBack={() => dispatch({ type: "BACK" })}
+          onQuit={() => props.onExit(1)}
         />
       );
 
     case "Writing":
-      return <WritingStep creatingCount={state.createRequests.length} cancelling={createCancelling} collision={collision} />;
+      return (
+        <WritingStep
+          creatingCount={state.createRequests.length}
+          cancelling={createCancelling}
+          collision={collision}
+          onCancel={() => {
+            setCreateCancelling(true);
+            createAbortRef.current?.abort();
+            collision?.resolve("keep");
+          }}
+        />
+      );
 
     case "Done":
       return (

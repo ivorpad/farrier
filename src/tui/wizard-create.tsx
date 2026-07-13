@@ -16,6 +16,7 @@ type WizardCreateProps = {
   onRemove: (index: number) => void;
   onNext: () => void;
   onBack: () => void;
+  onQuit: () => void;
 };
 
 /**
@@ -48,6 +49,7 @@ export function WizardCreate(props: WizardCreateProps) {
             props.onNext();
           }
         }}
+        onQuit={props.onQuit}
       />
     );
   }
@@ -78,6 +80,7 @@ export function WizardCreate(props: WizardCreateProps) {
         props.onNext();
       }}
       onBack={props.onBack}
+      onQuit={props.onQuit}
     />
   );
 }

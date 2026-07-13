@@ -1,8 +1,8 @@
 import { useKeyboard } from "@opentui/react";
-import { useState } from "react";
 import type { ToolPolicyRule } from "../packs/types";
-import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
+import { ButtonBar } from "./ButtonBar";
 import { DetailPane, palette, StepHeader, type PaneLine } from "./chrome";
+import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
 type LearnStepProps = {
   learnEnabled: boolean;
@@ -10,85 +10,32 @@ type LearnStepProps = {
   onToggleLearn: () => void;
   onNext: () => void;
   onBack: () => void;
+  onQuit: () => void;
 };
 
-type Zone = "content" | "buttons";
-
-const buttons: ButtonSpec[] = [
-  { id: "back", label: "← Back" },
-  { id: "next", label: "Next →" }
-];
-
-function isSpace(key: unknown): boolean {
-  const candidate = key as { name?: string; sequence?: string };
-  return candidate.name === "space" || candidate.sequence === " ";
-}
+const learnBindings = defineBindings(
+  binding("space", "toggle", "toggle"),
+  binding("enter", "continue", "continue"),
+  binding(["escape", "b"], "back", "back"),
+  binding(["q", "ctrl+c"], "quit", "quit")
+);
 
 export function LearnStep(props: LearnStepProps) {
-  const [zone, setZone] = useState<Zone>("content");
-  const [focusedButtonId, setFocusedButtonId] = useState<string>(buttons[0].id);
-
   useKeyboard((key) => {
-    if (key.name === "escape" || key.name === "q") {
+    const intent = resolveIntent(learnBindings, key);
+    if (intent === "back") {
       props.onBack();
       return;
     }
-
-    if (key.name === "tab") {
-      setZone((current) => (current === "content" ? "buttons" : "content"));
+    if (intent === "quit") {
+      props.onQuit();
       return;
     }
-
-    if (key.name === "left") {
-      if (zone === "buttons") {
-        if (focusedButtonId === buttons[0].id) {
-          setZone("content");
-        } else {
-          setFocusedButtonId((current) => adjacentButtonId(buttons, current, -1) ?? current);
-        }
-      } else {
-        props.onBack();
-      }
-      return;
-    }
-
-    if (key.name === "up" && zone === "buttons") {
-      setZone("content");
-      return;
-    }
-
-    if (key.name === "n") {
-      props.onNext();
-      return;
-    }
-
-    if (key.name === "b" && zone === "content") {
-      props.onBack();
-      return;
-    }
-
-    if (key.name === "right") {
-      if (zone === "buttons") {
-        setFocusedButtonId((current) => adjacentButtonId(buttons, current, 1) ?? current);
-      } else {
-        props.onNext();
-      }
-      return;
-    }
-
-    // Space is the sole toggle; enter always advances (one keymap everywhere).
-    if (zone === "content" && isSpace(key)) {
+    if (intent === "toggle") {
       props.onToggleLearn();
       return;
     }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-      if (zone === "buttons" && focusedButtonId === "back") {
-        props.onBack();
-      } else {
-        props.onNext();
-      }
-    }
+    if (intent === "continue") props.onNext();
   });
 
   const rule = props.toolPolicyRules[0];
@@ -112,11 +59,7 @@ export function LearnStep(props: LearnStepProps) {
       </text>
       {paneLines ? <DetailPane title={`what a mined correction becomes · ${rule!.id}`} lines={paneLines} /> : null}
       <text fg={palette.muted}>Nothing becomes a rule unless you check it.</text>
-      <ButtonBar
-        buttons={buttons}
-        focusedId={zone === "buttons" ? focusedButtonId : undefined}
-        hint="space toggle · enter continue · b back · q quit"
-      />
+      <ButtonBar hint={bindingsHint(learnBindings)} />
     </box>
   );
 }

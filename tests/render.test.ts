@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRenderPlan, writeRenderPlan } from "../src/engine/render";
@@ -20,11 +21,25 @@ const allHooks = [
   "stop-judge"
 ] as const;
 
+const advisorInventory = [
+  ".claude/skills/harness-advisor/SKILL.md",
+  ".claude/skills/claude-automation-recommender/SKILL.md",
+  ".agents/skills/farrier-project-advisor/SKILL.md",
+  ".claude/skills/claude-automation-recommender/UPSTREAM.md",
+  ".claude/skills/claude-automation-recommender/upstream/SKILL.md",
+  ".claude/skills/claude-automation-recommender/upstream/LICENSE.txt",
+  ".claude/skills/claude-automation-recommender/upstream/references/hooks-patterns.md",
+  ".claude/skills/claude-automation-recommender/upstream/references/mcp-servers.md",
+  ".claude/skills/claude-automation-recommender/upstream/references/plugins-reference.md",
+  ".claude/skills/claude-automation-recommender/upstream/references/skills-reference.md",
+  ".claude/skills/claude-automation-recommender/upstream/references/subagent-templates.md"
+];
+
 const pythonFastapiInventory = [
   "AGENTS.md",
   "CLAUDE.md",
   ".claude/settings.json",
-  ".claude/skills/harness-advisor/SKILL.md",
+  ...advisorInventory,
   ".claude/hooks/secret-shield.py",
   ".claude/hooks/test_secret_shield.py",
   ".claude/hooks/tool-policy.py",
@@ -56,7 +71,7 @@ const railsInventory = [
   "AGENTS.md",
   "CLAUDE.md",
   ".claude/settings.json",
-  ".claude/skills/harness-advisor/SKILL.md",
+  ...advisorInventory,
   ".claude/hooks/secret-shield.py",
   ".claude/hooks/test_secret_shield.py",
   ".claude/hooks/tool-policy.py",
@@ -81,7 +96,7 @@ const genericInventory = [
   "AGENTS.md",
   "CLAUDE.md",
   ".claude/settings.json",
-  ".claude/skills/harness-advisor/SKILL.md",
+  ...advisorInventory,
   ".claude/hooks/secret-shield.py",
   ".claude/hooks/test_secret_shield.py",
   ".claude/hooks/tool-policy.py",
@@ -105,7 +120,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(pythonFastapiInventory);
-    expect(plan.files).toHaveLength(23);
+    expect(plan.files).toHaveLength(33);
   });
 
   test("renders harness-advisor skill into every pack inventory", async () => {
@@ -121,6 +136,27 @@ describe("render engine", () => {
     expect(skill?.content).toContain("Never edit `.farrier.json` by hand");
     expect(skill?.content).toContain("skills find <query>");
     expect(skill?.content).toContain("skill-creator");
+  });
+
+  test("renders both advice wrappers and the pinned attributed Anthropic snapshot", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({ targetDir: dir, pack: resolvePack("generic") });
+    const byPath = new Map(plan.files.map((file) => [file.path, file.content]));
+    const claude = byPath.get(".claude/skills/claude-automation-recommender/SKILL.md") ?? "";
+    const codex = byPath.get(".agents/skills/farrier-project-advisor/SKILL.md") ?? "";
+    const provenance = byPath.get(".claude/skills/claude-automation-recommender/UPSTREAM.md") ?? "";
+
+    expect(claude).toContain("farrier advise --dir . --sessions auto --since 7d --targets claude");
+    expect(codex).toContain("farrier advise --dir . --sessions auto --since 7d --targets codex");
+    expect(provenance).toContain("a5c7fb5d86a4cd34c4f47819658654c3d8f08dda");
+    expect(provenance).toContain("Apache-2.0");
+
+    for (const path of advisorInventory.filter((path) => path.includes("/upstream/"))) {
+      const content = byPath.get(path);
+      expect(content).toBeDefined();
+      const hash = createHash("sha256").update(content!).digest("hex");
+      expect(provenance).toContain(`\`${hash}\``);
+    }
   });
 
   test("renders AGENTS.md with required sections and pack-owned Python hard rules", async () => {
@@ -213,7 +249,7 @@ describe("render engine", () => {
       "AGENTS.md",
       "CLAUDE.md",
       ".claude/settings.json",
-      ".claude/skills/harness-advisor/SKILL.md",
+      ...advisorInventory,
       ".claude/hooks/secret-shield.py",
       ".claude/hooks/test_secret_shield.py",
       "justfile",
@@ -266,7 +302,7 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(manifestFile!.content);
 
-    expect(manifest.farrierVersion).toBe("0.1.0");
+    expect(manifest.farrierVersion).toBe("0.2.0");
     expect(manifest.packIds).toEqual(["python-uv", "python-fastapi"]);
     expect(manifest.hookIds).toEqual([...allHooks]);
     expect(manifest.skills).toEqual(pack.skills);
@@ -419,7 +455,7 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(manifestFile!.content);
 
-    expect(manifest.farrierVersion).toBe("0.1.0");
+    expect(manifest.farrierVersion).toBe("0.2.0");
     expect(manifest.packIds).toEqual(["python-uv", "python-fastapi"]);
     expect(manifest.hookIds).toEqual(["secret-shield"]);
     expect(manifest.skills).toEqual(selectedSkills);
@@ -470,7 +506,7 @@ describe("render engine", () => {
     expect(manifest.quality).toEqual({
       maxFileLines: 250
     });
-    expect(manifest.farrierVersion).toBe("0.1.0");
+    expect(manifest.farrierVersion).toBe("0.2.0");
   });
 
   test("renders real konpy v1 grammar with templated package name", async () => {
@@ -501,7 +537,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(tsReactViteInventory);
-    expect(plan.files).toHaveLength(23);
+    expect(plan.files).toHaveLength(33);
 
     const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";
     expect(agents).toContain("Use Bun for TypeScript package and script execution");
@@ -545,7 +581,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["ts-base", "ts-react-vite"]);
     expect(manifest.hookIds).toEqual([...allHooks]);
-    expect(manifest.farrierVersion).toBe("0.1.0");
+    expect(manifest.farrierVersion).toBe("0.2.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
@@ -555,7 +591,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(railsInventory);
-    expect(plan.files).toHaveLength(22);
+    expect(plan.files).toHaveLength(32);
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
@@ -587,7 +623,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["rails"]);
     expect(manifest.hookIds).toEqual([...allHooks]);
-    expect(manifest.farrierVersion).toBe("0.1.0");
+    expect(manifest.farrierVersion).toBe("0.2.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
@@ -597,7 +633,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(genericInventory);
-    expect(plan.files).toHaveLength(17);
+    expect(plan.files).toHaveLength(27);
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
     expect(plan.files.some((file) => file.path.includes("verb-runner.py"))).toBe(false);
     expect(plan.files.some((file) => file.path.includes("stop-judge.py"))).toBe(false);
@@ -629,7 +665,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["generic"]);
     expect(manifest.hookIds).toEqual(["secret-shield", "tool-policy", "write-guard", "quality-judge"]);
-    expect(manifest.farrierVersion).toBe("0.1.0");
+    expect(manifest.farrierVersion).toBe("0.2.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 

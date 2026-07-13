@@ -44,6 +44,8 @@ export type HarnessChangePlan = {
 
 export type ApplyHarnessChangePlanOptions = {
   force: boolean;
+  /** A reviewed advice plan may update an existing Farrier project. */
+  allowExistingHarness?: boolean;
   now?: Date | (() => Date);
 };
 
@@ -80,6 +82,8 @@ export function filePurpose(path: string, context: FilePurposeContext = {}): str
     return count ? `Wires ${count} into Claude Code.` : "Wires generated hooks into Claude Code.";
   }
   if (path === ".claude/skills/harness-advisor/SKILL.md") return "Teaches agents how to maintain the harness.";
+  if (path.startsWith(".claude/skills/claude-automation-recommender/")) return "Pinned Claude project-advice skill and its attributed upstream references.";
+  if (path === ".agents/skills/farrier-project-advisor/SKILL.md") return "Codex-native wrapper for Farrier's shared project-advice engine.";
   if (path.startsWith(".claude/hooks/@")) return "Executable hook supplied by a configured registry.";
   if (path.includes("/hooks/prompts/") && base.endsWith(".txt")) return "Versioned semantic-judge prompt.";
   if (base === "tool-policy-rules.json") return "Declarative command-denial rules.";
@@ -269,8 +273,8 @@ export async function inspectHarnessChangePlan(renderPlan: RenderPlan, purposeCo
   };
 }
 
-export function assertHarnessChangePlanWritable(plan: HarnessChangePlan, options: { force: boolean }): void {
-  if (plan.existingHarness) {
+export function assertHarnessChangePlanWritable(plan: HarnessChangePlan, options: { force: boolean; allowExistingHarness?: boolean }): void {
+  if (plan.existingHarness && !options.allowExistingHarness) {
     throw new Error(`Refusing to create: ${plan.targetDir} is already a Farrier project. Run 'farrier update --dir ${plan.targetDir}' instead.`);
   }
 

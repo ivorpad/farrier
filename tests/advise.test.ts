@@ -125,8 +125,8 @@ describe("adviseSkills", () => {
     });
 
     expect(calls.map((call) => call.cmd)).toEqual([
-      ["claude", "-p", "--model", "sonnet"],
-      ["claude", "-p", "--model", "sonnet"]
+      ["claude", "-p", "--model", "sonnet", "--no-session-persistence"],
+      ["claude", "-p", "--model", "sonnet", "--no-session-persistence"]
     ]);
     expect(calls[0]?.stdin).toContain("a FastAPI billing service");
     expect(calls[1]?.stdin).toContain("owner/repo@pytest-skill");
@@ -144,9 +144,10 @@ describe("adviseSkills", () => {
     await adviseSkills({ ...baseInput, backend: "codex", model: "gpt-x", runner, search: async () => [candidate("o/r", "s")] });
 
     for (const call of calls) {
-      expect(call.cmd.slice(0, 8)).toEqual([
+      expect(call.cmd.slice(0, 9)).toEqual([
         "codex",
         "exec",
+        "--ephemeral",
         "--model",
         "gpt-x",
         "-s",
@@ -154,7 +155,7 @@ describe("adviseSkills", () => {
         "-c",
         "skills.include_instructions=false"
       ]);
-      expect(call.cmd[8]).toContain("Return JSON only");
+      expect(call.cmd[9]).toContain("Return JSON only");
       expect(call.stdin).toBeUndefined();
     }
   });
@@ -164,7 +165,7 @@ describe("adviseSkills", () => {
 
     await adviseSkills({ ...baseInput, backend: "codex", runner, search: async () => [candidate("o/r", "s")] });
 
-    expect(calls[0]?.cmd.slice(0, 4)).toEqual(["codex", "exec", "-s", "read-only"]);
+    expect(calls[0]?.cmd.slice(0, 5)).toEqual(["codex", "exec", "--ephemeral", "-s", "read-only"]);
     expect(calls[0]?.cmd).not.toContain("--model");
   });
 

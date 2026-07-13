@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { backendCommand, defaultBackendRunner, formatBackendStreamActivity } from "../src/engine/backend";
 
 function claudeAssistantLine(block: Record<string, unknown>): string {
@@ -6,6 +9,33 @@ function claudeAssistantLine(block: Record<string, unknown>): string {
 }
 
 describe("backend streaming", () => {
+  test("abort terminates fake Claude and Codex process trees", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "farrier-backend-tree-"));
+    try {
+      for (const backend of ["claude", "codex"]) {
+        const executable = join(dir, backend);
+        const pidFile = join(dir, `${backend}.pid`);
+        await writeFile(executable, "#!/bin/sh\nsleep 30 &\nchild=$!\nprintf '%s' \"$child\" > \"$1\"\nwait \"$child\"\n", "utf8");
+        await chmod(executable, 0o755);
+        const controller = new AbortController();
+        const run = defaultBackendRunner({ cmd: [executable, pidFile], cwd: dir, signal: controller.signal });
+        let childPid = 0;
+        for (let attempt = 0; attempt < 100 && childPid === 0; attempt += 1) {
+          childPid = Number.parseInt(await readFile(pidFile, "utf8").catch(() => "0"), 10);
+          if (childPid === 0) await Bun.sleep(10);
+        }
+        expect(childPid).toBeGreaterThan(0);
+        controller.abort();
+        const result = await run;
+        expect(result.exitCode).not.toBe(0);
+        await Bun.sleep(50);
+        expect(() => process.kill(childPid, 0)).toThrow();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("backendCommand stream option adds stream-json to claude and --json to codex", () => {
     const claude = backendCommand("claude", undefined, "prompt", { write: true, stream: true });
     expect(claude.cmd).toContain("--output-format");

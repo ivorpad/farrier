@@ -4,6 +4,7 @@ import type { AgentAvailability } from "../engine/backend";
 import type { AuthoringMode, CreateAgent, SkillCreationRequest } from "../engine/create-skill";
 import { DetailPane, KeyHints, palette, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
 import { evalPolicyLabels, type SkillEvalPolicy } from "./create-eval";
+import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
 type CreateStepProps = {
   requests: SkillCreationRequest[];
@@ -22,6 +23,7 @@ type CreateStepProps = {
   /** Confirm: `pending` is the filled-but-unqueued form to include, if any. */
   onSubmit: (pending?: SkillCreationRequest) => void;
   onBack: () => void;
+  onQuit: () => void;
 };
 
 type Zone = "input" | "agents" | "mode" | "queued" | "refine" | "eval" | "actions";
@@ -41,10 +43,20 @@ const modeRows: ReadonlyArray<{ mode: AuthoringMode; label: string; detail: stri
   { mode: "per-agent", label: "Each agent authors its own copy", detail: "native dirs, copies may diverge, no lock entry" }
 ];
 
-function isSpace(key: unknown): boolean {
-  const candidate = key as { name?: string; sequence?: string };
-  return candidate.name === "space" || candidate.sequence === " ";
-}
+const createBindings = defineBindings(
+  binding(["tab", "shift+tab"], "focus", "focus zone"),
+  binding(["up", "down"], "move", "move"),
+  binding(["left", "right"], "adjust", "change action"),
+  binding("space", "toggle", "toggle/remove"),
+  binding("enter", "activate", "activate"),
+  binding(["escape", "b"], "back", "back"),
+  binding(["q", "ctrl+c"], "quit", "quit")
+);
+const createInputBindings = defineBindings(
+  binding(["tab", "shift+tab"], "focus", "focus zone"),
+  binding(["enter", "escape"], "leaveField", "leave text field"),
+  binding("ctrl+c", "quit", "quit")
+);
 
 function modeFor(agents: CreateAgent[], chosen: AuthoringMode): AuthoringMode {
   if (agents.length === 1) {
@@ -135,10 +147,10 @@ export function CreateStep(props: CreateStepProps) {
     "actions"
   ];
 
-  function cycleZone(): void {
+  function cycleZone(delta: -1 | 1 = 1): void {
     setZone((current) => {
       const index = zones.indexOf(current);
-      return zones[(index + 1) % zones.length] ?? "input";
+      return zones[(index + delta + zones.length) % zones.length] ?? "input";
     });
   }
 
@@ -166,134 +178,91 @@ export function CreateStep(props: CreateStepProps) {
     props.onSubmit(pendingRequest());
   }
 
-  // What enter does, always spelled out on screen right above the chips.
+  // The primary visible action, selected with Tab and activated with Enter.
   const enterLine = props.standalone
     ? total === 0
-      ? "Nothing to create yet — describe a skill above, or enter exits."
-      : `enter ⚒ creates ${total} skill${total > 1 ? "s" : ""} now${canQueue ? "" : " (queued)"}`
+      ? "Nothing to create yet — describe a skill above."
+      : `⚒ Create will author ${total} skill${total > 1 ? "s" : ""} now${canQueue ? "" : " (queued)"}`
     : total === 0
-      ? "Nothing queued — enter continues to Hooks."
-      : `enter continues — ${total} skill${total > 1 ? "s" : ""} will be authored when the harness is created`;
+      ? "Next continues to Hooks with no new skills queued."
+      : `Next continues — ${total} skill${total > 1 ? "s" : ""} will be authored when the harness is created`;
 
   useKeyboard((key) => {
-    if (key.name === "escape") {
-      props.onBack();
+    const activeBindings = zone === "input" ? createInputBindings : createBindings;
+    const intent = resolveIntent(activeBindings, key, { textInputFocused: zone === "input" });
+    if (intent === "leaveField") {
+      setZone("agents");
       return;
     }
-
-    if (key.name === "tab") {
-      cycleZone();
+    if (intent === "back") {
+      if (zone === "input") setZone("agents");
+      else props.onBack();
       return;
     }
-
-    if (zone !== "input" && (key.name === "q" || key.name === "b")) {
-      props.onBack();
+    if (intent === "quit") {
+      props.onQuit();
       return;
     }
-
-    if (key.name === "down") {
-      if (zone === "input") {
-        setZone("agents");
-      } else if (zone === "agents") {
-        agentIndex < agentRows.length - 1 ? setAgentIndex(agentIndex + 1) : cycleZone();
-      } else if (zone === "mode") {
-        modeIndex < modeRows.length - 1 ? setModeIndex(modeIndex + 1) : cycleZone();
-      } else if (zone === "queued") {
-        queuedIndex < props.requests.length - 1 ? setQueuedIndex(queuedIndex + 1) : cycleZone();
-      } else if (zone === "refine" || zone === "eval") {
-        cycleZone();
-      }
+    if (intent === "focus") {
+      cycleZone(key.shift ? -1 : 1);
       return;
     }
-
-    if (key.name === "up") {
+    if (intent === "move") {
+      if (zone === "input") return;
+      const down = key.name === "down";
       if (zone === "agents") {
-        agentIndex > 0 ? setAgentIndex(agentIndex - 1) : setZone("input");
+        if (down && agentIndex < agentRows.length - 1) setAgentIndex(agentIndex + 1);
+        else if (!down && agentIndex > 0) setAgentIndex(agentIndex - 1);
       } else if (zone === "mode") {
-        modeIndex > 0 ? setModeIndex(modeIndex - 1) : setZone("agents");
+        if (down && modeIndex < modeRows.length - 1) setModeIndex(modeIndex + 1);
+        else if (!down && modeIndex > 0) setModeIndex(modeIndex - 1);
       } else if (zone === "queued") {
-        queuedIndex > 0 ? setQueuedIndex(queuedIndex - 1) : setZone(showMode ? "mode" : "agents");
-      } else if (zone === "refine" || zone === "eval") {
-        setZone(zones[Math.max(zones.indexOf(zone) - 1, 0)] ?? "input");
-      } else if (zone === "actions") {
-        setZone(zones[zones.length - 2] ?? "input");
+        if (down && queuedIndex < props.requests.length - 1) setQueuedIndex(queuedIndex + 1);
+        else if (!down && queuedIndex > 0) setQueuedIndex(queuedIndex - 1);
       }
       return;
     }
-
-    if (zone === "actions" && key.name === "left") {
-      setActionIndex((current) => Math.max(current - 1, 0));
+    if (intent === "adjust") {
+      if (zone === "actions") setActionIndex((current) => Math.min(Math.max(current + (key.name === "right" ? 1 : -1), 0), actions.length - 1));
       return;
     }
-
-    if (zone === "actions" && key.name === "right") {
-      setActionIndex((current) => Math.min(current + 1, actions.length - 1));
-      return;
-    }
-
-    if (isSpace(key)) {
+    if (intent === "toggle") {
       if (zone === "agents") {
         const agent = agentRows[agentIndex]!;
-
-        if (availability?.[agent]) {
-          setAgents((current) => (current.includes(agent) ? current.filter((item) => item !== agent) : [...current, agent]));
-        }
-        return;
-      }
-
-      if (zone === "mode") {
-        setMode(modeRows[modeIndex]!.mode);
-        return;
-      }
-
-      if (zone === "queued") {
-        props.onRemoveRequest(queuedIndex);
-        return;
-      }
-
-      if (zone === "refine") {
-        props.onToggleRefine?.();
-        return;
-      }
-
-      if (zone === "eval") {
-        props.onCycleEvalPolicy?.();
-        return;
-      }
+        if (availability?.[agent]) setAgents((current) => (current.includes(agent) ? current.filter((item) => item !== agent) : [...current, agent]));
+      } else if (zone === "mode") setMode(modeRows[modeIndex]!.mode);
+      else if (zone === "queued") props.onRemoveRequest(queuedIndex);
+      else if (zone === "refine") props.onToggleRefine?.();
+      else if (zone === "eval") props.onCycleEvalPolicy?.();
+      return;
     }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-      if (zone === "actions") {
-        const action = actions[actionIndex]!;
-
-        if (action.id === "back") {
-          props.onBack();
-        } else if (action.id === "queue") {
-          queueSkill();
-        } else if (!action.disabled) {
-          submit();
-        }
+    if (intent === "activate") {
+      if (zone === "input") {
+        setZone("agents");
         return;
       }
-
+      if (zone === "agents") {
+        const agent = agentRows[agentIndex]!;
+        if (availability?.[agent]) setAgents((current) => (current.includes(agent) ? current.filter((item) => item !== agent) : [...current, agent]));
+        return;
+      }
       if (zone === "mode") {
         setMode(modeRows[modeIndex]!.mode);
         return;
       }
-
       if (zone === "refine") {
         props.onToggleRefine?.();
         return;
       }
-
       if (zone === "eval") {
         props.onCycleEvalPolicy?.();
         return;
       }
-
-      // Enter creates (or continues) with everything pending — the status
-      // line right above the chips says exactly this.
-      submit();
+      if (zone !== "actions") return;
+      const action = actions[actionIndex]!;
+      if (action.id === "back") props.onBack();
+      else if (action.id === "queue") queueSkill();
+      else if (!action.disabled) submit();
     }
   });
 
@@ -345,6 +314,14 @@ export function CreateStep(props: CreateStepProps) {
           value={description}
           focused={zone === "input"}
           onInput={(value) => setDescription(String(value))}
+          onSubmit={() => setZone("agents")}
+          onKeyDown={(key) => {
+            if (resolveIntent(createInputBindings, key) === "leaveField" && (key.name === "escape" || key.sequence === "\u001b")) {
+              key.preventDefault();
+              key.stopPropagation();
+              setZone("agents");
+            }
+          }}
           placeholder="e.g. Convert financial tables to markdown before sending them to the LLM"
         />
       </box>
@@ -445,7 +422,7 @@ export function CreateStep(props: CreateStepProps) {
             />
           ))}
         </box>
-        <KeyHints hint="enter create · space toggle/remove · tab zone · ↑↓ move · esc quit" />
+        <KeyHints hint={bindingsHint(zone === "input" ? createInputBindings : createBindings)} />
       </box>
     </box>
   );

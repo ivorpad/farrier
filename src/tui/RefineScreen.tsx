@@ -1,4 +1,5 @@
 import { useKeyboard } from "@opentui/react";
+import type { TextareaRenderable } from "@opentui/core";
 import { useEffect, useRef, useState } from "react";
 import type { AgentBackend } from "../engine/backend";
 import type { ReasoningEffort } from "../config/farrier-config";
@@ -11,9 +12,14 @@ import {
   type RefineQuestion
 } from "../engine/refine-skill";
 import { KeyHints, palette, useSpinner } from "./chrome";
+import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
 const decideLabel = "Let the creator decide";
 const typeLabel = "Type an answer…";
+const refineTextBindings = defineBindings(
+  binding("enter", "submit", "submit answer"),
+  binding("escape", "leaveInput", "leave text field")
+);
 
 type GrillState =
   | { kind: "loading"; questionNumber: number }
@@ -35,6 +41,7 @@ export function RefineFlow(props: {
   reasoningEffort?: ReasoningEffort;
   progressLabel?: string;
   onDone: (refined: SkillCreationRequest) => void;
+  onQuit: () => void;
 }) {
   const [state, setState] = useState<GrillState>({ kind: "loading", questionNumber: 1 });
   const [answers, setAnswers] = useState<RefineAnswer[]>([]);
@@ -104,13 +111,6 @@ export function RefineFlow(props: {
     };
   }, []);
 
-  // Esc at any point — including while a question is loading — ends the grill.
-  useKeyboard((key) => {
-    if (key.name === "escape") {
-      finish(answers);
-    }
-  });
-
   function onAnswer(answer: string): void {
     const next: RefineAnswer[] = [
       ...answers,
@@ -127,7 +127,7 @@ export function RefineFlow(props: {
   }
 
   if (state.kind === "loading") {
-    return <GrillWaitScreen backend={props.backend} questionNumber={state.questionNumber} />;
+    return <GrillWaitScreen backend={props.backend} questionNumber={state.questionNumber} onBack={() => finish(answers)} onQuit={props.onQuit} />;
   }
 
   return (
@@ -138,12 +138,25 @@ export function RefineFlow(props: {
       question={state.question}
       progressLabel={props.progressLabel}
       onAnswer={onAnswer}
+      onBack={() => finish(answers)}
+      onQuit={props.onQuit}
     />
   );
 }
 
-export function GrillWaitScreen(props: { backend: string; questionNumber: number }) {
+const refineWaitBindings = defineBindings(
+  binding(["escape", "b"], "back", "finish questions"),
+  binding("q", "quit", "quit")
+);
+
+export function GrillWaitScreen(props: { backend: string; questionNumber: number; onBack: () => void; onQuit: () => void }) {
   const spinner = useSpinner(true);
+
+  useKeyboard((key) => {
+    const intent = resolveIntent(refineWaitBindings, key);
+    if (intent === "back") props.onBack();
+    else if (intent === "quit") props.onQuit();
+  });
 
   const message =
     props.questionNumber === 1
@@ -153,7 +166,7 @@ export function GrillWaitScreen(props: { backend: string; questionNumber: number
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <text fg={palette.accent}>{message}</text>
-      <text fg={palette.muted}>esc that's enough — proceed with what you've answered so far.</text>
+      <KeyHints hint={bindingsHint(refineWaitBindings)} />
     </box>
   );
 }
@@ -170,45 +183,47 @@ export function GrillQuestionScreen(props: {
   question: RefineQuestion;
   progressLabel?: string;
   onAnswer: (answer: string) => void;
+  onBack: () => void;
+  onQuit: () => void;
 }) {
   const [choice, setChoice] = useState(0);
+  const choiceRef = useRef(0);
   const [typing, setTyping] = useState(false);
+  const typingRef = useRef(false);
   const [freeText, setFreeText] = useState("");
 
   const choices = [...props.question.options, decideLabel, typeLabel];
+  const questionBindings = typing
+    ? refineTextBindings
+    : defineBindings(
+        binding(["up", "down"], "move", "move"),
+        binding("enter", "activate", "choose"),
+        binding(["escape", "b"], "back", "finish questions"),
+        binding("q", "quit", "quit")
+      );
 
   useKeyboard((key) => {
-    // Esc is owned by RefineFlow (it ends the grill from anywhere).
-    if (key.name === "escape") {
+    if (typingRef.current) return;
+    const intent = resolveIntent(questionBindings, key, { textInputFocused: typing });
+    if (intent === "back") {
+      props.onBack();
       return;
     }
-
-    if (typing) {
-      if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-        props.onAnswer(freeText.trim());
-      }
+    if (intent === "quit") {
+      props.onQuit();
       return;
     }
-
-    if (key.name === "s") {
-      props.onAnswer("");
+    if (intent === "move") {
+      const next = Math.min(Math.max(choiceRef.current + (key.name === "down" ? 1 : -1), 0), choices.length - 1);
+      choiceRef.current = next;
+      setChoice(next);
       return;
     }
-
-    if (key.name === "up") {
-      setChoice((current) => Math.max(current - 1, 0));
-      return;
-    }
-
-    if (key.name === "down") {
-      setChoice((current) => Math.min(current + 1, choices.length - 1));
-      return;
-    }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-      const selected = choices[choice]!;
+    if (intent === "activate") {
+      const selected = choices[choiceRef.current]!;
 
       if (selected === typeLabel) {
+        typingRef.current = true;
         setTyping(true);
         return;
       }
@@ -243,15 +258,46 @@ export function GrillQuestionScreen(props: {
       </box>
 
       {typing ? (
-        <input
+        <RefineFreeTextInput
           value={freeText}
-          focused
-          onInput={(value) => setFreeText(String(value))}
-          placeholder="Your answer — enter confirms"
+          onInput={setFreeText}
+          onSubmit={() => props.onAnswer(freeText.trim())}
+          onLeave={() => {
+            typingRef.current = false;
+            setTyping(false);
+          }}
         />
       ) : null}
 
-      <KeyHints hint="enter pick · ↑↓ move · s skip question · esc that's enough — proceed" />
+      <KeyHints hint={bindingsHint(questionBindings)} />
     </box>
+  );
+}
+
+export function RefineFreeTextInput(props: { value: string; onInput: (value: string) => void; onSubmit: () => void; onLeave: () => void }) {
+  const inputRef = useRef<TextareaRenderable | null>(null);
+  return (
+    <textarea
+      ref={inputRef}
+      initialValue={props.value}
+      focused
+      height={1}
+      wrapMode="none"
+      keyBindings={[
+        { name: "return", action: "submit" },
+        { name: "kpenter", action: "submit" },
+        { name: "linefeed", action: "submit" }
+      ]}
+      onContentChange={() => props.onInput(inputRef.current?.plainText ?? "")}
+      onSubmit={props.onSubmit}
+      onKeyDown={(key) => {
+        if (resolveIntent(refineTextBindings, key) === "leaveInput") {
+          key.preventDefault();
+          key.stopPropagation();
+          props.onLeave();
+        }
+      }}
+      placeholder="Your answer — enter confirms"
+    />
   );
 }
