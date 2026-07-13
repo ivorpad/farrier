@@ -2,7 +2,7 @@
 
 **The craftsman who equips your coding agents.**
 
-farrier generates an *agents-first harness* for any project: the hooks, rules, skills, verification verbs, and context files that let Claude Code (and Codex, and any other agent) work in your repo safely and productively — without you hand-assembling the same `.claude/` setup for the hundredth time.
+farrier generates an *agents-first harness* for any project: the hooks, rules, skills, verification verbs, and context files that let Claude Code and Codex work in your repo safely and productively — without you hand-assembling the same setup for the hundredth time.
 
 You pick a stack (or farrier detects it), and farrier writes a complete, tested harness:
 
@@ -46,12 +46,12 @@ uv init --package .                                # native generator makes the 
 bun run ~/src/tries/2026-07-02-farrier/src/cli.ts  # bare farrier on a TTY = wizard
 ```
 
-The wizard walks: **Stack → Skills → Hooks → Learn → Review → write**.
+The wizard walks: **Stack → Skills → Create → Hooks → Learn → Review → write**. Claude and Codex enforcement targets are checkboxes at the top of the existing Hooks screen; this does not add another wizard step.
 
 **Navigation (same on every step):**
 
 - **Enter** — continue (on lists it picks the highlighted item; in toggle lists it toggles).
-- **Space** — toggle the highlighted item in Skills/Hooks/Learn.
+- **Space** — toggle the highlighted item in Skills/Create/Hooks/Learn.
 - **Tab** — cycle focus zones: input → list → the button bar at the bottom.
 - **Button bar** — `←`/`→` choose between `← Back` / `Next →`, Enter activates; press `↑` (or `←` past the leftmost button) to jump back up to the content.
 - **Esc** — always goes back one step (on the first step: exits without writing anything).
@@ -60,7 +60,7 @@ Step by step:
 
 - *Stack*: your detected stack is preselected and annotated; Enter continues with it.
 - *Skills*: recommended skills are pre-ticked; type to live-search skills.sh; Space/Enter toggles.
-- *Hooks*: all six protections, pre-ticked; toggle any off.
+- *Hooks*: choose Claude, Codex, or both enforcement targets, then toggle any of the six pre-ticked protections. At least one target remains selected. CLI availability is informational and never removes an option or changes the saved selection.
 - *Learn*: opt this project into the self-learning loop (records intent in `.farrier.json`; see the learn walkthrough below).
 - *Review*: the same creation plan used by headless mode, including per-file create/merge/unchanged/replace/blocked actions and why each file exists. Enter writes only an accepted plan, then installs skills into `.claude/skills/` and `.agents/skills/` for Claude Code and Codex.
 
@@ -70,6 +70,8 @@ Step by step:
 farrier --detect --dry-run --dir ./existing-repo          # inspect evidence and every planned action
 farrier --detect --yes --dir ./existing-repo              # apply a clean detected plan + install skills
 farrier --stack python-fastapi --yes --dir ./my-api       # apply a clean explicitly selected plan
+farrier --stack python-fastapi --agents codex --yes --dir ./my-api
+farrier --stack python-fastapi --agents claude,codex --yes --dir ./my-api
 farrier --stack rails --dry-run --json --dir ./app        # machine-readable preview
 farrier --stack python-fastapi --yes --no-skills --dir .  # offline: write files, record skills, skip install
 ```
@@ -77,6 +79,8 @@ farrier --stack python-fastapi --yes --no-skills --dir .  # offline: write files
 (When developing from this repository, substitute `bun run src/cli.ts` for `farrier`; `bun link` also makes the checkout available globally.)
 
 Creation is deliberately **plan, then apply**. `--dry-run` shows the selected stack, every detected stack with the signals that actually matched, any selection assumptions, the resulting harness behavior (rules, hooks, commands, skills, judge defaults), and each file's action and purpose. Add `--json` to either preview or apply for the same information as structured output, including machine-readable failures.
+
+`--agents claude|codex|claude,codex` selects native enforcement bindings and defaults to `claude` for backward compatibility. Farrier normalizes the selection into deterministic order and persists it as the non-empty `agents` array in `.farrier.json`. Environment variables, installed CLIs, backend discovery, and fallback behavior never alter that value.
 
 `--yes` by itself accepts only a clean plan: new files, unchanged files, safe `.gitignore` additions, and metadata/permission updates. If an existing file differs, review it in `--dry-run`, then opt into replacement with `--yes --force`; Farrier first copies the old version under `.farrier-staging/backups/<timestamp>/`. Writes are staged, path identities are revalidated, and complete files are committed atomically so symlinks and hard-linked peers are not followed or mutated. If rollback encounters a concurrent edit, Farrier preserves it, retains an ignored recovery backup, and reports the incomplete state instead of overwriting the edit. `--force` cannot bypass unsafe paths such as symlinks, directories where files belong, or non-directory parents. If `.farrier.json` already exists, creation refuses even with `--force` and directs you to `farrier update --dir <target>` so lifecycle settings are not reset.
 
@@ -86,7 +90,7 @@ Some packs declare a native project generator such as `uv init` or `rails new`. 
 
 ### C. See it work
 
-Open Claude Code in the generated project and try to misbehave:
+Open a selected agent in the generated project and try to misbehave:
 
 ```
 > cat .env
@@ -102,6 +106,8 @@ Open Claude Code in the generated project and try to misbehave:
 
 Meanwhile every edit triggers `just check`, and when the agent tries to end its turn, the structure linter (`just konpy` on Python, `just konsistent` on TypeScript) verifies the project structure — failures block the stop with actionable feedback, so the agent fixes them before yielding.
 
+For Codex, trust the project and review the exact project hook commands in `/hooks`; command definitions are approved separately by content hash. Matching Codex hooks can run concurrently, so every Farrier hook is independent and the binding does not rely on handler order. See [Codex enforcement coverage](#codex-enforcement-coverage) for the released interception limits.
+
 ### How skill search & installs run
 
 The wizard's Skills step is tuned so neither the network nor the skills CLI ever makes you wait twice. Headless creation uses the same installer for the pack's selected defaults unless `--no-skills` is present:
@@ -114,13 +120,14 @@ The wizard's Skills step is tuned so neither the network nor the skills CLI ever
 
 ## What got generated (and why each file exists)
 
-For `python-fastapi`, 33 rendered harness files, plus the selected installed skills and their `skills-lock.json` entries:
+For `python-fastapi` with the default Claude-only binding, 33 rendered harness files, plus the selected installed skills and their `skills-lock.json` entries (selecting both agents adds `.codex/hooks.json`):
 
 | File | Job |
 |---|---|
 | `AGENTS.md` | Source of truth: commands, hard rules, accepted risks. Read by every agent. |
 | `CLAUDE.md` | Imports AGENTS.md via Claude Code's `@AGENTS.md` syntax, so its content actually loads into every session (not just an advisory pointer) — keeps Claude + Codex on one ruleset. |
 | `.claude/settings.json` | Wires the hooks to Claude Code events. |
+| `.codex/hooks.json` | Wires the same shared policy scripts to released Codex hook events when Codex is selected. |
 | `.claude/hooks/*.py` + `test_*.py` | The six hooks, each with its pytest suite alongside. |
 | `.claude/hooks/tool-policy-rules.json` | **Declarative** wrong-tool rules (this is where `farrier learn` appends). |
 | `.claude/hooks/prompts/*.txt` | Versioned prompts for the LLM judges. |
@@ -129,10 +136,12 @@ For `python-fastapi`, 33 rendered harness files, plus the selected installed ski
 | `.agents/skills/farrier-project-advisor/SKILL.md` | Codex-native wrapper for the same shared, report-only advice engine. |
 | `justfile` | The stable verbs: `just check` / `test` / `fmt` / `konpy` (Python) or `konsistent` (TypeScript). |
 | `konpy.json` / `konsistent.json` | Structure conventions (v1 grammar) enforced at Stop — `konpy.json` on Python, `konsistent.json` on TypeScript. |
-| `.farrier.json` | Manifest: packs, hooks, skills, judge config. **Never edit by hand.** |
+| `.farrier.json` | Manifest: selected enforcement agents, packs, hooks, skills, judge config. **Never edit by hand.** |
 | `.gitignore` | Gains `.env`, `.env.*`, `!.env.example`. |
 
-Rails renders 32 (no structure linter — konpy/konsistent are TS/Python-only), `generic` renders 27.
+With the default Claude-only binding, Rails renders 32 (no structure linter — konpy/konsistent are TS/Python-only) and `generic` renders 27.
+
+Binding files are selected independently: Claude uses `.claude/settings.json`, Codex uses `.codex/hooks.json`, and selecting both emits both. The six scripts, their colocated tests, prompts, and the one canonical `.claude/hooks/tool-policy-rules.json` remain shared; Farrier does not generate a second `.rules` translation. An unselected vendor binding is outside the render/update/doctor inventory, so an existing user-owned file is preserved and left unmanaged.
 
 ### The six hooks
 
@@ -156,6 +165,25 @@ Rails renders 32 (no structure linter — konpy/konsistent are TS/Python-only), 
 
 Any judge infrastructure failure (missing CLI, timeout, bad JSON) passes silently — the judges can slow an agent down, but they can never break it.
 
+### Codex enforcement coverage
+
+Farrier uses the released Codex project-hooks surface, not `.codex/config.toml` or a parallel Codex rules language:
+
+| Codex event | Matcher | Shared Farrier hooks |
+|---|---|---|
+| `PreToolUse` | `^Bash$` | `secret-shield`, `tool-policy` |
+| `PreToolUse` | `^apply_patch$` | `write-guard` |
+| `PostToolUse` | `^apply_patch$` | `verb-runner`, `quality-judge` |
+| `Stop` | none | `verb-runner`, `stop-judge` |
+
+The coverage boundary matters:
+
+- Released `PreToolUse`/`PostToolUse` interception covers simple Bash and `apply_patch` calls (plus supported MCP tools), but `unified_exec` coverage is incomplete. Native reads, native search, WebSearch, and other non-shell paths are not all intercepted.
+- `PostToolUse` feedback can tell Codex what to repair, but it cannot undo a patch or another effect that already happened.
+- Project trust and separately approved hook definitions are runtime state. `farrier doctor` validates static files, required Farrier entries, executable shared targets, and allows unrelated user hooks, but it cannot prove trust, administrative policy, enablement, or complete interception. Inspect `/hooks` in Codex.
+- Remote registry hooks remain Claude-only because the current registry schema has no explicit Codex event/payload compatibility metadata. Their payload files may be rendered as shared inventory, but they are never inserted into `.codex/hooks.json`.
+- `AGENTS.md` and the project verification commands remain mandatory on every path, including paths no hook can intercept.
+
 ---
 
 ## Living with the harness: the day-2 loop
@@ -170,7 +198,7 @@ farrier update --dir . --yes    # repair
 
 Reports: stack drift (e.g. hotwire files appeared in your Rails repo → suggests JS skills), hook version drift, missing/outdated harness files, unacknowledged secondary findings.
 
-Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Files you customize — `AGENTS.md`, `justfile`, `settings.json`, `tool-policy-rules.json`, `konpy.json`/`konsistent.json` — are *reported* for manual review, never clobbered. It never switches packs and never installs skills without you.
+Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Selected binding files (`.claude/settings.json` and/or `.codex/hooks.json`) and other files you customize — `AGENTS.md`, `justfile`, `tool-policy-rules.json`, `konpy.json`/`konsistent.json` — are *reported* for manual review when modified, never clobbered; a missing selected binding is restored. Unselected vendor bindings are ignored and preserved. Manifests created before the `agents` field are treated as Claude-only. Update never switches packs and never installs skills without you.
 
 ### `farrier learn` — the harness improves itself
 
@@ -224,7 +252,7 @@ farrier doctor --dir .          # exit 1 if problems
 farrier doctor --dir . --json
 ```
 
-Static checks: manifest parses, all inventory files exist, hooks are executable, `settings.json` doesn't reference missing scripts, every tool-policy regex compiles, judge/quality config is shape-valid. Good in CI: `farrier doctor --dir . || exit 1`.
+Static checks: manifest and its non-empty agent selection parse, all selected inventory files exist, hooks are executable, selected Claude/Codex bindings contain their required Farrier entries and reference executable scripts, every tool-policy regex compiles, and judge/quality config is shape-valid. Unrelated user-authored Codex hooks are allowed. Runtime Codex trust/approval remains a `/hooks` check. Good in CI: `farrier doctor --dir . || exit 1`.
 
 ### `farrier advise` — evidence-backed project advice
 

@@ -18,7 +18,7 @@ For a focused report, pass `--only guidance`, `--only hooks`, `--only subagents`
 ## Codex routes
 
 - Durable shared guidance: `AGENTS.md`
-- Codex project settings and lifecycle hooks: `.codex/config.toml`
+- Codex project lifecycle hooks: `.codex/hooks.json`; trust the project, then inspect and approve exact commands through `/hooks`
 - Reusable project skills: `.agents/skills/<name>/SKILL.md`
 - Specialist agents: the project Codex configuration surface
 - Plugins and MCP servers: verified Codex project configuration references
@@ -29,3 +29,4 @@ For a focused report, pass `--only guidance`, `--only hooks`, `--only subagents`
 - Farrier reads Codex sessions through App Server `thread/list` and read-only `thread/read`, filtered to the exact resolved `cwd`.
 - Farrier normalizes and redacts evidence locally and never consumes hidden reasoning records.
 - Never turn a hook recommendation into executable code unless the user separately asks to implement it.
+- Treat Codex hooks as partial enforcement: simple Bash, `apply_patch`, and Stop mappings do not cover every `unified_exec`, native read/search, or WebSearch path, and PostToolUse cannot undo completed effects.

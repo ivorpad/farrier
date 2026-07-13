@@ -12,6 +12,7 @@ Use this skill when the user asks about Farrier harness drift, stack changes, ge
 - Treat `.farrier.json` as Farrier-owned metadata. Never edit `.farrier.json` by hand.
 - Inspect `.farrier.json` for:
   - `farrierVersion`
+  - `agents`
   - `packIds`
   - `hookIds`
   - `secondaryAcknowledged`
@@ -47,9 +48,10 @@ Use this skill when the user asks about Farrier harness drift, stack changes, ge
 
 4. Explain that update mode:
    - reports stack drift without switching packs automatically,
-   - repairs missing files,
+   - repairs missing files, including a missing selected Claude/Codex binding,
    - repairs outdated Farrier-owned hook and harness-advisor files,
-   - reports user-mutable outdated files for manual review,
+   - reports modified selected binding files and other user-mutable files for manual review,
+   - preserves and ignores unselected vendor bindings,
    - acknowledges detected secondary findings,
    - does not install suggested skills automatically.
 
@@ -79,4 +81,4 @@ When new frameworks, file types, or secondary stacks appear:
 - Do not invent hook code.
 - Do not rewrite Farrier-owned hook templates manually in the project.
 - Suggest declarative Farrier updates, skill installation, or `skill-creator` for repeatable behavior.
-- Keep user-customized files such as `AGENTS.md`, `CLAUDE.md`, `justfile`, `.gitignore`, `.claude/settings.json`, `.claude/hooks/tool-policy-rules.json`, and the structure-check config (`konsistent.json` or `konpy.json`) under manual review when they drift.
+- Keep user-customized files such as `AGENTS.md`, `CLAUDE.md`, `justfile`, `.gitignore`, selected `.claude/settings.json` / `.codex/hooks.json` bindings, `.claude/hooks/tool-policy-rules.json`, and the structure-check config (`konsistent.json` or `konpy.json`) under manual review when they drift.

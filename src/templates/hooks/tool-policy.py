@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook that enforces declarative tool-policy rules."""
+"""Shared PreToolUse hook that enforces one declarative tool-policy rules file."""
 
 from __future__ import annotations
 
@@ -92,8 +92,16 @@ def rule_matches(rule: dict[str, Any], command: str) -> bool:
 
 def deny_reason(rule: dict[str, Any]) -> str:
     rule_id = rule.get("id") if isinstance(rule.get("id"), str) else "unknown-rule"
-    message = rule.get("message") if isinstance(rule.get("message"), str) else "Command is blocked by project policy."
-    redirect = rule.get("redirect") if isinstance(rule.get("redirect"), str) else "Use the project-approved tool instead."
+    message = (
+        rule.get("message")
+        if isinstance(rule.get("message"), str)
+        else "Command is blocked by project policy."
+    )
+    redirect = (
+        rule.get("redirect")
+        if isinstance(rule.get("redirect"), str)
+        else "Use the project-approved tool instead."
+    )
 
     return f"{message}\nRedirect: {redirect}\nRule: {rule_id}"
 

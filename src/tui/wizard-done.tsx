@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import type { CreateAgent, SkillCreationOutcome } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
+import type { EnforcementAgent } from "../engine/agent-selection";
 import { eligiblePerAgentEvals, SkillEvalFlow, type PendingSkillEval, type SkillEvalPolicy } from "./create-eval";
 import type { WizardWriteStatus } from "./machine";
 import { DoneStep } from "./ReviewStep";
@@ -12,6 +13,7 @@ type WizardDoneProps = {
   applyResult?: ApplyHarnessChangePlanResult;
   installResults: InstallSkillResult[];
   createOutcomes: SkillCreationOutcome[];
+  agents: EnforcementAgent[];
   hookCount: number;
   skillCount: number;
   ruleCount: number;
@@ -53,6 +55,7 @@ export function WizardDone(props: WizardDoneProps) {
       applyResult={props.applyResult}
       installResults={props.installResults}
       createOutcomes={props.createOutcomes}
+      agents={props.agents}
       hookCount={props.hookCount}
       skillCount={props.skillCount}
       ruleCount={props.ruleCount}

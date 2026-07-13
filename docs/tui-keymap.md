@@ -34,7 +34,7 @@ During advice batch planning/authoring, Command-Z is represented by OpenTUI as `
 | Harness Stack | Invisible button zone; Right and `n` advanced | One visible list; Up/Down selects and Enter continues |
 | Harness Skills | Invisible button zone; `a`, Left/Right, and `n` navigated or activated | Input, advice, and skill-list zones only; Tab changes visible zone, Space toggles, Enter activates |
 | Skill creation | Enter could submit while the description field was focused | Tab reaches visible action chips; Enter in the description only leaves the field |
-| Hooks and Learn | Invisible button zones; Left/Right and `n` changed pages | Visible controls only; Space toggles and Enter continues |
+| Hooks and Learn | Invisible button zones; Left/Right and `n` changed pages | Hooks begins with always-selectable Claude/Codex target checkboxes on the same screen, followed by hook controls; Space toggles and Enter continues |
 | Harness review | Invisible button zone; `r` confirmed replacement | Up/Down inspects files, PageUp/PageDown scrolls preview, Enter arms replacement, `y` confirms, `n`/Escape rejects |
 | Advice setup | Tab silently changed scope and controls lacked focus markers | All five controls, including Reasoning backend and Analyze, have a visible focus marker; Left/Right changes only the focused value |
 | Advice report | `j`/`k` selected, `c` created, arrow keys scrolled | Up/Down selects, PageUp/PageDown scrolls, Left/Right focuses Create selected/Create all, and Enter activates |

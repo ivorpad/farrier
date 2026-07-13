@@ -125,7 +125,7 @@ export const createCodexAppServerClient: CodexAppServerFactory = async () => {
   };
 
   await request("initialize", {
-    clientInfo: { name: "farrier", title: "Farrier", version: "0.2.0" }
+    clientInfo: { name: "farrier", title: "Farrier", version: "0.3.0" }
   });
   write({ method: "initialized", params: {} });
 

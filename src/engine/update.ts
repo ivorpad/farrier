@@ -11,6 +11,7 @@ import {
 import type { HookId, PackHookRef, ResolvedPack, SecondaryDetectionFinding, SkillRef } from "../packs/types";
 import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 import { parseItemRef } from "../registry/ref";
+import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
 
 export const notFarrierProjectMessage = "not a farrier project; run farrier first";
 
@@ -55,6 +56,7 @@ export type UpdateReport = {
   manifestPath: string;
   currentPackId: string;
   currentPackIds: string[];
+  agents: EnforcementAgent[];
   farrierVersion: FarrierVersionDrift;
   stackDrift: StackDriftReport;
   unacknowledgedSecondaryFindings: SecondaryDetectionFinding[];
@@ -76,6 +78,7 @@ export type UpdateApplyResult = {
 
 export type NormalizedManifest = {
   farrierVersion: string | null;
+  agents: EnforcementAgent[];
   packIds: string[];
   currentPackId: string;
   hookIds: PackHookRef[];
@@ -104,6 +107,7 @@ const userMutableFiles = new Set([
   "konpy.json",
   ".gitignore",
   ".claude/settings.json",
+  ".codex/hooks.json",
   ".claude/hooks/tool-policy-rules.json"
 ]);
 
@@ -268,6 +272,7 @@ function normalizeManifest(raw: unknown, catalog: PackCatalog): NormalizedManife
 
   return {
     farrierVersion: optionalString(raw.farrierVersion),
+    agents: normalizeAgents(raw.agents),
     packIds,
     currentPackId,
     hookIds,
@@ -284,6 +289,7 @@ function normalizeManifest(raw: unknown, catalog: PackCatalog): NormalizedManife
 function toManifestInput(manifest: NormalizedManifest): FarrierManifestInput {
   return {
     farrierVersion: manifest.farrierVersion ?? undefined,
+    agents: [...manifest.agents],
     packIds: [...manifest.packIds],
     hookIds: [...manifest.hookIds],
     skills: [...manifest.skills],
@@ -608,6 +614,7 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     learnEnabled: manifest.learn.enabled,
     secondaryAcknowledged: manifest.secondaryAcknowledged,
     existingManifest: toManifestInput(manifest),
+    agents: manifest.agents,
     registryPins: registryPinsForManifest(manifest, catalog)
   });
 
@@ -636,6 +643,7 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     manifestPath: join(targetDir, ".farrier.json"),
     currentPackId: manifest.currentPackId,
     currentPackIds: [...manifest.packIds],
+    agents: [...manifest.agents],
     farrierVersion,
     stackDrift,
     unacknowledgedSecondaryFindings,
@@ -687,6 +695,7 @@ export async function applyUpdate(input: UpdateInput | string): Promise<UpdateAp
       ...manifest,
       secondaryAcknowledged
     }),
+    agents: manifest.agents,
     registryPins: registryPinsForManifest(manifest, catalog)
   });
 
@@ -741,6 +750,7 @@ export function formatUpdateReport(report: UpdateReport): string {
     "",
     `Current pack: ${report.currentPackId}`,
     `Pack lineage: ${report.currentPackIds.join(" -> ")}`,
+    `Enforcement targets: ${report.agents.join(", ")}`,
     `Farrier version: ${report.farrierVersion.manifest ?? "(missing)"} -> ${report.farrierVersion.current}${
       report.farrierVersion.needsUpdate ? " (update needed)" : ""
     }`,

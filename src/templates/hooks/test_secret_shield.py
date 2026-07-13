@@ -42,7 +42,10 @@ def assert_denied(stdout: str) -> None:
     output = data["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
     assert output["permissionDecision"] == "deny"
-    assert "Do not read" in output["permissionDecisionReason"] or "Blocked" in output["permissionDecisionReason"]
+    assert (
+        "Do not read" in output["permissionDecisionReason"]
+        or "Blocked" in output["permissionDecisionReason"]
+    )
 
 
 def assert_allowed(stdout: str, stderr: str) -> None:
@@ -59,7 +62,9 @@ def test_denies_read_env_file() -> None:
 
 
 def test_denies_read_env_local_file() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Read", {"file_path": "/repo/.env.local"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Read", {"file_path": "/repo/.env.local"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -74,36 +79,64 @@ def test_denies_bash_cat_env() -> None:
     assert_denied(stdout)
 
 
+def test_denies_codex_simple_bash_payload() -> None:
+    payload = pretool_payload("Bash", {"command": "sed -n '1,5p' .env.production"})
+    payload.update(
+        {
+            "turn_id": "turn-1",
+            "tool_use_id": "call-1",
+            "model": "gpt-codex",
+            "permission_mode": "default",
+        }
+    )
+
+    code, stdout, stderr = run_hook(payload)
+
+    assert code == 0
+    assert stderr == ""
+    assert_denied(stdout)
+
+
 def test_allows_env_example_file() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Read", {"file_path": ".env.example"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Read", {"file_path": ".env.example"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
 
 
 def test_allows_env_sample_file() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Bash", {"command": "cat .env.sample"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Bash", {"command": "cat .env.sample"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
 
 
 def test_allows_env_template_file() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Grep", {"pattern": "API_URL", "path": ".env.template"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Grep", {"pattern": "API_URL", "path": ".env.template"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
 
 
 def test_allows_env_defaults_file() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Read", {"file_path": "/repo/.env.defaults"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Read", {"file_path": "/repo/.env.defaults"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
 
 
 def test_denies_private_key_path() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Read", {"file_path": "/home/me/.ssh/id_ed25519"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Read", {"file_path": "/home/me/.ssh/id_ed25519"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -111,7 +144,9 @@ def test_denies_private_key_path() -> None:
 
 
 def test_denies_pem_file() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Read", {"file_path": "certs/private.pem"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Read", {"file_path": "certs/private.pem"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -119,7 +154,9 @@ def test_denies_pem_file() -> None:
 
 
 def test_denies_key_file() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Bash", {"command": "cat secrets/service.key"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Bash", {"command": "cat secrets/service.key"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -127,7 +164,9 @@ def test_denies_key_file() -> None:
 
 
 def test_allows_normal_source_file() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Read", {"file_path": "src/app/main.py"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Read", {"file_path": "src/app/main.py"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -84,6 +84,130 @@ describe("doctor engine", () => {
     expect(report.problems).toEqual([]);
     expect(doctorExitCode(report)).toBe(0);
     expect(formatDoctorReport(report)).toContain("Health: healthy");
+  });
+
+  test("healthy Codex-only and dual-binding fixtures pass with static trust guidance", async () => {
+    for (const agents of [["codex"] as const, ["claude", "codex"] as const]) {
+      const dir = await tempDir();
+      const plan = await createRenderPlan({
+        targetDir: dir,
+        pack: resolvePack("python-fastapi"),
+        agents: [...agents]
+      });
+      await writeRenderPlan(plan);
+
+      const report = await createDoctorReport({ targetDir: dir });
+      expect(report.healthy).toBe(true);
+      expect(report.problems).toEqual([]);
+      expect(report.notes).toContainEqual(expect.stringContaining("inspect /hooks in Codex"));
+    }
+  });
+
+  test("validates only selected vendor bindings", async () => {
+    const claudeDir = await tempDir();
+    await renderPack(claudeDir, "generic");
+    await mkdir(join(claudeDir, ".codex"), { recursive: true });
+    await writeFile(join(claudeDir, ".codex", "hooks.json"), "{not json", "utf8");
+    const claudeManifest = await readJson(join(claudeDir, ".farrier.json"));
+    expect(claudeManifest.agents).toEqual(["claude"]);
+    expect((await createDoctorReport({ targetDir: claudeDir })).healthy).toBe(true);
+
+    const codexDir = await tempDir();
+    const codexPlan = await createRenderPlan({ targetDir: codexDir, pack: resolvePack("generic"), agents: ["codex"] });
+    await writeRenderPlan(codexPlan);
+    await writeFile(join(codexDir, ".claude", "settings.json"), "{not json", "utf8");
+    const codexReport = await createDoctorReport({ targetDir: codexDir });
+    expect(codexReport.healthy).toBe(true);
+    expect(codexReport.problemsByGroup.settings).toEqual([]);
+  });
+
+  test("accepts unrelated user Codex hooks while requiring every Farrier binding", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({ targetDir: dir, pack: resolvePack("generic"), agents: ["codex"] });
+    await writeRenderPlan(plan);
+    const hooksPath = join(dir, ".codex", "hooks.json");
+    const hooks = await readJson(hooksPath);
+    const hookEvents = (hooks.hooks as Record<string, unknown[]>);
+    hookEvents.PreToolUse!.push({
+      matcher: "^mcp__example__tool$",
+      hooks: [{ type: "command", command: "echo user-hook" }]
+    });
+    await writeJson(hooksPath, hooks);
+
+    expect((await createDoctorReport({ targetDir: dir })).healthy).toBe(true);
+
+    hookEvents.PreToolUse = hookEvents.PreToolUse!.slice(1);
+    await writeJson(hooksPath, hooks);
+    const missing = await createDoctorReport({ targetDir: dir });
+    expect(missing.healthy).toBe(false);
+    expectProblem(missing, "codex", {
+      path: ".codex/hooks.json",
+      message: expect.stringContaining("Expected Farrier PreToolUse")
+    });
+  });
+
+  test("flags malformed or missing selected Codex hooks", async () => {
+    const malformedDir = await tempDir();
+    const malformedPlan = await createRenderPlan({
+      targetDir: malformedDir,
+      pack: resolvePack("generic"),
+      agents: ["codex"]
+    });
+    await writeRenderPlan(malformedPlan);
+    await writeFile(join(malformedDir, ".codex", "hooks.json"), "{not json", "utf8");
+    expectProblem(await createDoctorReport({ targetDir: malformedDir }), "codex", {
+      path: ".codex/hooks.json",
+      message: expect.stringContaining("Unable to parse Codex hooks JSON")
+    });
+    await writeJson(join(malformedDir, ".codex", "hooks.json"), {
+      hooks: { PreToolUse: [{ matcher: "^Bash$", hooks: [{}] }] }
+    });
+    expectProblem(await createDoctorReport({ targetDir: malformedDir }), "codex", {
+      path: ".codex/hooks.json",
+      message: expect.stringContaining("must use type command with a non-empty command")
+    });
+
+    const missingDir = await tempDir();
+    const missingPlan = await createRenderPlan({ targetDir: missingDir, pack: resolvePack("generic"), agents: ["codex"] });
+    await writeRenderPlan(missingPlan);
+    await unlink(join(missingDir, ".codex", "hooks.json"));
+    const missing = await createDoctorReport({ targetDir: missingDir });
+    expectProblem(missing, "inventory", {
+      path: ".codex/hooks.json",
+      message: "Expected generated harness file is missing"
+    });
+    expectProblem(missing, "codex", {
+      path: ".codex/hooks.json",
+      message: expect.stringContaining("Unable to parse Codex hooks JSON")
+    });
+  });
+
+  test("treats manifests without agents as legacy Claude selections", async () => {
+    const dir = await tempDir();
+    await renderPack(dir, "generic");
+    const manifestPath = join(dir, ".farrier.json");
+    const manifest = await readJson(manifestPath);
+    delete manifest.agents;
+    await writeJson(manifestPath, manifest);
+
+    const report = await createDoctorReport({ targetDir: dir });
+    expect(report.healthy).toBe(true);
+    expect(report.problemsByGroup.codex).toEqual([]);
+  });
+
+  test("rejects an empty persisted enforcement-agent selection", async () => {
+    const dir = await tempDir();
+    await renderPack(dir, "generic");
+    const manifestPath = join(dir, ".farrier.json");
+    const manifest = await readJson(manifestPath);
+    manifest.agents = [];
+    await writeJson(manifestPath, manifest);
+
+    const report = await createDoctorReport({ targetDir: dir });
+    expectProblem(report, "manifest", {
+      path: ".farrier.json",
+      message: expect.stringContaining("agents must be a non-empty array")
+    });
   });
 
   test("healthy rendered fixture with a remote bash hook passes", async () => {

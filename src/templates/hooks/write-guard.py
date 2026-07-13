@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook that blocks direct writes to protected files."""
+"""Shared PreToolUse hook that blocks direct writes to protected files."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import PurePosixPath
 from typing import Any
 
 
-EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 PATH_KEYS = {"file_path", "path", "notebook_path"}
+PATCH_HEADER = re.compile(
+    r"^\*\*\* (?:Update|Add|Delete) File: (?P<path>.+?)\s*$", re.MULTILINE
+)
 
 LOCKFILE_BASENAMES = {
     "bun.lock",
@@ -75,6 +79,13 @@ def iter_path_values(value: Any) -> list[str]:
     return paths
 
 
+def patch_paths(tool_input: dict[str, Any]) -> list[str]:
+    command = tool_input.get("command")
+    if not isinstance(command, str):
+        return []
+    return [match.group("path") for match in PATCH_HEADER.finditer(command)]
+
+
 def normalize_path(path: str) -> str:
     normalized = path.replace("\\", "/").strip().strip("\"'")
     while normalized.startswith("./"):
@@ -116,7 +127,12 @@ def main() -> int:
     if not isinstance(tool_input, dict):
         return 0
 
-    for path in iter_path_values(tool_input):
+    paths = (
+        patch_paths(tool_input)
+        if payload.get("tool_name") == "apply_patch"
+        else iter_path_values(tool_input)
+    )
+    for path in paths:
         reason = protected_reason(path)
         if reason is not None:
             emit_deny(reason)

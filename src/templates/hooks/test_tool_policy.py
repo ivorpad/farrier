@@ -89,7 +89,9 @@ def assert_allowed(stdout: str, stderr: str) -> None:
 
 
 def test_missing_rules_file_passes_silently(tmp_path: Path) -> None:
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Bash", {"command": "pip install requests"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Bash", {"command": "pip install requests"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
@@ -98,7 +100,28 @@ def test_missing_rules_file_passes_silently(tmp_path: Path) -> None:
 def test_denies_pip_install(tmp_path: Path) -> None:
     write_rules(tmp_path, python_rules())
 
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Bash", {"command": "pip install requests"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Bash", {"command": "pip install requests"})
+    )
+
+    assert code == 0
+    assert stderr == ""
+    assert_denied(stdout, "python-use-uv-not-pip-install")
+
+
+def test_denies_codex_bash_payload_using_canonical_rules_file(tmp_path: Path) -> None:
+    write_rules(tmp_path, python_rules())
+    payload = pretool_payload(tmp_path, "Bash", {"command": "pip install requests"})
+    payload.update(
+        {
+            "turn_id": "turn-1",
+            "tool_use_id": "call-1",
+            "model": "gpt-codex",
+            "permission_mode": "default",
+        }
+    )
+
+    code, stdout, stderr = run_hook(payload)
 
     assert code == 0
     assert stderr == ""
@@ -108,7 +131,9 @@ def test_denies_pip_install(tmp_path: Path) -> None:
 def test_denies_pip3_install_case_insensitive(tmp_path: Path) -> None:
     write_rules(tmp_path, python_rules())
 
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Bash", {"command": "PIP3 install fastapi"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Bash", {"command": "PIP3 install fastapi"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -118,7 +143,9 @@ def test_denies_pip3_install_case_insensitive(tmp_path: Path) -> None:
 def test_denies_python_m_pip(tmp_path: Path) -> None:
     write_rules(tmp_path, python_rules())
 
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Bash", {"command": "python -m pip install pytest"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Bash", {"command": "python -m pip install pytest"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -128,7 +155,11 @@ def test_denies_python_m_pip(tmp_path: Path) -> None:
 def test_denies_python3_m_pip_after_shell_separator(tmp_path: Path) -> None:
     write_rules(tmp_path, python_rules())
 
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Bash", {"command": "echo ok && python3 -m pip install pytest"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(
+            tmp_path, "Bash", {"command": "echo ok && python3 -m pip install pytest"}
+        )
+    )
 
     assert code == 0
     assert stderr == ""
@@ -138,7 +169,9 @@ def test_denies_python3_m_pip_after_shell_separator(tmp_path: Path) -> None:
 def test_allows_uv_add(tmp_path: Path) -> None:
     write_rules(tmp_path, python_rules())
 
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Bash", {"command": "uv add requests"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Bash", {"command": "uv add requests"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
@@ -147,7 +180,9 @@ def test_allows_uv_add(tmp_path: Path) -> None:
 def test_ignores_non_bash_tool(tmp_path: Path) -> None:
     write_rules(tmp_path, python_rules())
 
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Read", {"file_path": "pip install requests"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Read", {"file_path": "pip install requests"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
@@ -158,7 +193,9 @@ def test_malformed_rules_file_passes_silently(tmp_path: Path) -> None:
     rules_dir.mkdir(parents=True)
     (rules_dir / "tool-policy-rules.json").write_text("{not json", encoding="utf-8")
 
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Bash", {"command": "pip install requests"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Bash", {"command": "pip install requests"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
@@ -179,7 +216,9 @@ def test_invalid_regex_rule_is_skipped(tmp_path: Path) -> None:
         ],
     )
 
-    code, stdout, stderr = run_hook(pretool_payload(tmp_path, "Bash", {"command": "pip install requests"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Bash", {"command": "pip install requests"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)

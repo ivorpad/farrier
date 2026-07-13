@@ -1,6 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
+import { formatAgents, type EnforcementAgent } from "../engine/agent-selection";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
 import { ButtonBar } from "./ButtonBar";
@@ -45,6 +46,7 @@ export type ReviewFile = {
 
 type ReviewStepProps = {
   createRequests: SkillCreationRequest[];
+  agents: EnforcementAgent[];
   generator?: {
     source: string;
     command: string;
@@ -65,6 +67,7 @@ type DoneStepProps = {
   applyResult?: ApplyHarnessChangePlanResult;
   installResults: InstallSkillResult[];
   createOutcomes: SkillCreationOutcome[];
+  agents: EnforcementAgent[];
   hookCount: number;
   skillCount: number;
   ruleCount: number;
@@ -227,6 +230,11 @@ export function ReviewStep(props: ReviewStepProps) {
             : `${replacements.length} existing file(s) require replacement. Backups stay in .farrier-staging/backups/. Press Enter, then y.`}
         </text>
       ) : null}
+
+      <text>
+        <span fg={palette.gold}>Enforcement: </span>
+        <span fg={palette.text}>{formatAgents(props.agents)}</span>
+      </text>
 
       {props.files.length > 0 ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
@@ -394,6 +402,8 @@ export function DoneStep(props: DoneStepProps) {
             <span fg={palette.muted}>{" unchanged · "}</span>
             <span fg={palette.gold}>{String(props.hookCount)}</span>
             <span fg={palette.muted}>{" hooks · "}</span>
+            <span fg={palette.gold}>{formatAgents(props.agents)}</span>
+            <span fg={palette.muted}>{" enforcement · "}</span>
             <span fg={palette.gold}>{String(props.skillCount)}</span>
             <span fg={palette.muted}>{" skills pinned · "}</span>
             <span fg={palette.gold}>{String(props.ruleCount)}</span>
@@ -428,11 +438,13 @@ export function DoneStep(props: DoneStepProps) {
         <box style={{ flexDirection: "column", gap: 0 }}>
           <text fg={palette.faint}>{"─".repeat(60)}</text>
           <text fg={palette.muted}>{"Ride it:"}</text>
-          <text>
-            <span fg={palette.muted}>{"  "}</span>
-            <span fg={palette.gold}>{"claude"}</span>
-            <span fg={palette.muted}>{" “add a feature”   the harness keeps it honest"}</span>
-          </text>
+          {props.agents.map((agent) => (
+            <text key={agent}>
+              <span fg={palette.muted}>{"  "}</span>
+              <span fg={palette.gold}>{agent}</span>
+              <span fg={palette.muted}>{" “add a feature”   the harness keeps it honest"}</span>
+            </text>
+          ))}
           <text> </text>
           <text fg={palette.muted}>{"Later:"}</text>
           <text>

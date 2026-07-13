@@ -3,6 +3,7 @@ import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
 import { CreateStep } from "../src/tui/CreateStep";
+import { HooksStep } from "../src/tui/HooksStep";
 import { RefineFreeTextInput } from "../src/tui/RefineScreen";
 import { ReviewStep } from "../src/tui/ReviewStep";
 import { EvalConfirmScreen, EvalVerdictScreen } from "../src/tui/create-eval";
@@ -444,10 +445,48 @@ describe("TUI keyboard interactions", () => {
     }
   });
 
+  test("Hooks keeps Claude and Codex on the existing step and selectable when a CLI is unavailable", async () => {
+    const toggled: string[] = [];
+    let continued = 0;
+    const view = await testRender(
+      <HooksStep
+        availableHooks={["secret-shield"]}
+        selectedHooks={["secret-shield"]}
+        selectedAgents={["claude"]}
+        agentAvailability={{ claude: false, codex: false }}
+        toolPolicyRules={[]}
+        onToggleHook={(hook) => toggled.push(hook)}
+        onToggleAgent={(agent) => toggled.push(agent)}
+        onNext={() => { continued += 1; }}
+        onBack={() => undefined}
+        onQuit={() => undefined}
+      />,
+      renderOptions
+    );
+
+    try {
+      const frame = await view.waitForFrame((value) => value.includes("Targets") && value.includes("CLI unavailable"));
+      expect(frame).toContain("[x] claude");
+      expect(frame).toContain("[ ] codex");
+      expect(frame).toContain("Protect");
+
+      await interact(view, () => view.mockInput.typeText(" "));
+      await interact(view, () => view.mockInput.pressArrow("down"));
+      await interact(view, () => view.mockInput.typeText(" "));
+      await interact(view, () => view.mockInput.pressEnter());
+
+      expect(toggled).toEqual(["claude", "codex"]);
+      expect(continued).toBe(1);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
   test("review/collision confirmations and result actions follow the shared grammar", async () => {
     const confirmations: boolean[] = [];
     const review = await testRender(
       <ReviewStep
+        agents={["claude", "codex"]}
         createRequests={[]}
         files={[{ path: "AGENTS.md", content: "new", action: "replace", purpose: "guidance", requiresForce: true }]}
         existingHarness={false}
