@@ -136,6 +136,8 @@ Remote `extends` may reference built-in packs or other registry packs, including
 
 Hook items carry full file payloads. Farrier writes them under `.claude/hooks/@<namespace>/<hook-name>/`.
 
+Registry hook event declarations currently describe the Claude hook payload contract only. The registry schema has no explicit Codex event/payload compatibility metadata, so Farrier does not insert remote hooks into `.codex/hooks.json`, even when Codex is selected. Built-in hooks use the tested shared payload contract; remote Codex binding requires a future schema extension rather than inference from matching event names.
+
 ```json
 {
   "schemaVersion": 1,

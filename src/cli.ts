@@ -28,10 +28,10 @@ function usage(): string {
 
 Usage:
   farrier
-  farrier --stack python-fastapi --yes --dir <target>
-  farrier --stack python-fastapi --dry-run --dir <target>
-  farrier --detect --yes --dir <target>
-  farrier --detect --dry-run --dir <target>
+  farrier --stack python-fastapi --agents claude|codex|claude,codex --yes --dir <target>
+  farrier --stack python-fastapi --agents claude|codex|claude,codex --dry-run --dir <target>
+  farrier --detect --agents claude|codex|claude,codex --yes --dir <target>
+  farrier --detect --agents claude|codex|claude,codex --dry-run --dir <target>
   farrier update --dir <target> [--yes] [--json]
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
@@ -46,6 +46,7 @@ Options:
   --detect            Detect stack from target directory. Mutually exclusive with --stack.
   --dir <path>        Target directory. Defaults to current working directory.
   --context <path|text> Project context for the harness wizard or legacy skill-only advice.
+  --agents <vendors>   Enforcement targets: claude, codex, or claude,codex. Defaults to claude.
   --yes               Required for render writes. Applies repairs for update. Appends accepted learned rules for learn.
   --dry-run           Explain the creation plan and file actions; write nothing.
   --force             With --yes, replace reviewed conflicting files and keep backups. Never bypasses path blockers.

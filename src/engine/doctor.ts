@@ -4,12 +4,14 @@ import { createRenderPlan, type FarrierManifestInput, type RenderedFile } from "
 import { inventoryOwnership, readManifest } from "./update";
 import { validateToolPolicyRuleProposal } from "./learn";
 import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
+import { normalizeAgents } from "./agent-selection";
 
 export type DoctorGroup =
   | "manifest"
   | "inventory"
   | "hooks"
   | "settings"
+  | "codex"
   | "tool-policy"
   | "konsistent"
   | "learn"
@@ -41,6 +43,7 @@ const allGroups: DoctorGroup[] = [
   "inventory",
   "hooks",
   "settings",
+  "codex",
   "tool-policy",
   "konsistent",
   "learn",
@@ -166,6 +169,7 @@ async function readJsonFile(path: string): Promise<
 function manifestInputFrom(manifest: Awaited<ReturnType<typeof readManifest>>): FarrierManifestInput {
   return {
     farrierVersion: manifest.farrierVersion ?? undefined,
+    agents: [...manifest.agents],
     packIds: [...manifest.packIds],
     hookIds: [...manifest.hookIds],
     skills: [...manifest.skills],
@@ -218,6 +222,18 @@ function addManifestShapeProblems(raw: unknown, problems: DoctorProblem[], targe
       path: ".farrier.json",
       message: "learn.enabled must be a boolean",
       remediation: "Run farrier update --yes to restore generated manifest defaults."
+    });
+  }
+
+  try {
+    normalizeAgents(raw.agents);
+  } catch (error) {
+    problems.push({
+      group: "manifest",
+      severity: "error",
+      path: ".farrier.json",
+      message: error instanceof Error ? error.message : String(error),
+      remediation: "Set agents to a non-empty selection of claude, codex, or both."
     });
   }
 
@@ -613,6 +629,128 @@ async function addSettingsProblems(
   }
 }
 
+type CodexHookBinding = {
+  event: string;
+  matcher?: string;
+  type?: string;
+  command?: string;
+};
+
+function collectCodexHookBindings(value: unknown): { bindings: CodexHookBinding[]; shapeError?: string } {
+  if (!isRecord(value)) return { bindings: [], shapeError: "hooks.json root must be an object" };
+  if (!isRecord(value.hooks)) return { bindings: [], shapeError: "hooks.json hooks must be an object" };
+
+  const bindings: CodexHookBinding[] = [];
+  for (const [event, entries] of Object.entries(value.hooks)) {
+    if (!Array.isArray(entries)) return { bindings, shapeError: `hooks.${event} must be an array` };
+    for (const entry of entries) {
+      if (!isRecord(entry) || !Array.isArray(entry.hooks)) {
+        return { bindings, shapeError: `hooks.${event} entries must contain a hooks array` };
+      }
+      if (entry.hooks.length === 0) {
+        return { bindings, shapeError: `hooks.${event} hooks arrays must not be empty` };
+      }
+      if (entry.matcher !== undefined && typeof entry.matcher !== "string") {
+        return { bindings, shapeError: `hooks.${event} matcher must be a string when present` };
+      }
+      for (const hook of entry.hooks) {
+        if (!isRecord(hook)) return { bindings, shapeError: `hooks.${event} handlers must be objects` };
+        if (hook.type !== "command" || !isNonEmptyString(hook.command)) {
+          return {
+            bindings,
+            shapeError: `hooks.${event} handlers must use type command with a non-empty command`
+          };
+        }
+        bindings.push({
+          event,
+          ...(typeof entry.matcher === "string" ? { matcher: entry.matcher } : {}),
+          type: hook.type,
+          command: hook.command
+        });
+      }
+    }
+  }
+  return { bindings };
+}
+
+function sameCodexBinding(actual: CodexHookBinding, expected: CodexHookBinding): boolean {
+  return actual.event === expected.event
+    && actual.matcher === expected.matcher
+    && actual.type === expected.type
+    && actual.command === expected.command;
+}
+
+function codexHookTarget(command: string, targetDir: string): { relativePath: string; absolutePath: string } | undefined {
+  const match = command.match(/\/\.claude\/hooks\/(?<file>[^"'\s]+)["']?\s*$/);
+  if (!match?.groups?.file) return undefined;
+  const relativePath = `.claude/hooks/${match.groups.file}`;
+  return { relativePath, absolutePath: join(targetDir, relativePath) };
+}
+
+async function addCodexHooksProblems(
+  targetDir: string,
+  expectedFile: RenderedFile,
+  problems: DoctorProblem[]
+): Promise<void> {
+  const relativePath = ".codex/hooks.json";
+  const actual = await readJsonFile(join(targetDir, relativePath));
+  if (!actual.ok) {
+    problems.push({
+      group: "codex",
+      severity: "error",
+      path: relativePath,
+      message: `Unable to parse Codex hooks JSON: ${actual.message}`,
+      remediation: "Run farrier update --yes if the file is missing, or restore the selected Codex binding."
+    });
+    return;
+  }
+
+  const actualBindings = collectCodexHookBindings(actual.value);
+  if (actualBindings.shapeError) {
+    problems.push({
+      group: "codex",
+      severity: "error",
+      path: relativePath,
+      message: actualBindings.shapeError,
+      remediation: "Restore a valid Codex hooks.json event, matcher-group, and command-handler structure."
+    });
+  }
+
+  const expectedBindings = collectCodexHookBindings(JSON.parse(expectedFile.content)).bindings;
+  for (const expected of expectedBindings) {
+    if (!actualBindings.bindings.some((actualBinding) => sameCodexBinding(actualBinding, expected))) {
+      problems.push({
+        group: "codex",
+        severity: "error",
+        path: relativePath,
+        message: `Expected Farrier ${expected.event}${expected.matcher ? ` (${expected.matcher})` : ""} command hook is missing: ${expected.command}`,
+        remediation: "Restore the missing Farrier command entry without removing unrelated user-authored hooks."
+      });
+      continue;
+    }
+
+    if (!expected.command) continue;
+    const target = codexHookTarget(expected.command, targetDir);
+    if (!target || !(await fileExists(target.absolutePath))) {
+      problems.push({
+        group: "codex",
+        severity: "error",
+        path: relativePath,
+        message: `Farrier command references a missing shared hook target: ${target?.relativePath ?? expected.command}`,
+        remediation: "Run farrier update --yes to restore the shared policy script."
+      });
+    } else if (!(await isExecutable(target.absolutePath))) {
+      problems.push({
+        group: "codex",
+        severity: "error",
+        path: target.relativePath,
+        message: "Codex binding references a non-executable shared hook target",
+        remediation: `Run chmod +x ${target.relativePath} or farrier update --yes.`
+      });
+    }
+  }
+}
+
 async function addToolPolicyProblems(
   targetDir: string,
   shouldExist: boolean,
@@ -825,17 +963,26 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
     learnEnabled: manifest.learn.enabled,
     secondaryAcknowledged: manifest.secondaryAcknowledged,
     existingManifest: manifestInputFrom(manifest),
+    agents: manifest.agents,
     registryPins: registryPinsForManifest(manifest, catalog)
   });
 
   await addInventoryProblems(targetDir, expectedPlan.files, problems);
   await addHookModeProblems(targetDir, expectedPlan.files, problems);
 
-  await addSettingsProblems(
-    targetDir,
-    expectedPlan.files.find((file) => file.path === ".claude/settings.json"),
-    problems
-  );
+  if (manifest.agents.includes("claude")) {
+    await addSettingsProblems(
+      targetDir,
+      expectedPlan.files.find((file) => file.path === ".claude/settings.json"),
+      problems
+    );
+  }
+
+  if (manifest.agents.includes("codex")) {
+    const codexFile = expectedPlan.files.find((file) => file.path === ".codex/hooks.json");
+    if (codexFile) await addCodexHooksProblems(targetDir, codexFile, problems);
+    notes.push("Codex runtime trust, exact hook approval, hooks enablement, administrative policy, and complete unified_exec interception cannot be proven statically; inspect /hooks in Codex.");
+  }
 
   await addToolPolicyProblems(targetDir, manifest.hookIds.includes("tool-policy"), problems);
   const konsistentConfigFile = `${basePack.konsistentTool ?? "konsistent"}.json`;

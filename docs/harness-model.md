@@ -1,6 +1,6 @@
 # Farrier harness model — product vocabulary, gap analysis, next iteration
 
-> Status: proposal / working note. Written 2026-07-03. Not yet reflected in code.
+> Status: proposal / working note. Written 2026-07-03. Phase 4 later implemented the native Codex hook-binding portion; the broader HarnessSpec proposal remains future work.
 > Source inputs: `README.md`, `docs/PLAN.md`, `src/packs/types.ts`, `src/engine/render.ts`,
 > `src/engine/backend.ts`, `.farrier.json`, and the research brief
 > `~/Downloads/harness-farrier-whatever-cloud.md`.
@@ -97,10 +97,11 @@ Ranked by how much they undercut "the harness works."
    nothing tells Codex that it must be asked explicitly. The harness is silent on one of the
    biggest reliability levers.
 
-7. **Codex/multi-agent enforcement is prose-only.** `render.ts` emits `.claude/` + `AGENTS.md` +
-   `justfile` + `konpy.json`/`konsistent.json` + `.farrier.json` + `.gitignore` — **no `.codex/` and no CI**.
-   PLAN decision #2 says non-Claude surfaces get "AGENTS.md rules + CI/just checks," but no CI is
-   generated. So on Codex/cloud the guardrails are advisory text, not teeth.
+7. **Codex/multi-agent enforcement was prose-only (partially resolved in Phase 4).** `render.ts`
+   now emits a selected `.codex/hooks.json` binding to the shared tested scripts for released
+   Bash, `apply_patch`, and Stop events. Codex `unified_exec`, native reads/search, and WebSearch
+   still have interception gaps, and no CI is generated, so AGENTS.md + just checks remain part
+   of the required enforcement story.
 
 8. **Skills story is thin for a "skills product."** The dogfood pins three generic
    `wshobson/agents@python-*` skills; there is no curated catalog of **harness-component skills**

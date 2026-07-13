@@ -166,7 +166,7 @@ dependencies = ["fastapi>=0.110"]
     expect(report.hookDrift).toContainEqual({
       hookId: "secret-shield",
       manifestVersion: 0,
-      currentVersion: 1
+      currentVersion: 2
     });
     expect(report.notes).toContain("Manual review required for outdated user-mutable files; update mode will not overwrite them.");
 
@@ -183,8 +183,8 @@ dependencies = ["fastapi>=0.110"]
 
     const repairedManifest = await readJson(manifestPath);
     const repairedVersions = repairedManifest.versions as { hooks: Record<string, number> };
-    expect(repairedVersions.hooks["secret-shield"]).toBe(1);
-    expect(repairedManifest.farrierVersion).toBe("0.2.0");
+    expect(repairedVersions.hooks["secret-shield"]).toBe(2);
+    expect(repairedManifest.farrierVersion).toBe("0.3.0");
 
     const after = await createUpdateReport({ targetDir: dir });
 
@@ -209,6 +209,66 @@ dependencies = ["fastapi>=0.110"]
 
     const mode = (await stat(hookPath)).mode;
     expect(mode & 0o111).not.toBe(0);
+  });
+
+  test("defaults old manifests to Claude and preserves an unselected Codex binding", async () => {
+    const dir = await tempDir();
+    await renderPack(dir, "generic");
+    const manifestPath = join(dir, ".farrier.json");
+    const manifest = await readJson(manifestPath);
+    delete manifest.agents;
+    await writeJson(manifestPath, manifest);
+
+    await mkdir(join(dir, ".codex"), { recursive: true });
+    const customCodex = '{"hooks":{"PreToolUse":[]},"owner":"user"}\n';
+    await writeFile(join(dir, ".codex", "hooks.json"), customCodex, "utf8");
+
+    const report = await createUpdateReport({ targetDir: dir });
+    expect(report.agents).toEqual(["claude"]);
+    expect(report.missingInventoryFiles).not.toContain(".codex/hooks.json");
+    expect(report.outdatedUserFiles).not.toContain(".codex/hooks.json");
+
+    await applyUpdate({ targetDir: dir });
+    expect((await readJson(manifestPath)).agents).toEqual(["claude"]);
+    expect(await readFile(join(dir, ".codex", "hooks.json"), "utf8")).toBe(customCodex);
+  });
+
+  test("repairs a missing selected Codex binding and leaves Claude settings unmanaged", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({ targetDir: dir, pack: resolvePack("generic"), agents: ["codex"] });
+    await writeRenderPlan(plan);
+    const customClaude = '{"hooks":{},"owner":"user"}\n';
+    await writeFile(join(dir, ".claude", "settings.json"), customClaude, "utf8");
+    await unlink(join(dir, ".codex", "hooks.json"));
+
+    const report = await createUpdateReport({ targetDir: dir });
+    expect(report.agents).toEqual(["codex"]);
+    expect(report.missingInventoryFiles).toContain(".codex/hooks.json");
+    expect(report.outdatedUserFiles).not.toContain(".claude/settings.json");
+
+    const result = await applyUpdate({ targetDir: dir });
+    expect(result.repairedFiles).toContain(".codex/hooks.json");
+    expect(existsSync(join(dir, ".codex", "hooks.json"))).toBe(true);
+    expect(await readFile(join(dir, ".claude", "settings.json"), "utf8")).toBe(customClaude);
+  });
+
+  test("reports but does not overwrite a modified selected Codex binding", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack: resolvePack("generic"),
+      agents: ["claude", "codex"]
+    });
+    await writeRenderPlan(plan);
+    const customCodex = '{"hooks":{},"owner":"reviewed-user-change"}\n';
+    await writeFile(join(dir, ".codex", "hooks.json"), customCodex, "utf8");
+
+    const report = await createUpdateReport({ targetDir: dir });
+    expect(report.outdatedUserFiles).toContain(".codex/hooks.json");
+
+    const result = await applyUpdate({ targetDir: dir });
+    expect(result.repairedFiles).not.toContain(".codex/hooks.json");
+    expect(await readFile(join(dir, ".codex", "hooks.json"), "utf8")).toBe(customCodex);
   });
 
   test("reports and acknowledges Rails Hotwire secondary findings", async () => {

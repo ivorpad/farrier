@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { inspectHarnessChangePlan } from "../engine/create-plan";
 import { createRenderPlan, type RenderPlan } from "../engine/render";
+import type { EnforcementAgent } from "../engine/agent-selection";
 import type { PackHookRef, ResolvedPack, SkillRef } from "../packs/types";
 import type { PackCatalog } from "../registry/catalog";
 import type { ReviewFile } from "./ReviewStep";
@@ -13,6 +14,7 @@ type HarnessReviewInput = {
   packId: string;
   selectedSkills: SkillRef[];
   selectedHooks: PackHookRef[];
+  agents: EnforcementAgent[];
   learnEnabled: boolean;
   ruleCount: number;
 };
@@ -49,6 +51,7 @@ export function useHarnessReview(input: HarnessReviewInput): HarnessReview {
       pack: input.pack,
       skills: input.selectedSkills,
       learnEnabled: input.learnEnabled,
+      agents: input.agents,
       registryPins: input.catalog.registryPins(),
     })
       .then(async (plan) => {
@@ -90,7 +93,7 @@ export function useHarnessReview(input: HarnessReviewInput): HarnessReview {
     return () => {
       cancelled = true;
     };
-  }, [input.active, input.catalog, input.learnEnabled, input.pack, input.packId, input.ruleCount, input.selectedHooks, input.selectedSkills, input.targetDir]);
+  }, [input.active, input.agents, input.catalog, input.learnEnabled, input.pack, input.packId, input.ruleCount, input.selectedHooks, input.selectedSkills, input.targetDir]);
 
   return review;
 }

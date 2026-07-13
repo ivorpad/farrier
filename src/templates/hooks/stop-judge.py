@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code Stop hook for optional full-diff semantic review."""
+"""Shared Claude and Codex Stop hook for optional full-diff semantic review."""
 
 from __future__ import annotations
 
@@ -108,7 +108,9 @@ def capped_text(text: str, limit: int = MAX_EMBEDDED_CONTENT_BYTES) -> str:
     return f"{head}\n[truncated]"
 
 
-def run_git(args: list[str], cwd: str, timeout_seconds: float = 10) -> tuple[int, str] | None:
+def run_git(
+    args: list[str], cwd: str, timeout_seconds: float = 10
+) -> tuple[int, str] | None:
     if shutil.which("git") is None:
         return None
 
@@ -153,7 +155,9 @@ def collect_untracked(cwd: str, max_files: int) -> list[str] | None:
     return [line for line in result[1].splitlines() if line.strip()][:max_files]
 
 
-def build_combined_prompt(base_prompt: str, diff: str, untracked_files: list[str]) -> str:
+def build_combined_prompt(
+    base_prompt: str, diff: str, untracked_files: list[str]
+) -> str:
     payload = {
         "event": "Stop",
         "diff": capped_text(diff),
@@ -163,7 +167,9 @@ def build_combined_prompt(base_prompt: str, diff: str, untracked_files: list[str
     return f"{base_prompt.strip()}\n\nInput JSON:\n{json.dumps(payload, indent=2)}\n"
 
 
-def backend_command(backend: str, model: str, prompt: str) -> tuple[list[str], str | None] | None:
+def backend_command(
+    backend: str, model: str, prompt: str
+) -> tuple[list[str], str | None] | None:
     if backend == "claude":
         if shutil.which("claude") is None:
             return None
@@ -177,7 +183,9 @@ def backend_command(backend: str, model: str, prompt: str) -> tuple[list[str], s
     return None
 
 
-def run_backend(config: dict[str, Any], combined_prompt: str, cwd: str) -> dict[str, Any] | None:
+def run_backend(
+    config: dict[str, Any], combined_prompt: str, cwd: str
+) -> dict[str, Any] | None:
     backend = str_from(config.get("backend"), "claude")
     model = str_from(config.get("model"), "sonnet")
     timeout_ms = int_from(config.get("timeoutMs"), DEFAULT_TIMEOUT_MS)
@@ -289,7 +297,9 @@ def main() -> int:
         return 0
 
     max_diff_bytes = int_from(config.get("maxDiffBytes"), DEFAULT_MAX_DIFF_BYTES)
-    max_untracked_files = int_from(config.get("maxUntrackedFiles"), DEFAULT_MAX_UNTRACKED_FILES)
+    max_untracked_files = int_from(
+        config.get("maxUntrackedFiles"), DEFAULT_MAX_UNTRACKED_FILES
+    )
 
     diff = collect_diff(cwd, max_diff_bytes)
     untracked_files = collect_untracked(cwd, max_untracked_files)
@@ -300,7 +310,9 @@ def main() -> int:
     if not diff.strip() and not untracked_files:
         return 0
 
-    combined_prompt = build_combined_prompt(prompt_text(cwd, config), diff, untracked_files)
+    combined_prompt = build_combined_prompt(
+        prompt_text(cwd, config), diff, untracked_files
+    )
     judgement = valid_judgement(run_backend(config, combined_prompt, cwd))
 
     if judgement is None:

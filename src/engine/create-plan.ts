@@ -81,6 +81,10 @@ export function filePurpose(path: string, context: FilePurposeContext = {}): str
     const count = withCount(context.hookCount, "hook", "hooks");
     return count ? `Wires ${count} into Claude Code.` : "Wires generated hooks into Claude Code.";
   }
+  if (path === ".codex/hooks.json") {
+    const count = withCount(context.hookCount, "shared hook", "shared hooks");
+    return count ? `Wires ${count} into Codex.` : "Wires generated shared hooks into Codex.";
+  }
   if (path === ".claude/skills/harness-advisor/SKILL.md") return "Teaches agents how to maintain the harness.";
   if (path.startsWith(".claude/skills/claude-automation-recommender/")) return "Pinned Claude project-advice skill and its attributed upstream references.";
   if (path === ".agents/skills/farrier-project-advisor/SKILL.md") return "Codex-native wrapper for Farrier's shared project-advice engine.";

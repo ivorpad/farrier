@@ -1,5 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
+import { enforcementAgentOrder, type EnforcementAgent } from "../engine/agent-selection";
+import type { AgentAvailability } from "../engine/backend";
 import type { HookId, PackHookRef, ToolPolicyRule } from "../packs/types";
 import { ButtonBar } from "./ButtonBar";
 import { DetailPane, palette, StepHeader, type PaneLine } from "./chrome";
@@ -8,8 +10,11 @@ import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 type HooksStepProps = {
   availableHooks: PackHookRef[];
   selectedHooks: PackHookRef[];
+  selectedAgents: EnforcementAgent[];
+  agentAvailability?: AgentAvailability;
   toolPolicyRules: ToolPolicyRule[];
   onToggleHook: (hook: PackHookRef) => void;
+  onToggleAgent: (agent: EnforcementAgent) => void;
   onNext: () => void;
   onBack: () => void;
   onQuit: () => void;
@@ -131,19 +136,21 @@ export function HooksStep(props: HooksStepProps) {
   }, [props.availableHooks]);
 
   const nameWidth = orderedHooks.reduce((width, hook) => Math.max(width, hook.length), 0);
+  const focusCount = enforcementAgentOrder.length + orderedHooks.length;
 
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
 
   useEffect(() => {
-    if (focusedIndex > orderedHooks.length - 1) {
-      setFocusedIndex(Math.max(orderedHooks.length - 1, 0));
+    if (focusedIndex > focusCount - 1) {
+      setFocusedIndex(Math.max(focusCount - 1, 0));
     }
-  }, [focusedIndex, orderedHooks.length]);
+  }, [focusCount, focusedIndex]);
 
-  const focusedHook = orderedHooks[Math.min(focusedIndex, orderedHooks.length - 1)];
+  const focusedAgent = enforcementAgentOrder[focusedIndex];
+  const focusedHook = focusedAgent ? undefined : orderedHooks[focusedIndex - enforcementAgentOrder.length];
 
   function moveFocus(delta: -1 | 1): void {
-    setFocusedIndex((current) => Math.min(Math.max(current + delta, 0), orderedHooks.length - 1));
+    setFocusedIndex((current) => Math.min(Math.max(current + delta, 0), focusCount - 1));
   }
 
   useKeyboard((key) => {
@@ -164,6 +171,10 @@ export function HooksStep(props: HooksStepProps) {
       moveFocus(-1);
       return;
     }
+    if (intent === "toggle" && focusedAgent) {
+      props.onToggleAgent(focusedAgent);
+      return;
+    }
     if (intent === "toggle" && focusedHook) {
       props.onToggleHook(focusedHook);
       return;
@@ -171,7 +182,18 @@ export function HooksStep(props: HooksStepProps) {
     if (intent === "continue") props.onNext();
   });
 
-  const paneHook = focusedHook ?? orderedHooks[0];
+  const agentPaneLines = focusedAgent === "claude"
+    ? [
+        { fg: palette.success, text: "native binding · .claude/settings.json" },
+        { fg: palette.muted, text: "CLI availability never changes this selection" }
+      ]
+    : focusedAgent === "codex"
+      ? [
+          { fg: palette.success, text: "native binding · .codex/hooks.json" },
+          { fg: palette.muted, text: "simple Bash, apply_patch, and Stop mappings only" },
+          { fg: palette.faint, text: "project/hook trust and /hooks runtime review still apply" }
+        ]
+      : [];
 
   const groups: Array<"protect" | "verify" | "registry"> = ["protect", "verify", "registry"];
 
@@ -179,6 +201,25 @@ export function HooksStep(props: HooksStepProps) {
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <StepHeader current="Hooks" subtitle="The deny message is the interface — the agent reads it." />
       <box style={{ flexDirection: "column", gap: 0 }}>
+        <text>
+          <span fg={palette.gold}>Targets</span>
+          <span fg={palette.faint}> — choose one or both native enforcement bindings</span>
+        </text>
+        {enforcementAgentOrder.map((agent, index) => {
+          const selected = props.selectedAgents.includes(agent);
+          const focused = index === focusedIndex;
+          const available = props.agentAvailability?.[agent];
+          const availability = available === false ? " · CLI unavailable (binding still selectable)" : "";
+          return (
+            <text key={agent} bg={focused ? palette.selBg : undefined}>
+              <span fg={palette.accent}>{focused ? "▸ " : "  "}</span>
+              <span fg={selected ? palette.success : palette.faint}>{selected ? "[x] " : "[ ] "}</span>
+              <span fg={palette.text}>{agent.padEnd(nameWidth + 2)}</span>
+              <span fg={palette.faint}>{availability || (selected && props.selectedAgents.length === 1 ? " · at least one target required" : "")}</span>
+            </text>
+          );
+        })}
+        <text> </text>
         {groups.map((group, groupIndex) => {
           const groupHooks = orderedHooks.filter((hook) => hookGroup(hook) === group);
           if (groupHooks.length === 0) {
@@ -195,7 +236,7 @@ export function HooksStep(props: HooksStepProps) {
                 <span fg={palette.faint}>{header.tagline}</span>
               </text>
               {groupHooks.map((hook) => {
-                const index = orderedHooks.indexOf(hook);
+                const index = enforcementAgentOrder.length + orderedHooks.indexOf(hook);
                 const selected = props.selectedHooks.includes(hook);
                 const focused = index === focusedIndex;
                 const bg = focused ? palette.selBg : undefined;
@@ -214,7 +255,11 @@ export function HooksStep(props: HooksStepProps) {
           );
         })}
       </box>
-      {paneHook ? <DetailPane title={`agent sees · ${paneHook}`} lines={agentSeesLines(paneHook, props.toolPolicyRules)} /> : null}
+      {focusedAgent
+        ? <DetailPane title={`enforcement target · ${focusedAgent}`} lines={agentPaneLines} />
+        : focusedHook
+          ? <DetailPane title={`agent sees · ${focusedHook}`} lines={agentSeesLines(focusedHook, props.toolPolicyRules)} />
+          : null}
       <ButtonBar hint={bindingsHint(hooksBindings)} />
     </box>
   );

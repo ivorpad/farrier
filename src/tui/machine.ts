@@ -2,6 +2,7 @@ import type { AdviseBackend, SkillRecommendation } from "../engine/advise";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import type { InstallSkillResult, SkillSearchResult } from "../engine/skills";
+import { normalizeAgents, type EnforcementAgent } from "../engine/agent-selection";
 import type { PackHookRef, SkillRef } from "../packs/types";
 
 export type WizardStep = "Stack" | "Skills" | "Create" | "Hooks" | "Learn" | "Review" | "Writing" | "Done";
@@ -41,6 +42,7 @@ export type WizardState = {
 
   availableHooks: PackHookRef[];
   selectedHooks: PackHookRef[];
+  agents: EnforcementAgent[];
 
   learnEnabled: boolean;
 
@@ -68,6 +70,7 @@ export type WizardEvent =
   | { type: "ADD_CREATE_REQUEST"; request: SkillCreationRequest }
   | { type: "REMOVE_CREATE_REQUEST"; index: number }
   | { type: "TOGGLE_HOOK"; hook: PackHookRef }
+  | { type: "TOGGLE_AGENT"; agent: EnforcementAgent }
   | { type: "TOGGLE_LEARN" }
   | { type: "TOGGLE_ADVISE" }
   | { type: "ADVISE_STARTED" }
@@ -93,6 +96,7 @@ export type CreateInitialWizardStateInput = {
   detectedPackId?: string;
   defaultSkills?: SkillRef[];
   defaultHooks?: PackHookRef[];
+  defaultAgents?: EnforcementAgent[];
   packDefaults?: PackDefaults;
   contextText?: string;
   contextSource?: string;
@@ -144,6 +148,7 @@ export function createInitialWizardState(input: CreateInitialWizardStateInput): 
     createOutcomes: [],
     availableHooks: defaults.hooks,
     selectedHooks: defaults.hooks,
+    agents: normalizeAgents(input.defaultAgents),
     learnEnabled: false,
     contextText: input.contextText,
     contextSource: input.contextSource,
@@ -289,6 +294,19 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         ...state,
         selectedHooks: toggle(state.selectedHooks, event.hook),
       };
+
+    case "TOGGLE_AGENT": {
+      const next = state.agents.includes(event.agent)
+        ? state.agents.filter((agent) => agent !== event.agent)
+        : [...state.agents, event.agent];
+
+      return next.length === 0
+        ? state
+        : {
+            ...state,
+            agents: normalizeAgents(next),
+          };
+    }
 
     case "TOGGLE_LEARN":
       return {
