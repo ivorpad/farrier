@@ -535,6 +535,17 @@ async function readHookTemplate(fileName: string): Promise<string> {
   return readTemplate("hooks", fileName);
 }
 
+const claudeAutomationReferenceFiles = [
+  "UPSTREAM.md",
+  "upstream/SKILL.md",
+  "upstream/LICENSE.txt",
+  "upstream/references/hooks-patterns.md",
+  "upstream/references/mcp-servers.md",
+  "upstream/references/plugins-reference.md",
+  "upstream/references/skills-reference.md",
+  "upstream/references/subagent-templates.md"
+];
+
 export async function createRenderPlan(options: CreateRenderPlanOptions): Promise<RenderPlan> {
   const existingSkills = stringArray(options.existingManifest?.skills);
   const selectedSkills = options.skills ?? existingSkills ?? options.pack.skills;
@@ -562,8 +573,23 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     {
       path: ".claude/skills/harness-advisor/SKILL.md",
       content: await readTemplate("skills", "harness-advisor", "SKILL.md")
+    },
+    {
+      path: ".claude/skills/claude-automation-recommender/SKILL.md",
+      content: await readTemplate("skills", "claude-automation-recommender", "SKILL.md")
+    },
+    {
+      path: ".agents/skills/farrier-project-advisor/SKILL.md",
+      content: await readTemplate("skills", "farrier-project-advisor", "SKILL.md")
     }
   ];
+
+  for (const relativePath of claudeAutomationReferenceFiles) {
+    files.push({
+      path: posixPath(join(".claude", "skills", "claude-automation-recommender", relativePath)),
+      content: await readTemplate("skills", "claude-automation-recommender", relativePath)
+    });
+  }
 
   for (const hookId of options.pack.hooks.filter(isBuiltinHookId)) {
     for (const fileName of hookTemplateFiles[hookId]) {

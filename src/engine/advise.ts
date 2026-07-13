@@ -266,7 +266,8 @@ export async function adviseSkills(input: AdviseSkillsInput): Promise<AdviseResu
     reasoningEffort: input.reasoningEffort,
     prompt: buildQueriesPrompt({ packId: input.packId, contextText: input.contextText }),
     targetDir: input.targetDir,
-    runner
+    runner,
+    ephemeral: true
   });
 
   const queries = extractQueries(queriesJson, input.backend);
@@ -290,7 +291,8 @@ export async function adviseSkills(input: AdviseSkillsInput): Promise<AdviseResu
       candidates
     }),
     targetDir: input.targetDir,
-    runner
+    runner,
+    ephemeral: true
   });
 
   const rawRecommendations = extractRawRecommendations(recommendationsJson, input.backend);

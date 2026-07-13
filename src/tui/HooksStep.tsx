@@ -1,8 +1,9 @@
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
 import type { HookId, PackHookRef, ToolPolicyRule } from "../packs/types";
-import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
+import { ButtonBar } from "./ButtonBar";
 import { DetailPane, palette, StepHeader, type PaneLine } from "./chrome";
+import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
 type HooksStepProps = {
   availableHooks: PackHookRef[];
@@ -11,14 +12,16 @@ type HooksStepProps = {
   onToggleHook: (hook: PackHookRef) => void;
   onNext: () => void;
   onBack: () => void;
+  onQuit: () => void;
 };
 
-type Zone = "list" | "buttons";
-
-const buttons: ButtonSpec[] = [
-  { id: "back", label: "← Back" },
-  { id: "next", label: "Next →" }
-];
+const hooksBindings = defineBindings(
+  binding(["up", "down"], "move", "move"),
+  binding("space", "toggle", "toggle"),
+  binding("enter", "continue", "continue"),
+  binding(["escape", "b"], "back", "back"),
+  binding(["q", "ctrl+c"], "quit", "quit")
+);
 
 /**
  * Two hook families mirror farrier's two hook jobs: Protect blocks the move
@@ -113,11 +116,6 @@ function agentSeesLines(hook: PackHookRef, rules: ToolPolicyRule[]): PaneLine[] 
   }
 }
 
-function isSpace(key: unknown): boolean {
-  const candidate = key as { name?: string; sequence?: string };
-  return candidate.name === "space" || candidate.sequence === " ";
-}
-
 const groupHeaders: Record<"protect" | "verify" | "registry", { title: string; tagline: string }> = {
   protect: { title: "Protect", tagline: " — block the move, teach the right one" },
   verify: { title: "Verify", tagline: " — runs the engine wrote, not the LLM" },
@@ -135,8 +133,6 @@ export function HooksStep(props: HooksStepProps) {
   const nameWidth = orderedHooks.reduce((width, hook) => Math.max(width, hook.length), 0);
 
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
-  const [zone, setZone] = useState<Zone>("list");
-  const [focusedButtonId, setFocusedButtonId] = useState<string>(buttons[0].id);
 
   useEffect(() => {
     if (focusedIndex > orderedHooks.length - 1) {
@@ -151,82 +147,28 @@ export function HooksStep(props: HooksStepProps) {
   }
 
   useKeyboard((key) => {
-    if (key.name === "escape") {
+    const intent = resolveIntent(hooksBindings, key);
+    if (intent === "back") {
       props.onBack();
       return;
     }
-
-    if (key.name === "q") {
-      props.onBack();
+    if (intent === "quit") {
+      props.onQuit();
       return;
     }
-
-    if (key.name === "tab") {
-      setZone((current) => (current === "list" ? "buttons" : "list"));
+    if (intent === "move" && key.name === "down") {
+      moveFocus(1);
       return;
     }
-
-    if (key.name === "down") {
-      if (zone === "list") {
-        moveFocus(1);
-      }
+    if (intent === "move") {
+      moveFocus(-1);
       return;
     }
-
-    if (key.name === "up") {
-      if (zone === "buttons") {
-        setZone("list");
-      } else {
-        moveFocus(-1);
-      }
-      return;
-    }
-
-    if (key.name === "left") {
-      if (zone === "buttons") {
-        if (focusedButtonId === buttons[0].id) {
-          setZone("list");
-        } else {
-          setFocusedButtonId((current) => adjacentButtonId(buttons, current, -1) ?? current);
-        }
-      } else {
-        props.onBack();
-      }
-      return;
-    }
-
-    if (key.name === "n") {
-      props.onNext();
-      return;
-    }
-
-    if (key.name === "b" && zone === "list") {
-      props.onBack();
-      return;
-    }
-
-    if (key.name === "right") {
-      if (zone === "buttons") {
-        setFocusedButtonId((current) => adjacentButtonId(buttons, current, 1) ?? current);
-      } else {
-        props.onNext();
-      }
-      return;
-    }
-
-    // Space is the sole toggle; enter always advances (one keymap everywhere).
-    if (zone === "list" && focusedHook && isSpace(key)) {
+    if (intent === "toggle" && focusedHook) {
       props.onToggleHook(focusedHook);
       return;
     }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-      if (zone === "buttons" && focusedButtonId === "back") {
-        props.onBack();
-      } else {
-        props.onNext();
-      }
-    }
+    if (intent === "continue") props.onNext();
   });
 
   const paneHook = focusedHook ?? orderedHooks[0];
@@ -256,7 +198,7 @@ export function HooksStep(props: HooksStepProps) {
                 const index = orderedHooks.indexOf(hook);
                 const selected = props.selectedHooks.includes(hook);
                 const focused = index === focusedIndex;
-                const bg = focused && zone === "list" ? palette.selBg : undefined;
+                const bg = focused ? palette.selBg : undefined;
                 const cursor = focused ? "▸ " : "  ";
 
                 return (
@@ -273,11 +215,7 @@ export function HooksStep(props: HooksStepProps) {
         })}
       </box>
       {paneHook ? <DetailPane title={`agent sees · ${paneHook}`} lines={agentSeesLines(paneHook, props.toolPolicyRules)} /> : null}
-      <ButtonBar
-        buttons={buttons}
-        focusedId={zone === "buttons" ? focusedButtonId : undefined}
-        hint="space toggle · ↑↓ move · enter continue · b back · q quit"
-      />
+      <ButtonBar hint={bindingsHint(hooksBindings)} />
     </box>
   );
 }

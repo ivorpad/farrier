@@ -428,7 +428,11 @@ export function inventoryOwnership(path: string): InventoryOwnership {
     return "manifest";
   }
 
-  if (path === ".claude/skills/harness-advisor/SKILL.md") {
+  if (
+    path === ".claude/skills/harness-advisor/SKILL.md" ||
+    path.startsWith(".claude/skills/claude-automation-recommender/") ||
+    path === ".agents/skills/farrier-project-advisor/SKILL.md"
+  ) {
     return "farrier-owned";
   }
 

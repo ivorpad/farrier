@@ -44,22 +44,24 @@ export function detectAgentBackend(deps: Partial<DetectBackendDeps> = {}): Agent
 
 export type AgentAvailability = Record<AgentBackend, boolean>;
 
-export async function probeAgents(runner: BackendCommandRunner = defaultBackendRunner): Promise<AgentAvailability> {
-  const probe = async (bin: AgentBackend): Promise<boolean> => {
-    try {
-      const output = await runner({ cmd: [bin, "--version"], cwd: process.cwd() });
-      return output.exitCode === 0;
-    } catch {
-      return false;
-    }
-  };
+export async function probeAgent(backend: AgentBackend, runner: BackendCommandRunner = defaultBackendRunner): Promise<boolean> {
+  try {
+    const output = await runner({ cmd: [backend, "--version"], cwd: process.cwd() });
+    return output.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
 
-  const [claude, codex] = await Promise.all([probe("claude"), probe("codex")]);
+export async function probeAgents(runner: BackendCommandRunner = defaultBackendRunner): Promise<AgentAvailability> {
+  const [claude, codex] = await Promise.all([probeAgent("claude", runner), probeAgent("codex", runner)]);
   return { claude, codex };
 }
 
 export type BackendCommandOptions = {
   write?: boolean;
+  /** Avoid recording an internal helper run as a project session. */
+  ephemeral?: boolean;
   /**
    * Emit machine-readable per-event stdout (claude stream-json NDJSON, codex
    * --json JSONL) so callers can surface live activity. The final answer is no
@@ -83,9 +85,10 @@ export function backendCommand(
       : [];
     // stream-json in -p mode requires --verbose.
     const streamArgs = options.stream ? ["--output-format", "stream-json", "--verbose"] : [];
+    const ephemeralArgs = options.ephemeral ? ["--no-session-persistence"] : [];
 
     return {
-      cmd: ["claude", "-p", "--model", model ?? "sonnet", ...permissionArgs, ...streamArgs],
+      cmd: ["claude", "-p", "--model", model ?? "sonnet", ...ephemeralArgs, ...permissionArgs, ...streamArgs],
       stdin: prompt
     };
   }
@@ -93,6 +96,7 @@ export function backendCommand(
   const sandbox = options.write ? "workspace-write" : "read-only";
   const streamArgs = options.stream ? ["--json"] : [];
   const effortArgs = options.reasoningEffort ? ["-c", `model_reasoning_effort=${options.reasoningEffort}`] : [];
+  const ephemeralArgs = options.ephemeral ? ["--ephemeral"] : [];
 
   // No default codex model: an explicit --model for a model the account lacks
   // fails silently, while omitting the flag uses the account's default.
@@ -106,6 +110,7 @@ export function backendCommand(
     cmd: [
       "codex",
       "exec",
+      ...ephemeralArgs,
       ...streamArgs,
       ...(model ? ["--model", model] : []),
       "-s",
@@ -129,11 +134,26 @@ export async function defaultBackendRunner(input: BackendCommandRunnerInput): Pr
     cwd: input.cwd,
     stdin: input.stdin !== undefined ? "pipe" : "ignore",
     stdout: "pipe",
-    stderr: "pipe"
+    stderr: "pipe",
+    // Agent CLIs may spawn shells and helpers. A dedicated process group lets
+    // cancellation terminate the complete run instead of only its root PID.
+    detached: true
   });
 
   const onAbort = () => {
-    proc.kill();
+    try {
+      process.kill(-proc.pid, "SIGTERM");
+    } catch {
+      proc.kill();
+    }
+    const forceKillTimer = setTimeout(() => {
+      try {
+        process.kill(-proc.pid, "SIGKILL");
+      } catch {
+        // The process group already exited.
+      }
+    }, 500);
+    forceKillTimer.unref?.();
   };
   input.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -327,9 +347,11 @@ export async function invokeBackend(input: {
   targetDir: string;
   runner: BackendCommandRunner;
   signal?: AbortSignal;
+  ephemeral?: boolean;
 }): Promise<unknown> {
   const command = backendCommand(input.backend, input.model, input.prompt, {
-    reasoningEffort: input.reasoningEffort
+    reasoningEffort: input.reasoningEffort,
+    ephemeral: input.ephemeral
   });
 
   const output = await input.runner({

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadFarrierConfig } from "../config/farrier-config";
 import { loadPackCatalog, type PackCatalog } from "../registry/catalog";
 import { parseItemRef } from "../registry/ref";
@@ -64,4 +64,64 @@ export async function loadConfiguredCatalog(input: {
     config: loaded.config,
     requireNamespaces: input.requireRefs
   });
+}
+
+type RegistryListOptions = {
+  dir: string;
+  json: boolean;
+  help: boolean;
+};
+
+function parseRegistryListArgs(args: string[]): RegistryListOptions {
+  const options: RegistryListOptions = { dir: process.cwd(), json: false, help: false };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--help" || arg === "-h") options.help = true;
+    else if (arg === "--json") options.json = true;
+    else if (arg === "--dir") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--dir requires a value");
+      options.dir = value;
+      index += 1;
+    } else if (arg.startsWith("--dir=")) options.dir = arg.slice("--dir=".length);
+    else throw new Error(`Unknown registry list argument: ${arg}`);
+  }
+  return options;
+}
+
+function registryRows(namespaces: string[], catalog: PackCatalog): Array<{ namespace: string; itemCount: number; cached: boolean }> {
+  const pins = catalog.registryPins();
+  return namespaces.map((namespace) => ({
+    namespace,
+    itemCount: Object.keys(pins).filter((id) => parseItemRef(id)?.namespace === namespace).length,
+    cached: catalog.warnings.some((warning) => warning.namespace === namespace && warning.message.includes("cache"))
+  }));
+}
+
+export async function runRegistry(args: string[], usageText: () => string): Promise<number> {
+  if (args[0] !== "list") {
+    console.error("farrier: unknown registry subcommand. Usage: farrier registry list [--help]");
+    return 1;
+  }
+  const options = parseRegistryListArgs(args.slice(1));
+  if (options.help) {
+    console.log(usageText());
+    return 0;
+  }
+  const targetDir = resolve(options.dir);
+  const loaded = await loadFarrierConfig({ projectDir: targetDir });
+  const catalog = await loadPackCatalog({ config: loaded.config });
+  const registries = registryRows(Object.keys(loaded.config.registries), catalog);
+  if (options.json) {
+    console.log(JSON.stringify({ registries, warnings: catalog.warnings }, null, 2));
+    return 0;
+  }
+  console.log("Registries:");
+  if (registries.length === 0) console.log("  none configured");
+  else for (const registry of registries) console.log(`  ${registry.namespace}: ${registry.itemCount} items${registry.cached ? " (cached)" : ""}`);
+  if (catalog.warnings.length > 0) {
+    console.log("\nWarnings:");
+    for (const warning of catalog.warnings) console.log(`  - ${warning.namespace}: ${warning.message}`);
+  }
+  return 0;
 }

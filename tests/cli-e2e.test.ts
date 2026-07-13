@@ -222,7 +222,7 @@ describe("CLI e2e", () => {
       join(dir, ".farrier.json"),
       `${JSON.stringify(
         {
-          farrierVersion: "0.1.0",
+          farrierVersion: "0.2.0",
           packIds: ["generic", "@acme/demo"],
           hookIds: ["@acme/guard"],
           skills: [],

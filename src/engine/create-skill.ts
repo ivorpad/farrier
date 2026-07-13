@@ -11,7 +11,6 @@ import {
   type BackendCommandRunner
 } from "./backend";
 import type { ResolvedModelSettings } from "../config/farrier-config";
-import type { RenderedFile } from "./render";
 import {
   collapseDescription,
   maxDescriptionLength,
@@ -262,80 +261,84 @@ async function placeSkill(
   };
 }
 
-async function authorSkill(input: {
+export type StageSkillInput = {
   agent: CreateAgent;
   description: string;
   targetDir: string;
-  finalRoot: string;
   model?: string;
   nameOverride?: string;
   deps: CreateSkillDeps;
-}): Promise<ValidatedSkill> {
-  input.deps.progress?.("creator", input.agent);
-  const creatorInstall = await ensureCreatorInstalled(
-    input.agent,
-    input.targetDir,
-    input.deps.skillsRunner,
-    input.deps.resolveDeps
-  );
+  creatorReady?: boolean;
+  cleanupOnFailure?: boolean;
+};
 
-  if (creatorInstall && !creatorInstall.ok) {
-    throw new Error(`Could not install the ${input.agent} creator skill (${creatorInstall.ref}): ${creatorInstall.error ?? creatorInstall.stderr}`);
+export async function stageSkill(input: StageSkillInput): Promise<{ stagingRoot: string; validated: ValidatedSkill }> {
+  if (!input.creatorReady) {
+    input.deps.progress?.("creator", input.agent);
+    const creatorInstall = await ensureCreatorInstalled(
+      input.agent,
+      input.targetDir,
+      input.deps.skillsRunner,
+      input.deps.resolveDeps
+    );
+
+    if (creatorInstall && !creatorInstall.ok) {
+      throw new Error(`Could not install the ${input.agent} creator skill (${creatorInstall.ref}): ${creatorInstall.error ?? creatorInstall.stderr}`);
+    }
   }
 
   const stagingRoot = `${stagingRootBase}/${crypto.randomUUID().slice(0, 8)}`;
-  await mkdir(join(input.targetDir, stagingRoot), { recursive: true });
-  const before = await snapshotSkillRoot(join(input.targetDir, stagingRoot));
+  try {
+    await mkdir(join(input.targetDir, stagingRoot), { recursive: true });
+    const before = await snapshotSkillRoot(join(input.targetDir, stagingRoot));
+    const prompt = buildAuthoringPrompt({
+      agent: input.agent,
+      description: input.description,
+      outputRoot: stagingRoot,
+      nameOverride: input.nameOverride
+    });
 
-  const prompt = buildAuthoringPrompt({
-    agent: input.agent,
-    description: input.description,
-    outputRoot: stagingRoot,
-    nameOverride: input.nameOverride
-  });
-
-  throwIfCancelled(input.deps.signal);
-  input.deps.progress?.("authoring", input.agent);
-  // Explicit request model wins; else config for this backend; else the
-  // built-in skill-creation defaults (claude authors with opus, codex leans on
-  // its account default at high reasoning effort).
-  const settings = input.deps.modelSettings?.[input.agent];
-  const model = input.model ?? settings?.model ?? (input.agent === "claude" ? "opus" : undefined);
-  const reasoningEffort = settings?.reasoningEffort ?? (input.agent === "codex" ? "high" : undefined);
-  const command = backendCommand(input.agent, model, prompt, { write: true, stream: true, reasoningEffort });
-  const runner = input.deps.backendRunner ?? defaultBackendRunner;
-  const output = await runner({
-    cmd: command.cmd,
-    cwd: input.targetDir,
-    stdin: command.stdin,
-    signal: input.deps.signal,
-    onStdoutLine: (line) => {
-      const activity = formatBackendStreamActivity(input.agent, line);
-
-      if (activity) {
-        input.deps.progress?.("authoring", input.agent, activity);
+    throwIfCancelled(input.deps.signal);
+    input.deps.progress?.("authoring", input.agent);
+    const settings = input.deps.modelSettings?.[input.agent];
+    const model = input.model ?? settings?.model ?? (input.agent === "claude" ? "opus" : undefined);
+    const reasoningEffort = settings?.reasoningEffort ?? (input.agent === "codex" ? "high" : undefined);
+    const command = backendCommand(input.agent, model, prompt, { write: true, stream: true, reasoningEffort });
+    const runner = input.deps.backendRunner ?? defaultBackendRunner;
+    const output = await runner({
+      cmd: command.cmd,
+      cwd: input.targetDir,
+      stdin: command.stdin,
+      signal: input.deps.signal,
+      onStdoutLine: (line) => {
+        const activity = formatBackendStreamActivity(input.agent, line);
+        if (activity) input.deps.progress?.("authoring", input.agent, activity);
       }
+    });
+
+    if (input.deps.signal?.aborted) throw new Error(`cancelled — killed the ${input.agent} run`);
+    if (output.exitCode !== 0) {
+      const stderr = output.stderr.trim();
+      throw new Error(`${input.agent} backend exited with code ${output.exitCode}${stderr ? `: ${stderr}` : ""}`);
     }
-  });
 
-  if (input.deps.signal?.aborted) {
-    throw new Error(`cancelled — killed the ${input.agent} run`);
+    input.deps.progress?.("validating", input.agent);
+    const validated = await validateCreatedSkill({
+      targetDir: input.targetDir,
+      root: stagingRoot,
+      before,
+      backend: input.agent,
+      nameOverride: input.nameOverride
+    });
+    return { stagingRoot, validated };
+  } catch (error) {
+    if (input.cleanupOnFailure) await rm(join(input.targetDir, stagingRoot), { recursive: true, force: true });
+    throw error;
   }
+}
 
-  if (output.exitCode !== 0) {
-    const stderr = output.stderr.trim();
-    throw new Error(`${input.agent} backend exited with code ${output.exitCode}${stderr ? `: ${stderr}` : ""}`);
-  }
-
-  input.deps.progress?.("validating", input.agent);
-  const validated = await validateCreatedSkill({
-    targetDir: input.targetDir,
-    root: stagingRoot,
-    before,
-    backend: input.agent,
-    nameOverride: input.nameOverride
-  });
-
+async function authorSkill(input: StageSkillInput & { finalRoot: string }): Promise<ValidatedSkill> {
+  const { stagingRoot, validated } = await stageSkill(input);
   return placeSkill(input.targetDir, stagingRoot, input.finalRoot, validated, input.deps.onCollision);
 }
 

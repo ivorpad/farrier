@@ -32,6 +32,7 @@
       "paths": [
         "src/packs/{packId}.ts",
         "!src/packs/index.ts",
+        "!src/packs/merge.ts",
         "!src/packs/types.ts"
       ],
       "must": {
@@ -53,12 +54,14 @@
       "must": {
         "haveFiles": [
           "advise.test.ts",
+          "advice-sessions.test.ts",
           "backend.test.ts",
           "create-skill.test.ts",
           "detect.test.ts",
           "doctor.test.ts",
           "eval-skill.test.ts",
           "learn.test.ts",
+          "project-advice.test.ts",
           "refine-skill.test.ts",
           "render.test.ts",
           "skill-validate.test.ts",

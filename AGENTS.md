@@ -4,10 +4,10 @@ AGENTS.md is the source of truth for agent behavior in this repository.
 
 ## Commands
 
-- Check: `uv run ruff check . && uv run pytest`
+- Check: `uv run --with ruff ruff check . && uv run pytest`
 - Test: `uv run pytest`
 - Format: `uv run ruff format .`
-- Konsistent: `uv run --with /Users/ivor/src/tries/2026-07-02-konsistent-python konpy check`
+- Konsistent: `bun run konsistent`
 
 ## Hard Rules
 

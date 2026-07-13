@@ -389,7 +389,11 @@ export function defaultTranscriptDir(targetDir: string): string {
 
 export async function extractCandidateEvents(
   transcriptsDir: string,
-  options: { maxEvents?: number } = {}
+  options: {
+    maxEvents?: number;
+    fileFilter?: (fileName: string) => boolean;
+    recordFilter?: (record: Record<string, unknown>) => boolean;
+  } = {}
 ): Promise<{ events: CandidateEvent[]; notes: string[] }> {
   const maxEvents = options.maxEvents ?? transcriptEventLimit;
   const notes: string[] = [];
@@ -408,7 +412,10 @@ export async function extractCandidateEvents(
     };
   }
 
-  const files = entries.filter((entry) => entry.endsWith(".jsonl")).sort();
+  const files = entries
+    .filter((entry) => entry.endsWith(".jsonl"))
+    .filter((entry) => options.fileFilter?.(entry) ?? true)
+    .sort();
 
   for (const file of files) {
     if (observations.length >= maxEvents) {
@@ -436,6 +443,10 @@ export async function extractCandidateEvents(
       }
 
       if (!isRecord(parsed)) {
+        continue;
+      }
+
+      if (options.recordFilter && !options.recordFilter(parsed)) {
         continue;
       }
 

@@ -184,7 +184,7 @@ dependencies = ["fastapi>=0.110"]
     const repairedManifest = await readJson(manifestPath);
     const repairedVersions = repairedManifest.versions as { hooks: Record<string, number> };
     expect(repairedVersions.hooks["secret-shield"]).toBe(1);
-    expect(repairedManifest.farrierVersion).toBe("0.1.0");
+    expect(repairedManifest.farrierVersion).toBe("0.2.0");
 
     const after = await createUpdateReport({ targetDir: dir });
 

@@ -15,18 +15,20 @@ import { eligiblePerAgentEvals, nextEvalPolicy, SkillEvalFlow, type PendingSkill
 import { CreateDoneScreen, CreateProgressScreen, type RequestStatus } from "./create-progress";
 import { CreateStep } from "./CreateStep";
 import { RefineFlow } from "./RefineScreen";
+import { idleExitBindings, resolveIntent } from "./keymap";
 
 type Phase = "form" | "questions" | "writing" | "done" | "eval";
 
 type CreateAppProps = {
   targetDir: string;
   models: ModelsConfig;
+  initialRequests?: SkillCreationRequest[];
   onExit: (code: number, message?: string) => void;
 };
 
 function CreateApp(props: CreateAppProps) {
   const [availability, setAvailability] = useState<AgentAvailability | undefined>(undefined);
-  const [requests, setRequests] = useState<SkillCreationRequest[]>([]);
+  const [requests, setRequests] = useState<SkillCreationRequest[]>(props.initialRequests ?? []);
   const [outcomes, setOutcomes] = useState<SkillCreationOutcome[]>([]);
   const [statuses, setStatuses] = useState<RequestStatus[]>([]);
   const [phase, setPhase] = useState<Phase>("form");
@@ -49,7 +51,7 @@ function CreateApp(props: CreateAppProps) {
   // exitOnCtrlC is off (it would orphan the spawned agent runs), so ctrl+c is
   // handled here for the phases that don't handle it themselves.
   useKeyboard((key) => {
-    if (!(key.ctrl && key.name === "c")) {
+    if (resolveIntent(idleExitBindings, key) !== "quit") {
       return;
     }
 
@@ -196,6 +198,7 @@ function CreateApp(props: CreateAppProps) {
                 : `farrier skill new: cancelled — ${requests.length} queued skill(s) discarded, nothing created.`
             )
           }
+          onQuit={() => props.onExit(1, "farrier skill new: cancelled — nothing created.")}
         />
       );
 
@@ -228,6 +231,7 @@ function CreateApp(props: CreateAppProps) {
               setGrillIndex(grillIndex + 1);
             }
           }}
+          onQuit={() => props.onExit(1, "farrier skill new: cancelled — nothing created.")}
         />
       );
     }
@@ -285,7 +289,7 @@ function CreateApp(props: CreateAppProps) {
   }
 }
 
-export async function runCreateWizard(targetDir: string): Promise<number> {
+export async function runCreateWizard(targetDir: string, initialRequests: SkillCreationRequest[] = []): Promise<number> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
 
   const models = await loadFarrierConfig({ projectDir: targetDir })
@@ -317,7 +321,7 @@ export async function runCreateWizard(targetDir: string): Promise<number> {
         resolve(code);
       };
 
-      createRoot(cliRenderer).render(<CreateApp targetDir={targetDir} models={models} onExit={finish} />);
+      createRoot(cliRenderer).render(<CreateApp targetDir={targetDir} models={models} initialRequests={initialRequests} onExit={finish} />);
     });
   } catch (error) {
     renderer?.destroy();

@@ -28,7 +28,7 @@ export function wizardWriteExitCode(writeStatus: WizardWriteStatus | undefined):
  * The wizard's Done screen plus the per-agent eval flow: when the harness run
  * produced a comparable pair and the user's policy isn't "skip", the eval
  * starts immediately; otherwise (or after "keep both") the summary screen
- * offers it via `e`. All eval screens own their own keys, including ctrl+c.
+ * offers it as a visible action. All eval screens own their own keys, including ctrl+c.
  */
 export function WizardDone(props: WizardDoneProps) {
   const candidate = props.writeStatus?.ok === false ? undefined : eligiblePerAgentEvals(props.createOutcomes)[0];

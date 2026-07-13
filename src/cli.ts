@@ -4,14 +4,13 @@ import { resolve } from "node:path";
 import { runAdvise } from "./cli/advise";
 import { parseCreateArgs, runCreate } from "./cli/create";
 import { runDoctor } from "./cli/doctor";
+import { runRegistry } from "./cli/registry";
 import { runSkillEval } from "./cli/skill-eval";
 import { runSkillNew } from "./cli/skill-new";
 import { runUpdate } from "./cli/update";
 import { loadFarrierConfig, resolveModelSettings } from "./config/farrier-config";
 import { applyLearn, createLearnReport, formatLearnApplyResult, formatLearnReport, type LearnBackend } from "./engine/learn";
 import { supportedPackIds } from "./packs/index";
-import { loadPackCatalog, type PackCatalog } from "./registry/catalog";
-import { parseItemRef } from "./registry/ref";
 
 type LearnCliOptions = {
   dir: string;
@@ -21,12 +20,6 @@ type LearnCliOptions = {
   noLlm: boolean;
   backend: LearnBackend;
   model?: string;
-  help: boolean;
-};
-
-type RegistryListOptions = {
-  dir: string;
-  json: boolean;
   help: boolean;
 };
 
@@ -43,7 +36,8 @@ Usage:
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
   farrier doctor --dir <target> [--json]
-  farrier advise --dir <target> [--context <path|text>] [--backend claude|codex] [--model <name>] [--json]
+  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude,codex] [--only guidance,hooks,skills,subagents,plugins,mcp] [--backend claude|codex] [--model <name>] [--json]
+  farrier advise skills [--dir <target>] [--context <path|text>] [--backend claude|codex] [--json]
   farrier skill new "<description>" --yes [--dir <target>] [--agents claude,codex] [--mode author-claude|author-codex|per-agent] [--name <kebab>] [--no-llm] [--json]
   farrier skill eval <skill-name> [--dir <target>] [--backend claude|codex] [--json]
 
@@ -51,7 +45,7 @@ Options:
   --stack <id>        Stack pack to render. Supported: ${supportedPackIds().join(", ")}
   --detect            Detect stack from target directory. Mutually exclusive with --stack.
   --dir <path>        Target directory. Defaults to current working directory.
-  --context <path|text> Project context for the wizard's advise option or farrier advise: a file path or literal text.
+  --context <path|text> Project context for the harness wizard or legacy skill-only advice.
   --yes               Required for render writes. Applies repairs for update. Appends accepted learned rules for learn.
   --dry-run           Explain the creation plan and file actions; write nothing.
   --force             With --yes, replace reviewed conflicting files and keep backups. Never bypasses path blockers.
@@ -59,6 +53,10 @@ Options:
   --json              Emit a machine-readable report, including creation previews and results.
   --transcripts <dir> Claude JSONL transcript directory for learn. Defaults to ~/.claude/projects/<target-slug>.
   --no-llm            Use deterministic learn proposals without calling claude or codex.
+  --sessions <mode>   Advice session evidence: auto or none. Exact project directories only.
+  --since <window>    Advice session lookback: 7d (default), 14d, or all.
+  --targets <vendors> Advice target vendors: claude,codex.
+  --only <categories> Limit advice to guidance,hooks,skills,subagents,plugins,mcp.
   --backend <name>    Learn/advise proposal backend: claude or codex. Defaults to claude for learn, auto-detected for advise.
   --model <name>      Learn/advise proposal backend model. Defaults to backend-specific low-cost model.
   --help              Show this help.
@@ -71,7 +69,7 @@ Note:
   farrier registry list shows configured private registries without executing payloads.
   farrier learn is report-only unless --yes is provided; it appends new declarative ToolPolicyRule data only.
   farrier doctor exits 0 when healthy and 1 when static harness health errors are found.
-  farrier advise is disabled by default; it never blocks the wizard on failure.`;
+  Headless farrier advise is report-only. The interactive report can create a selected recommendation only after review and confirmation.`;
 }
 
 function parseBackend(value: string): LearnBackend {
@@ -80,47 +78,6 @@ function parseBackend(value: string): LearnBackend {
   }
 
   throw new Error("--backend must be claude or codex");
-}
-
-function parseRegistryListArgs(args: string[]): RegistryListOptions {
-  const options: RegistryListOptions = {
-    dir: process.cwd(),
-    json: false,
-    help: false,
-  };
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-
-    if (arg === "--help" || arg === "-h") {
-      options.help = true;
-      continue;
-    }
-
-    if (arg === "--json") {
-      options.json = true;
-      continue;
-    }
-
-    if (arg === "--dir") {
-      const value = args[i + 1];
-      if (!value || value.startsWith("--")) {
-        throw new Error("--dir requires a value");
-      }
-      options.dir = value;
-      i += 1;
-      continue;
-    }
-
-    if (arg.startsWith("--dir=")) {
-      options.dir = arg.slice("--dir=".length);
-      continue;
-    }
-
-    throw new Error(`Unknown registry list argument: ${arg}`);
-  }
-
-  return options;
 }
 
 function parseLearnArgs(args: string[]): LearnCliOptions {
@@ -297,66 +254,6 @@ async function runLearn(args: string[]): Promise<number> {
   return 0;
 }
 
-function registryRows(namespaces: string[], catalog: PackCatalog): Array<{ namespace: string; itemCount: number; cached: boolean }> {
-  const pins = catalog.registryPins();
-  return namespaces.map((namespace) => {
-    const itemIds = Object.keys(pins).filter((id) => parseItemRef(id)?.namespace === namespace);
-    return {
-      namespace,
-      itemCount: itemIds.length,
-      cached: catalog.warnings.some((warning) => warning.namespace === namespace && warning.message.includes("cache")),
-    };
-  });
-}
-
-async function runRegistryList(args: string[], usageText: () => string): Promise<number> {
-  const options = parseRegistryListArgs(args);
-
-  if (options.help) {
-    console.log(usageText());
-    return 0;
-  }
-
-  const targetDir = resolve(options.dir);
-  const loaded = await loadFarrierConfig({ projectDir: targetDir });
-  const catalog = await loadPackCatalog({ config: loaded.config });
-  const namespaces = Object.keys(loaded.config.registries);
-  const registries = registryRows(namespaces, catalog);
-
-  if (options.json) {
-    console.log(
-      JSON.stringify(
-        {
-          registries,
-          warnings: catalog.warnings,
-        },
-        null,
-        2,
-      ),
-    );
-    return 0;
-  }
-
-  console.log("Registries:");
-  if (registries.length === 0) {
-    console.log("  none configured");
-  } else {
-    for (const registry of registries) {
-      console.log(`  ${registry.namespace}: ${registry.itemCount} items${registry.cached ? " (cached)" : ""}`);
-    }
-  }
-
-  if (catalog.warnings.length > 0) {
-    console.log("");
-    console.log("Warnings:");
-    for (const warning of catalog.warnings) {
-      console.log(`  - ${warning.namespace}: ${warning.message}`);
-    }
-  }
-
-  return 0;
-}
-
 export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> {
   try {
     if (args[0] === "update") {
@@ -364,12 +261,7 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
     }
 
     if (args[0] === "registry") {
-      if (args[1] === "list") {
-        return await runRegistryList(args.slice(2), usage);
-      }
-
-      console.error("farrier: unknown registry subcommand. Usage: farrier registry list [--help]");
-      return 1;
+      return await runRegistry(args.slice(1), usage);
     }
 
     if (args[0] === "learn") {
@@ -411,7 +303,28 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
         renderOptions.installSkills
       ) {
         const { runLauncher } = await import("./tui/launcher");
-        const choice = await runLauncher();
+        let choice = await runLauncher();
+
+        while (choice === "advise") {
+          const { runAdviceWizard } = await import("./tui/advise-app");
+          const outcome = await runAdviceWizard(resolve(renderOptions.dir));
+
+          if (typeof outcome === "object" && outcome.kind === "create-skill") {
+            const { runCreateWizard } = await import("./tui/create-app");
+            return await runCreateWizard(resolve(renderOptions.dir), [outcome.request]);
+          }
+
+          if (outcome === "done") {
+            return 0;
+          }
+
+          if (outcome === "cancel") {
+            console.error("farrier: cancelled.");
+            return 1;
+          }
+
+          choice = await runLauncher();
+        }
 
         if (choice === "create") {
           const { runCreateWizard } = await import("./tui/create-app");

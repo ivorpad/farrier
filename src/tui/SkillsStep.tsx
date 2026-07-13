@@ -3,8 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { AdviseBackend, SkillRecommendation } from "../engine/advise";
 import type { SkillSearchResult } from "../engine/skills";
 import type { SkillRef } from "../packs/types";
-import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
+import { ButtonBar } from "./ButtonBar";
 import { DetailPane, formatInstalls, palette, scrollWindow, StepHeader, useSpinner, type PaneLine } from "./chrome";
+import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 import type { AdviseStatus, SkillSearchStatus } from "./machine";
 
 type SkillsStepProps = {
@@ -18,6 +19,7 @@ type SkillsStepProps = {
   onToggleSkill: (ref: SkillRef) => void;
   onNext: () => void;
   onBack: () => void;
+  onQuit: () => void;
   adviseAvailable: boolean;
   adviseBackend?: AdviseBackend;
   adviseEnabled: boolean;
@@ -27,12 +29,21 @@ type SkillsStepProps = {
   onToggleAdvise: () => void;
 };
 
-type Zone = "input" | "advise" | "list" | "buttons";
+type Zone = "input" | "advise" | "list";
 
-const buttons: ButtonSpec[] = [
-  { id: "back", label: "← Back" },
-  { id: "next", label: "Next →" }
-];
+const skillsBindings = defineBindings(
+  binding(["tab", "shift+tab"], "focus", "focus zone"),
+  binding(["up", "down"], "move", "move"),
+  binding("space", "toggle", "toggle"),
+  binding("enter", "activate", "activate/continue"),
+  binding(["escape", "b"], "back", "back"),
+  binding(["q", "ctrl+c"], "quit", "quit")
+);
+const skillsInputBindings = defineBindings(
+  binding(["tab", "shift+tab"], "focus", "focus zone"),
+  binding(["enter", "escape"], "leaveField", "finish search field"),
+  binding("ctrl+c", "quit", "quit")
+);
 
 // The list scrolls like the Review manifest so a long skills.sh search never
 // pushes the pane or keymap off an 80×24 terminal.
@@ -60,31 +71,15 @@ function fit(text: string, width: number): string {
   return width <= 1 ? text.slice(0, width) : `${text.slice(0, width - 1)}…`;
 }
 
-function isSpace(key: unknown): boolean {
-  const candidate = key as { name?: string; sequence?: string };
-  return candidate.name === "space" || candidate.sequence === " ";
-}
-
-function nextZone(current: Zone, adviseAvailable: boolean): Zone {
-  if (current === "input") {
-    return adviseAvailable ? "advise" : "list";
-  }
-
-  if (current === "advise") {
-    return "list";
-  }
-
-  if (current === "list") {
-    return "buttons";
-  }
-
-  return "input";
+function adjacentZone(current: Zone, adviseAvailable: boolean, delta: -1 | 1): Zone {
+  const zones: Zone[] = adviseAvailable ? ["input", "advise", "list"] : ["input", "list"];
+  const index = zones.indexOf(current);
+  return zones[(index + delta + zones.length) % zones.length] ?? "input";
 }
 
 export function SkillsStep(props: SkillsStepProps) {
   const [focus, setFocus] = useState<Zone>("input");
   const [focusedRef, setFocusedRef] = useState<SkillRef | undefined>(props.selectedSkills[0]);
-  const [focusedButtonId, setFocusedButtonId] = useState<string>(buttons[0].id);
 
   const rows = useMemo<SkillRow[]>(() => {
     const rowByRef = new Map<string, SkillRow>();
@@ -138,92 +133,42 @@ export function SkillsStep(props: SkillsStepProps) {
   );
 
   useKeyboard((key) => {
-    if (key.name === "escape") {
-      props.onBack();
+    const intent = resolveIntent(focus === "input" ? skillsInputBindings : skillsBindings, key, { textInputFocused: focus === "input" });
+    if (intent === "leaveField") {
+      setFocus("list");
       return;
     }
-
-    if (key.name === "tab") {
-      setFocus((current) => nextZone(current, props.adviseAvailable));
+    if (intent === "back") {
+      if (focus === "input") setFocus("list");
+      else props.onBack();
       return;
     }
-
-    if (key.name === "a" && focus !== "input") {
-      if (props.adviseAvailable) {
-        props.onToggleAdvise();
-      }
+    if (intent === "quit") {
+      props.onQuit();
       return;
     }
-
-    if (key.name === "left") {
-      if (focus === "buttons") {
-        if (focusedButtonId === buttons[0].id) {
-          setFocus("list");
-        } else {
-          setFocusedButtonId((current) => adjacentButtonId(buttons, current, -1) ?? current);
-        }
-      } else if (focus !== "input") {
-        props.onBack();
-      }
+    if (intent === "focus") {
+      setFocus((current) => adjacentZone(current, props.adviseAvailable, key.shift ? -1 : 1));
       return;
     }
-
-    if (key.name === "up") {
-      if (focus === "buttons") {
-        setFocus("list");
-      } else if (focus === "list") {
-        const prev = rows[Math.max(focusedIndex - 1, 0)];
-        if (prev) {
-          setFocusedRef(prev.ref);
-        }
-      }
+    if (intent === "move" && focus === "list") {
+      const delta = key.name === "down" ? 1 : -1;
+      const row = rows[Math.min(Math.max(focusedIndex + delta, 0), rows.length - 1)];
+      if (row) setFocusedRef(row.ref);
       return;
     }
-
-    if (key.name === "down" && focus === "list") {
-      const next = rows[Math.min(focusedIndex + 1, rows.length - 1)];
-      if (next) {
-        setFocusedRef(next.ref);
-      }
-      return;
-    }
-
-    if (key.name === "n" && focus !== "input") {
-      props.onNext();
-      return;
-    }
-
-    if (key.name === "b" && focus !== "input" && focus !== "buttons") {
-      props.onBack();
-      return;
-    }
-
-    if (key.name === "right") {
-      if (focus === "buttons") {
-        setFocusedButtonId((current) => adjacentButtonId(buttons, current, 1) ?? current);
-      } else if (focus !== "input") {
-        props.onNext();
-      }
-      return;
-    }
-
-    // Space is the sole toggle; enter always advances (one keymap everywhere).
-    if (focus === "list" && focusedRef && isSpace(key)) {
+    if (intent === "toggle" && focus === "list" && focusedRef) {
       props.onToggleSkill(focusedRef);
       return;
     }
-
-    if (focus === "advise" && props.adviseAvailable && (key.name === "enter" || key.name === "return" || key.name === "linefeed" || isSpace(key))) {
+    if (intent === "toggle" && focus === "advise" && props.adviseAvailable) {
       props.onToggleAdvise();
       return;
     }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-      if (focus === "buttons" && focusedButtonId === "back") {
-        props.onBack();
-      } else {
-        props.onNext();
-      }
+    if (intent === "activate") {
+      if (focus === "input") return;
+      if (focus === "advise" && props.adviseAvailable) props.onToggleAdvise();
+      else props.onNext();
     }
   });
 
@@ -245,7 +190,7 @@ export function SkillsStep(props: SkillsStepProps) {
       : props.adviseStatus === "error"
         ? "failed"
         : "on"
-    : "off · press a";
+    : "off";
 
   const adviseBadgeColor = props.adviseEnabled
     ? props.adviseStatus === "error"
@@ -307,6 +252,13 @@ export function SkillsStep(props: SkillsStepProps) {
         focused={focus === "input"}
         onInput={(value) => props.onQueryChange(String(value))}
         onSubmit={() => setFocus("list")}
+        onKeyDown={(key) => {
+          if (resolveIntent(skillsInputBindings, key) === "leaveField" && (key.name === "escape" || key.sequence === "\u001b")) {
+            key.preventDefault();
+            key.stopPropagation();
+            setFocus("list");
+          }
+        }}
       />
       <text fg={props.status === "error" ? palette.warn : palette.muted}>{statusText}</text>
       {props.adviseAvailable ? (
@@ -370,11 +322,7 @@ export function SkillsStep(props: SkillsStepProps) {
           </span>
         ) : null}
       </text>
-      <ButtonBar
-        buttons={buttons}
-        focusedId={focus === "buttons" ? focusedButtonId : undefined}
-        hint="space toggle · a advise · enter continue · b back"
-      />
+      <ButtonBar hint={bindingsHint(focus === "input" ? skillsInputBindings : skillsBindings)} />
     </box>
   );
 }

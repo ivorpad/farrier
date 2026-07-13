@@ -1,8 +1,10 @@
 import { useKeyboard } from "@opentui/react";
+import { useState } from "react";
 import type { CreateAgent, SkillCreationOutcome, SkillCreationPhase, SkillCreationRequest } from "../engine/create-skill";
 import { palette, truncateTo, useSpinner } from "./chrome";
-import { CollisionPromptView, type CollisionPrompt } from "./collision";
+import { collisionBindings, CollisionPromptView, type CollisionPrompt } from "./collision";
 import type { PendingSkillEval } from "./create-eval";
+import { binding, bindingsHint, defineBindings, resolveIntent, runningCancellationBindings } from "./keymap";
 import { pickHarnessVerb } from "./verbs";
 
 // One verb per process so the authoring spinner and done line match.
@@ -55,17 +57,19 @@ export function CreateProgressScreen(props: {
 }) {
   const spinner = useSpinner(true);
   const running = props.statuses.some((status) => status.kind !== "done");
+  const progressBindings = defineBindings(...runningCancellationBindings, binding("q", "interrupt", "cancel and stop child processes"));
 
   useKeyboard((key) => {
-    if (key.ctrl && key.name === "c") {
+    if (resolveIntent(progressBindings, key) === "interrupt") {
       props.onCancel();
       return;
     }
 
     if (props.collision) {
-      if (key.name === "r") {
+      const intent = resolveIntent(collisionBindings, key);
+      if (intent === "replace") {
         props.collision.resolve("replace");
-      } else if (key.name === "k" || key.name === "escape") {
+      } else if (intent === "keep") {
         props.collision.resolve("keep");
       }
     }
@@ -108,7 +112,7 @@ export function CreateProgressScreen(props: {
         })}
       </box>
       {props.collision ? <CollisionPromptView collision={props.collision} /> : null}
-      <text fg={palette.muted}>Each skill is a full agent run — expect minutes. ctrl+c cancels and kills the agent runs.</text>
+      <text fg={palette.muted}>{bindingsHint(progressBindings)}</text>
     </box>
   );
 }
@@ -119,13 +123,23 @@ export function CreateDoneScreen(props: {
   onEvaluate: () => void;
   onExit: () => void;
 }) {
+  const [choice, setChoice] = useState(0);
+  const choices = props.evalCandidate ? (["evaluate", "close"] as const) : (["close"] as const);
+  const doneBindings = defineBindings(
+    binding(["up", "down"], "move", "move"),
+    binding("enter", "activate", "activate"),
+    binding(["escape", "b"], "close", "close"),
+    binding("q", "quit", "quit"),
+    binding("ctrl+c", "quit", "quit")
+  );
   useKeyboard((key) => {
-    if (key.name === "e" && props.evalCandidate) {
-      props.onEvaluate();
+    const intent = resolveIntent(doneBindings, key);
+    if (intent === "move") {
+      setChoice((current) => Math.min(Math.max(current + (key.name === "down" ? 1 : -1), 0), choices.length - 1));
       return;
     }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q") {
+    if (intent === "activate" && choices[choice] === "evaluate") props.onEvaluate();
+    else if (intent === "activate" || intent === "close" || intent === "quit") {
       props.onExit();
     }
   });
@@ -155,20 +169,22 @@ export function CreateDoneScreen(props: {
           </box>
         ))}
       </box>
-      {props.evalCandidate ? (
-        <box style={{ flexDirection: "column", gap: 0 }}>
-          <text fg={palette.gold}>
-            {"e "}
-            <span fg={palette.muted}>{`evaluate ${props.evalCandidate.skillName} copies & pick a winner · enter close`}</span>
-          </text>
+      <box style={{ flexDirection: "column", gap: 0 }}>
+        {props.evalCandidate ? (
+          <>
+            <text bg={choice === 0 ? palette.selBg : undefined}>
+              <span fg={palette.accent}>{choice === 0 ? "▸ " : "  "}</span>
+              <span fg={palette.text}>{`Evaluate ${props.evalCandidate.skillName} copies`}</span>
+            </text>
           <text fg={palette.faint}>{`  or later: farrier skill eval ${props.evalCandidate.skillName}${props.evalCandidate.names.codex !== props.evalCandidate.skillName ? ` --codex-name ${props.evalCandidate.names.codex}` : ""}`}</text>
-        </box>
-      ) : (
-        <text fg={palette.gold}>
-          {"enter "}
-          <span fg={palette.muted}>close</span>
+          </>
+        ) : null}
+        <text bg={choice === choices.length - 1 ? palette.selBg : undefined}>
+          <span fg={palette.accent}>{choice === choices.length - 1 ? "▸ " : "  "}</span>
+          <span fg={palette.text}>Close</span>
         </text>
-      )}
+      </box>
+      <text fg={palette.muted}>{bindingsHint(doneBindings)}</text>
     </box>
   );
 }

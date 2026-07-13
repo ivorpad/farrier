@@ -3,24 +3,18 @@ import { useState } from "react";
 import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
-import { adjacentButtonId, ButtonBar, type ButtonSpec } from "./ButtonBar";
-import { DetailPane, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
-import { CollisionPromptView, type CollisionPrompt } from "./collision";
+import { ButtonBar } from "./ButtonBar";
+import { DetailPane, KeyHints, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
+import { collisionBindings, CollisionPromptView, type CollisionPrompt } from "./collision";
 import type { PendingSkillEval } from "./create-eval";
+import { binding, bindingsHint, defineBindings, destructiveConfirmationBindings, resolveIntent, runningCancellationBindings } from "./keymap";
 import type { WizardWriteStatus } from "./machine";
 import { SkillInstallFailureDetails } from "./skill-install-failures";
 import { pickHarnessVerb } from "./verbs";
 
-type Zone = "content" | "buttons";
-
 // One verb per process so the writing spinner, escape hint, and done line
 // all speak the same word within a run.
 const runVerb = pickHarnessVerb();
-
-const reviewButtons: ButtonSpec[] = [
-  { id: "back", label: "← Back" },
-  { id: "confirm", label: "⚒ Create harness" },
-];
 
 // The manifest scrolls: at most this many rows render at once so header +
 // manifest + preview pane + keymap always fit inside an 80×24 terminal, while
@@ -63,6 +57,7 @@ type ReviewStepProps = {
   canConfirm: boolean;
   onConfirm: (forceReplace: boolean) => void;
   onBack: () => void;
+  onQuit: () => void;
 };
 
 type DoneStepProps = {
@@ -103,7 +98,7 @@ function actionView(action: ReviewFile["action"]): {
   }
 }
 
-function previewLines(file: ReviewFile): PaneLine[] {
+function previewLines(file: ReviewFile, offset: number): PaneLine[] {
   const action = actionView(file.action);
   const reasonFg = file.action === "replace" || file.action === "blocked" ? palette.warn : palette.muted;
   const metadata: PaneLine[] = [{ fg: action.fg, text: `${action.label} — ${file.purpose}` }, ...(file.reason ? [{ fg: reasonFg, text: file.reason }] : [])];
@@ -111,15 +106,16 @@ function previewLines(file: ReviewFile): PaneLine[] {
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
     .map((line) => ({ fg: palette.muted, text: line.trimEnd() }));
-  const lines = [...metadata, ...content].slice(0, previewLineCount);
+  const allLines = [...metadata, ...content];
+  const start = Math.min(offset, Math.max(allLines.length - previewLineCount, 0));
+  const lines = allLines.slice(start, start + previewLineCount);
 
   return lines.length > 0 ? lines : [{ fg: palette.faint, text: "(empty file)" }];
 }
 
 export function ReviewStep(props: ReviewStepProps) {
-  const [zone, setZone] = useState<Zone>("content");
-  const [focusedButtonId, setFocusedButtonId] = useState<string>(reviewButtons[0].id);
   const [focusedFileIndex, setFocusedFileIndex] = useState<number>(0);
+  const [previewOffset, setPreviewOffset] = useState(0);
   const [replaceConfirmationArmed, setReplaceConfirmationArmed] = useState(false);
   const replacements = props.files.filter((file) => file.requiresForce);
   const hasReplacements = replacements.length > 0;
@@ -135,74 +131,52 @@ export function ReviewStep(props: ReviewStepProps) {
 
   function moveFile(delta: -1 | 1): void {
     setFocusedFileIndex((current) => Math.min(Math.max(current + delta, 0), Math.max(props.files.length - 1, 0)));
+    setPreviewOffset(0);
   }
 
+  const reviewBindings = replaceConfirmationArmed
+    ? defineBindings(
+        ...destructiveConfirmationBindings,
+        binding("b", "back", "disarm"),
+        binding(["q", "ctrl+c"], "quit", "quit"),
+        binding(["up", "down"], "move", "inspect file"),
+        binding(["pageup", "pagedown"], "scroll", "scroll preview")
+      )
+    : defineBindings(
+        binding(["up", "down"], "move", "inspect file"),
+        binding(["pageup", "pagedown"], "scroll", "scroll preview"),
+        binding("enter", "activate", hasReplacements ? "review replacements" : "create harness"),
+        binding(["escape", "b"], "back", "back"),
+        binding(["q", "ctrl+c"], "quit", "quit")
+      );
+
   useKeyboard((key) => {
-    if (key.name === "escape") {
+    const intent = resolveIntent(reviewBindings, key);
+    if (intent === "reject") {
+      setReplaceConfirmationArmed(false);
+      return;
+    }
+    if (intent === "back") {
       backOrDisarm();
       return;
     }
-
-    if (key.name === "q") {
-      props.onBack();
+    if (intent === "quit") {
+      props.onQuit();
       return;
     }
-
-    if (key.name === "r" && replaceConfirmationArmed && props.canConfirm && hasReplacements) {
+    if (intent === "confirm" && props.canConfirm && hasReplacements) {
       props.onConfirm(true);
       return;
     }
-
-    if (key.name === "tab") {
-      setZone((current) => (current === "content" ? "buttons" : "content"));
+    if (intent === "move") {
+      moveFile(key.name === "down" ? 1 : -1);
       return;
     }
-
-    if (key.name === "down") {
-      if (zone === "content") {
-        moveFile(1);
-      }
+    if (intent === "scroll") {
+      setPreviewOffset((current) => Math.max(0, current + (key.name === "pagedown" ? previewLineCount : -previewLineCount)));
       return;
     }
-
-    if (key.name === "up") {
-      if (zone === "buttons") {
-        setZone("content");
-      } else {
-        moveFile(-1);
-      }
-      return;
-    }
-
-    if (key.name === "left") {
-      if (zone === "buttons") {
-        if (focusedButtonId === reviewButtons[0].id) {
-          setZone("content");
-        } else {
-          setFocusedButtonId((current) => adjacentButtonId(reviewButtons, current, -1) ?? current);
-        }
-      } else {
-        backOrDisarm();
-      }
-      return;
-    }
-
-    if (key.name === "b" && zone === "content") {
-      backOrDisarm();
-      return;
-    }
-
-    if (key.name === "right" && zone === "buttons") {
-      setFocusedButtonId((current) => adjacentButtonId(reviewButtons, current, 1) ?? current);
-      return;
-    }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed") {
-      if (zone === "buttons" && focusedButtonId === "back") {
-        props.onBack();
-        return;
-      }
-
+    if (intent === "activate") {
       if (props.canConfirm) {
         if (hasReplacements) {
           setReplaceConfirmationArmed(true);
@@ -226,15 +200,6 @@ export function ReviewStep(props: ReviewStepProps) {
   const unchangedCount = props.files.filter((file) => file.action === "unchanged").length;
   const blockedCount = Math.max(props.blockerCount, props.files.filter((file) => file.action === "blocked").length);
   const changedCount = props.files.filter((file) => file.action !== "unchanged" && file.action !== "blocked").length;
-  const keyHint = props.existingHarness
-    ? "↑↓ inspect file · b back · q abandon"
-    : blockedCount > 0
-      ? "↑↓ inspect blocker · b back · q abandon"
-      : replaceConfirmationArmed
-        ? "r replace & create · esc cancel replacement · ↑↓ inspect"
-        : hasReplacements
-          ? "enter review replacements · ↑↓ inspect file · b back · q abandon"
-          : "enter create harness · ↑↓ inspect file · b back · q abandon";
 
   return (
     <box
@@ -258,8 +223,8 @@ export function ReviewStep(props: ReviewStepProps) {
       {!props.existingHarness && blockedCount === 0 && hasReplacements ? (
         <text fg={replaceConfirmationArmed ? palette.warn : palette.gold}>
           {replaceConfirmationArmed
-            ? `Replacement armed for ${replacements.length} file(s). Press r to replace and create; esc cancels.`
-            : `${replacements.length} existing file(s) require replacement. Backups stay in .farrier-staging/backups/. Press Enter, then r.`}
+            ? `Replacement armed for ${replacements.length} file(s). Press y to replace and create; n or esc cancels.`
+            : `${replacements.length} existing file(s) require replacement. Backups stay in .farrier-staging/backups/. Press Enter, then y.`}
         </text>
       ) : null}
 
@@ -284,7 +249,7 @@ export function ReviewStep(props: ReviewStepProps) {
             const index = fileWindow.start + offset;
             const note = file.reason ? `${file.purpose} · ${file.reason}` : file.purpose;
             const action = actionView(file.action);
-            const focused = index === clampedIndex && zone === "content";
+            const focused = index === clampedIndex;
             const bg = focused ? palette.selBg : undefined;
             const cursor = index === clampedIndex ? "▸ " : "  ";
 
@@ -327,30 +292,31 @@ export function ReviewStep(props: ReviewStepProps) {
         </text>
       ) : null}
 
-      {focusedFile ? <DetailPane title={focusedFile.path} lines={previewLines(focusedFile)} /> : null}
+      {focusedFile ? <DetailPane title={focusedFile.path} lines={previewLines(focusedFile, previewOffset)} /> : null}
 
       <ButtonBar
-        buttons={reviewButtons}
-        focusedId={zone === "buttons" ? focusedButtonId : undefined}
-        hint={keyHint}
+        hint={bindingsHint(reviewBindings)}
         emberActions={replaceConfirmationArmed ? ["replace & create"] : hasReplacements ? ["review replacements"] : ["create harness"]}
       />
     </box>
   );
 }
 
-export function WritingStep(props: { creatingCount?: number; cancelling?: boolean; collision?: CollisionPrompt | null }) {
+export function WritingStep(props: { creatingCount?: number; cancelling?: boolean; collision?: CollisionPrompt | null; onCancel: () => void }) {
   const spinner = useSpinner(true);
   const creating = props.creatingCount ?? 0;
+  const bindings = defineBindings(...runningCancellationBindings, binding("q", "interrupt", "cancel and stop child processes"));
 
   useKeyboard((key) => {
-    if (!props.collision) {
+    if (resolveIntent(bindings, key) === "interrupt") {
+      props.onCancel();
       return;
     }
-
-    if (key.name === "r") {
+    if (!props.collision) return;
+    const intent = resolveIntent(collisionBindings, key);
+    if (intent === "replace") {
       props.collision.resolve("replace");
-    } else if (key.name === "k" || key.name === "escape") {
+    } else if (intent === "keep") {
       props.collision.resolve("keep");
     }
   });
@@ -373,7 +339,7 @@ export function WritingStep(props: { creatingCount?: number; cancelling?: boolea
       )}
       {creating > 0 ? <text fg={palette.muted}>Skill authoring runs a full agent per skill — expect minutes, not seconds.</text> : null}
       {props.collision ? <CollisionPromptView collision={props.collision} /> : null}
-      <text fg={palette.muted}>{creating > 0 ? "ctrl+c cancels skill authoring and kills the agent runs." : `Escape is ignored while ${runVerb.gerund.toLowerCase()}.`}</text>
+      <KeyHints hint={bindingsHint(bindings)} />
     </box>
   );
 }
@@ -385,14 +351,23 @@ export function DoneStep(props: DoneStepProps) {
   const partial = props.writeStatus?.partial === true;
   const writtenCount = props.applyResult?.writtenFiles.length ?? 0;
   const unchangedCount = props.applyResult?.unchangedFiles.length ?? 0;
+  const [choice, setChoice] = useState(0);
+  const choices = props.evalCandidate && props.onEvaluate ? (["evaluate", "close"] as const) : (["close"] as const);
+  const bindings = defineBindings(
+    binding(["up", "down"], "move", "move"),
+    binding("enter", "activate", "activate"),
+    binding(["escape", "b"], "close", "close"),
+    binding(["q", "ctrl+c"], "quit", "quit")
+  );
 
   useKeyboard((key) => {
-    if (key.name === "e" && props.evalCandidate && props.onEvaluate) {
-      props.onEvaluate();
+    const intent = resolveIntent(bindings, key);
+    if (intent === "move") {
+      setChoice((current) => Math.min(Math.max(current + (key.name === "down" ? 1 : -1), 0), choices.length - 1));
       return;
     }
-
-    if (key.name === "enter" || key.name === "return" || key.name === "linefeed" || key.name === "escape" || key.name === "q" || (key.ctrl && key.name === "c")) {
+    if (intent === "activate" && choices[choice] === "evaluate") props.onEvaluate?.();
+    else if (intent === "activate" || intent === "close" || intent === "quit") {
       props.onExit();
     }
   });
@@ -475,17 +450,19 @@ export function DoneStep(props: DoneStepProps) {
 
       <SkillInstallFailureDetails results={props.installResults} />
 
-      {props.evalCandidate ? (
-        <text fg={palette.gold}>
-          {"e "}
-          <span fg={palette.muted}>{`evaluate ${props.evalCandidate.skillName} copies & pick a winner · enter close`}</span>
+      <box style={{ flexDirection: "column", gap: 0 }}>
+        {props.evalCandidate ? (
+          <text bg={choice === 0 ? palette.selBg : undefined}>
+            <span fg={palette.accent}>{choice === 0 ? "▸ " : "  "}</span>
+            <span fg={palette.text}>{`Evaluate ${props.evalCandidate.skillName} copies`}</span>
+          </text>
+        ) : null}
+        <text bg={choice === choices.length - 1 ? palette.selBg : undefined}>
+          <span fg={palette.accent}>{choice === choices.length - 1 ? "▸ " : "  "}</span>
+          <span fg={palette.text}>Close</span>
         </text>
-      ) : (
-        <text fg={palette.gold}>
-          {"enter "}
-          <span fg={palette.muted}>close</span>
-        </text>
-      )}
+      </box>
+      <KeyHints hint={bindingsHint(bindings)} />
     </box>
   );
 }
