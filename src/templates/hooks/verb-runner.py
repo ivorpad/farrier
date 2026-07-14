@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code hook that runs project verification verbs."""
+"""Shared Claude and Codex hook that runs project verification verbs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 JUSTFILE_NAMES = ("justfile", "Justfile", ".justfile")
 # Structure-linting recipes farrier scaffolds, in priority order. Python packs
 # ship "konpy"; TypeScript packs ship "konsistent". A project has at most one.
@@ -95,7 +95,9 @@ def run_command(command: list[str], cwd: str) -> tuple[bool, str]:
     if proc.returncode == 0:
         return True, output
 
-    summary = output if output else f"{' '.join(command)} exited with code {proc.returncode}"
+    summary = (
+        output if output else f"{' '.join(command)} exited with code {proc.returncode}"
+    )
     return False, summary
 
 
@@ -146,7 +148,9 @@ def main() -> int:
         if payload.get("stop_hook_active") is True:
             return 0
 
-        recipe = next((name for name in STRUCTURE_RECIPES if has_just_recipe(cwd, name)), None)
+        recipe = next(
+            (name for name in STRUCTURE_RECIPES if has_just_recipe(cwd, name)), None
+        )
         if recipe is None:
             return 0
 

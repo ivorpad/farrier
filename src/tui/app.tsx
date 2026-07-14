@@ -122,7 +122,7 @@ function WizardApp(props: WizardAppProps) {
   }, []);
 
   const selectedPack = useMemo(() => selectedPackForWizard(props.catalog.resolvePack(state.packId), state.selectedHooks), [props.catalog, state.packId, state.selectedHooks]);
-  const ruleCount = useMemo(() => agentsHardRules(selectedPack).length, [selectedPack]);
+  const ruleCount = useMemo(() => agentsHardRules(selectedPack, state.agents).length, [selectedPack, state.agents]);
   const review = useHarnessReview({
     active: state.step === "Review",
     targetDir: props.targetDir,
@@ -131,6 +131,7 @@ function WizardApp(props: WizardAppProps) {
     packId: state.packId,
     selectedSkills: state.selectedSkills,
     selectedHooks: state.selectedHooks,
+    agents: state.agents,
     learnEnabled: state.learnEnabled,
     ruleCount,
   });
@@ -359,8 +360,11 @@ function WizardApp(props: WizardAppProps) {
         <HooksStep
           availableHooks={state.availableHooks}
           selectedHooks={state.selectedHooks}
+          selectedAgents={state.agents}
+          agentAvailability={agentAvailability}
           toolPolicyRules={selectedPack.toolPolicyRules}
           onToggleHook={(hook) => dispatch({ type: "TOGGLE_HOOK", hook })}
+          onToggleAgent={(agent) => dispatch({ type: "TOGGLE_AGENT", agent })}
           onNext={() => dispatch({ type: "NEXT" })}
           onBack={() => dispatch({ type: "BACK" })}
           onQuit={() => props.onExit(1)}
@@ -383,6 +387,7 @@ function WizardApp(props: WizardAppProps) {
       return (
         <ReviewStep
           createRequests={state.createRequests}
+          agents={state.agents}
           generator={generatorPresentation(selectedPack, props.catalog)}
           files={review.files}
           existingHarness={review.existingHarness}
@@ -419,6 +424,7 @@ function WizardApp(props: WizardAppProps) {
           installResults={state.installResults}
           createOutcomes={state.createOutcomes}
           hookCount={state.selectedHooks.length}
+          agents={state.agents}
           skillCount={state.selectedSkills.length}
           ruleCount={ruleCount}
           evalPolicy={evalPolicy}

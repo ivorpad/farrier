@@ -54,6 +54,7 @@ describe("harness creation plans", () => {
     expect(plan.files.find((file) => file.path === "replace.txt")?.requiresForce).toBe(true);
     expect(plan.files.find((file) => file.path === "fresh.txt")?.exists).toBe(false);
     expect(filePurpose("AGENTS.md", { ruleCount: 9 })).toContain("9 agent rules");
+    expect(filePurpose(".codex/hooks.json", { hookCount: 6 })).toBe("Wires 6 shared hooks into Codex.");
   });
 
   test("requires force for replacements and keeps timestamped backups", async () => {

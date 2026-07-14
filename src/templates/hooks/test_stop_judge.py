@@ -77,14 +77,30 @@ def stop_payload(tmp_path: Path, *, active: bool = False) -> dict:
 
 
 def git(tmp_path: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=True,
+    )
 
 
 def init_repo_with_head(tmp_path: Path) -> None:
     git(tmp_path, "init")
     (tmp_path / "README.md").write_text("initial\n", encoding="utf-8")
     git(tmp_path, "add", "README.md")
-    git(tmp_path, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "initial")
+    git(
+        tmp_path,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test User",
+        "commit",
+        "-m",
+        "initial",
+    )
 
 
 def parse_stdout(stdout: str) -> dict:
@@ -108,6 +124,25 @@ def test_stop_hook_active_passes_without_backend_call(tmp_path: Path) -> None:
     assert code == 0
     assert_allowed(stdout, stderr)
     assert not (tmp_path / "called.txt").exists()
+
+
+def test_codex_stop_payload_is_accepted(tmp_path: Path) -> None:
+    init_repo_with_head(tmp_path)
+    write_manifest(tmp_path, enabled=False)
+    payload = stop_payload(tmp_path)
+    payload.update(
+        {
+            "turn_id": "turn-1",
+            "model": "gpt-codex",
+            "permission_mode": "default",
+            "last_assistant_message": "done",
+        }
+    )
+
+    code, stdout, stderr = run_hook(payload)
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
 
 
 def test_disabled_judge_passes_silently(tmp_path: Path) -> None:
@@ -165,7 +200,9 @@ printf '{"severity":"serious","summary":"secret-like config added","findings":[{
     assert "README.md" in data["reason"]
 
 
-def test_fake_codex_serious_blocks_with_prompt_as_single_argument(tmp_path: Path) -> None:
+def test_fake_codex_serious_blocks_with_prompt_as_single_argument(
+    tmp_path: Path,
+) -> None:
     init_repo_with_head(tmp_path)
     write_manifest(tmp_path, enabled=True, backend="codex", model="gpt-5.5")
     (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
@@ -284,7 +321,16 @@ def test_no_changes_passes_without_backend_call(tmp_path: Path) -> None:
     make_fake_executable(tmp_path, "claude", "echo called > called.txt\nexit 1")
     # Commit the setup files so the worktree is genuinely clean (no diff, no untracked).
     git(tmp_path, "add", "-A")
-    git(tmp_path, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "setup")
+    git(
+        tmp_path,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test User",
+        "commit",
+        "-m",
+        "setup",
+    )
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 

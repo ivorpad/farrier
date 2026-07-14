@@ -7,7 +7,7 @@ Every new project (Python, TypeScript, Rails…) needs the same agents-first har
 ## Decisions (user interview, all locked)
 
 1. **Harness-first; delegate scaffolding.** Native generators (`uv init`, `create-vite`, `create-next-app`, `rails new`, SAM/CDK) create project code; farrier owns only harness artifacts. A pack may declare its native generator so Farrier can report the command and source, but harness creation never executes it. Works on new AND existing repos (detect stack → layer harness).
-2. **Output = checked-in, agent-agnostic files.** AGENTS.md is the single source of truth (CLAUDE.md is a pointer/symlink); `.agents/` shared assets; `.claude/settings.json` + hooks; `.codex/` config. No plugin layer. Hooks are a Claude-only mechanism → same policies land in AGENTS.md rules + CI/just checks for Codex.
+2. **Output = checked-in, shared policy with native bindings.** AGENTS.md is the single source of truth (CLAUDE.md imports it); `.agents/` shared assets; one `.claude/hooks/` script/test/rules set; `.claude/settings.json` for Claude; `.codex/hooks.json` for released Codex hooks. `agents` in `.farrier.json` records the selected non-empty target set. Codex interception is partial, so AGENTS.md rules + just checks remain mandatory.
 3. **Deterministic core + LLM advisor.** Hooks/settings ship as tested templates in farrier. `claude -p` / `codex exec` (pluggable backend) produces **data only** (skill recommendations, draft konsistent conventions, AGENTS.md content, secondary-stack detection) — never executable hook code at harness-creation time. Shipped hooks MAY call an LLM at runtime as a judge (see hook catalog).
 4. **CLI surface: context-aware wizard + headless plan/apply.** Bare `farrier` → TUI wizard. Headless creation supports explicit or detected stacks, `--dry-run`, `--yes`, reviewed `--force`, offline `--no-skills`, and `--json`. Preview and apply share one creation-plan model: detected evidence and assumptions, harness behavior, and per-file actions. This is intentionally not called a work contract: goal, definition-of-done, evidence, delegation, and autonomy remain future `HarnessSpec` work. Subcommands: `farrier` (wizard), `farrier update`, `farrier learn`, `farrier doctor` (doctor performs static harness-shape checks; runtime commands, prerequisites, and skill-lock readiness remain separate work).
 5. **V1 stacks (broad, data-driven):** Python/uv → FastAPI, Lambda+Powertools; TypeScript → React (Vite), Next.js, Lambda (SAM/CDK); Rails (+hotwire secondary detection). Packs are declarative — adding one is data, not code — plus a **generic fallback pack** (LLM advisor suggests skills for unrecognized stacks).
@@ -74,11 +74,11 @@ AGENTS.md                    # source of truth; CLAUDE.md → pointer to it
 .claude/settings.json        # hook wiring, permissions
 .claude/hooks/*.py + test_*  # copied from catalog, parameterized (stack verbs, judge models)
 .claude/skills/              # via `skills add -a claude`
-.codex/                      # codex config + skills via `skills add -a codex`
+.codex/hooks.json            # selected Codex binding to the shared .claude/hooks scripts
 konsistent.json              # from pack template, LLM-draft-refined for existing repos
 skills-lock.json             # owned by `skills` CLI
 justfile                     # check/test/fmt verbs bound to stack tools
-.farrier.json                # manifest: pack ids, hook ids + versions, judge config → enables `update`/`learn`/`doctor` diffing
+.farrier.json                # manifest: selected agents, pack ids, hook ids + versions, judge config → enables `update`/`learn`/`doctor` diffing
 .farrier-staging/backups/    # recoverable originals from explicitly forced creation replacements; gitignored
 ```
 

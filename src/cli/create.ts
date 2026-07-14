@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { applyHarnessChangePlan, HarnessApplyError, inspectHarnessChangePlan, type HarnessChangePlan, type HarnessFileAction } from "../engine/create-plan";
 import { detectPacksWithEvidence, type DetectedPackEvidence } from "../engine/detect";
+import { formatAgents, parseAgents, type EnforcementAgent } from "../engine/agent-selection";
 import { agentsHardRules, createRenderPlan } from "../engine/render";
 import { installSkills, type InstallSkillResult } from "../engine/skills";
 import type { ResolvedPack } from "../packs/types";
@@ -18,6 +19,7 @@ export type CreateCliOptions = {
   force: boolean;
   json: boolean;
   installSkills: boolean;
+  agents: EnforcementAgent[];
   help: boolean;
 };
 
@@ -35,6 +37,7 @@ export function parseCreateArgs(args: string[]): CreateCliOptions {
     force: false,
     json: false,
     installSkills: true,
+    agents: ["claude"],
     detect: false,
     help: false,
   };
@@ -74,6 +77,21 @@ export function parseCreateArgs(args: string[]): CreateCliOptions {
 
     if (arg === "--detect") {
       options.detect = true;
+      continue;
+    }
+
+    if (arg === "--agents") {
+      const value = args[i + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--agents requires a value");
+      }
+      options.agents = parseAgents(value);
+      i += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--agents=")) {
+      options.agents = parseAgents(arg.slice("--agents=".length));
       continue;
     }
 
@@ -230,7 +248,8 @@ function creationReport(input: { options: CreateCliOptions; resolved: ResolvedRe
       detected: input.resolved.detected,
     },
     harnessBehavior: {
-      hardRuleCount: agentsHardRules(input.pack).length,
+      agents: input.options.agents,
+      hardRuleCount: agentsHardRules(input.pack, input.options.agents).length,
       hooks: input.pack.hooks,
       skills: input.pack.skills,
       skillAction: input.options.installSkills ? "install" : "record-only",
@@ -288,7 +307,8 @@ function printCreationPlan(input: { options: CreateCliOptions; resolved: Resolve
 
   console.log("");
   console.log("Harness behavior:");
-  console.log(`  - ${agentsHardRules(input.pack).length} shared agent rules in AGENTS.md`);
+  console.log(`  - enforcement targets: ${formatAgents(input.options.agents)}`);
+  console.log(`  - ${agentsHardRules(input.pack, input.options.agents).length} shared agent rules in AGENTS.md`);
   console.log(`  - ${input.pack.hooks.length} hook(s): ${input.pack.hooks.join(", ") || "none"}`);
   console.log(`  - check: ${input.pack.verbs.check}`);
   console.log(`  - test: ${input.pack.verbs.test}`);
@@ -383,13 +403,14 @@ async function executeCreate(args: string[], usage: () => string): Promise<numbe
   const renderPlan = await createRenderPlan({
     targetDir,
     pack,
+    agents: options.agents,
     registryPins: catalog.registryPins(),
   });
   const plan = await inspectHarnessChangePlan(renderPlan, {
     packId: resolved.stack,
     hookCount: pack.hooks.length,
     skillCount: pack.skills.length,
-    ruleCount: agentsHardRules(pack).length,
+    ruleCount: agentsHardRules(pack, options.agents).length,
     verbs: pack.verbs,
     konsistentTool: pack.konsistentTool,
   });

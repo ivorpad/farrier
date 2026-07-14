@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Claude Code PostToolUse hook for deterministic and optional LLM quality review."""
+"""Shared PostToolUse hook for deterministic and optional LLM quality review."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,8 +13,11 @@ from pathlib import Path
 from typing import Any
 
 
-EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 PATH_KEYS = {"file_path", "path", "notebook_path"}
+PATCH_HEADER = re.compile(
+    r"^\*\*\* (?:Update|Add|Delete) File: (?P<path>.+?)\s*$", re.MULTILINE
+)
 DEFAULT_MAX_FILE_LINES = 500
 DEFAULT_TIMEOUT_MS = 15000
 MAX_EMBEDDED_CONTENT_BYTES = 30 * 1024
@@ -93,6 +97,13 @@ def iter_path_values(value: Any) -> list[str]:
     return paths
 
 
+def patch_paths(tool_input: dict[str, Any]) -> list[str]:
+    command = tool_input.get("command")
+    if not isinstance(command, str):
+        return []
+    return [match.group("path") for match in PATCH_HEADER.finditer(command)]
+
+
 def normalize_project_path(path: str) -> str:
     normalized = path.replace("\\", "/").strip().strip("\"'")
     while normalized.startswith("./"):
@@ -168,7 +179,12 @@ def edited_files(cwd: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
     files: list[dict[str, Any]] = []
-    for path in unique_paths(iter_path_values(tool_input)):
+    paths = (
+        patch_paths(tool_input)
+        if payload.get("tool_name") == "apply_patch"
+        else iter_path_values(tool_input)
+    )
+    for path in unique_paths(paths):
         if is_hook_path(path):
             continue
 
@@ -194,7 +210,11 @@ def deterministic_findings(files: list[dict[str, Any]], max_lines: int) -> list[
         line_count = file.get("lineCount")
         path = file.get("path")
 
-        if isinstance(path, str) and isinstance(line_count, int) and line_count > max_lines:
+        if (
+            isinstance(path, str)
+            and isinstance(line_count, int)
+            and line_count > max_lines
+        ):
             findings.append(
                 f"{path} is {line_count} lines, exceeding quality.maxFileLines={max_lines}. "
                 "Split responsibilities or document the architectural reason for the larger file."
@@ -212,7 +232,9 @@ def build_combined_prompt(base_prompt: str, files: list[dict[str, Any]]) -> str:
     return f"{base_prompt.strip()}\n\nInput JSON:\n{json.dumps(payload, indent=2)}\n"
 
 
-def backend_command(backend: str, model: str, prompt: str) -> tuple[list[str], str | None] | None:
+def backend_command(
+    backend: str, model: str, prompt: str
+) -> tuple[list[str], str | None] | None:
     if backend == "claude":
         if shutil.which("claude") is None:
             return None
@@ -226,7 +248,9 @@ def backend_command(backend: str, model: str, prompt: str) -> tuple[list[str], s
     return None
 
 
-def run_backend(config: dict[str, Any], combined_prompt: str, cwd: str) -> dict[str, Any] | None:
+def run_backend(
+    config: dict[str, Any], combined_prompt: str, cwd: str
+) -> dict[str, Any] | None:
     if config.get("enabled") is not True:
         return None
 
@@ -345,7 +369,9 @@ def main() -> int:
     config = per_edit_config(manifest)
     if files and config.get("enabled") is True:
         base_prompt = prompt_text(cwd, config)
-        judgement = valid_judgement(run_backend(config, build_combined_prompt(base_prompt, files), cwd))
+        judgement = valid_judgement(
+            run_backend(config, build_combined_prompt(base_prompt, files), cwd)
+        )
         context = judgement_context(judgement) if judgement is not None else None
         if context is not None:
             contexts.append(context)

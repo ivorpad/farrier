@@ -47,7 +47,9 @@ def make_fake_executable(tmp_path: Path, name: str, body: str) -> Path:
     return fake
 
 
-def run_hook(payload: dict, tmp_path: Path, extra_path: Path | None = None) -> tuple[int, str, str]:
+def run_hook(
+    payload: dict, tmp_path: Path, extra_path: Path | None = None
+) -> tuple[int, str, str]:
     env = os.environ.copy()
     if extra_path is not None:
         env["PATH"] = f"{extra_path}{os.pathsep}{env.get('PATH', '')}"
@@ -64,7 +66,9 @@ def run_hook(payload: dict, tmp_path: Path, extra_path: Path | None = None) -> t
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def post_payload(tmp_path: Path, tool_input: dict | None = None, tool_name: str = "Write") -> dict:
+def post_payload(
+    tmp_path: Path, tool_input: dict | None = None, tool_name: str = "Write"
+) -> dict:
     return {
         "session_id": "test",
         "transcript_path": "/tmp/transcript.jsonl",
@@ -118,10 +122,34 @@ def test_under_limit_file_passes_silently(tmp_path: Path) -> None:
     assert_allowed(stdout, stderr)
 
 
+def test_codex_apply_patch_extracts_every_changed_path_header(tmp_path: Path) -> None:
+    write_manifest(tmp_path, manifest(max_lines=2))
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "small.py").write_text("one\n", encoding="utf-8")
+    (source / "large.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    patch = """*** Begin Patch
+*** Update File: src/small.py
+*** Add File: src/large.py
+*** Delete File: src/deleted.py
+*** End Patch"""
+
+    code, stdout, stderr = run_hook(
+        post_payload(tmp_path, {"command": patch}, tool_name="apply_patch"),
+        tmp_path,
+    )
+
+    assert code == 0
+    assert stderr == ""
+    assert_post_context(stdout, "src/large.py is 3 lines")
+
+
 def test_missing_file_passes_silently(tmp_path: Path) -> None:
     write_manifest(tmp_path, manifest(max_lines=1))
 
-    code, stdout, stderr = run_hook(post_payload(tmp_path, {"file_path": "src/missing.py"}), tmp_path)
+    code, stdout, stderr = run_hook(
+        post_payload(tmp_path, {"file_path": "src/missing.py"}), tmp_path
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
@@ -142,11 +170,15 @@ def test_disabled_llm_does_not_call_backend(tmp_path: Path) -> None:
     assert not (tmp_path / "called.txt").exists()
 
 
-def test_enabled_fake_claude_advisory_emits_context_and_reads_prompt_from_stdin(tmp_path: Path) -> None:
+def test_enabled_fake_claude_advisory_emits_context_and_reads_prompt_from_stdin(
+    tmp_path: Path,
+) -> None:
     write_manifest(tmp_path, manifest(enabled=True, backend="claude", model="haiku"))
     prompt_dir = tmp_path / ".claude" / "hooks" / "prompts"
     prompt_dir.mkdir(parents=True)
-    (prompt_dir / "quality-judge-v1.txt").write_text("CUSTOM QUALITY PROMPT", encoding="utf-8")
+    (prompt_dir / "quality-judge-v1.txt").write_text(
+        "CUSTOM QUALITY PROMPT", encoding="utf-8"
+    )
 
     source = tmp_path / "src"
     source.mkdir()
@@ -171,10 +203,16 @@ printf '{"severity":"advisory","summary":"move logic closer to domain","findings
     assert stderr == ""
     assert_post_context(stdout, "semantic quality judge (advisory)")
     assert_post_context(stdout, "move logic closer to domain")
-    assert (tmp_path / "prompt.txt").read_text(encoding="utf-8").startswith("CUSTOM QUALITY PROMPT")
+    assert (
+        (tmp_path / "prompt.txt")
+        .read_text(encoding="utf-8")
+        .startswith("CUSTOM QUALITY PROMPT")
+    )
 
 
-def test_enabled_fake_codex_serious_emits_context_and_prompt_is_single_argument(tmp_path: Path) -> None:
+def test_enabled_fake_codex_serious_emits_context_and_prompt_is_single_argument(
+    tmp_path: Path,
+) -> None:
     write_manifest(tmp_path, manifest(enabled=True, backend="codex", model="gpt-5.5"))
     source = tmp_path / "src"
     source.mkdir()
@@ -230,7 +268,12 @@ def test_backend_timeout_passes_silently(tmp_path: Path) -> None:
 
 
 def test_missing_prompt_uses_embedded_fallback(tmp_path: Path) -> None:
-    write_manifest(tmp_path, manifest(enabled=True, backend="claude", prompt=".claude/hooks/prompts/missing.txt"))
+    write_manifest(
+        tmp_path,
+        manifest(
+            enabled=True, backend="claude", prompt=".claude/hooks/prompts/missing.txt"
+        ),
+    )
     source = tmp_path / "src"
     source.mkdir()
     (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
@@ -249,7 +292,9 @@ printf '{"severity":"pass","summary":"ok","findings":[]}'
 
     assert code == 0
     assert_allowed(stdout, stderr)
-    assert "Farrier's per-edit semantic quality judge" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
+    assert "Farrier's per-edit semantic quality judge" in (
+        tmp_path / "prompt.txt"
+    ).read_text(encoding="utf-8")
 
 
 def test_large_file_content_is_capped_with_truncated_marker(tmp_path: Path) -> None:
@@ -282,7 +327,10 @@ def test_skips_hook_files_to_avoid_recursion(tmp_path: Path) -> None:
     hooks.mkdir(parents=True)
     (hooks / "quality-judge.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
 
-    code, stdout, stderr = run_hook(post_payload(tmp_path, {"file_path": ".claude/hooks/quality-judge.py"}), tmp_path)
+    code, stdout, stderr = run_hook(
+        post_payload(tmp_path, {"file_path": ".claude/hooks/quality-judge.py"}),
+        tmp_path,
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)

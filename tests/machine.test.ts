@@ -37,6 +37,7 @@ describe("wizard machine", () => {
     expect(state.selectedSkills).toEqual(defaultSkills);
     expect(state.availableHooks).toEqual(defaultHooks);
     expect(state.selectedHooks).toEqual(defaultHooks);
+    expect(state.agents).toEqual(["claude"]);
     expect(state.learnEnabled).toBe(false);
     expect(state.skillSearchStatus).toBe("idle");
   });
@@ -260,6 +261,38 @@ describe("wizard machine", () => {
       "stop-judge",
       "verb-runner"
     ]);
+  });
+
+  test("toggles enforcement targets deterministically and never permits an empty selection", () => {
+    let state = initialState();
+
+    state = wizardReducer(state, { type: "TOGGLE_AGENT", agent: "codex" });
+    expect(state.agents).toEqual(["claude", "codex"]);
+
+    state = wizardReducer(state, { type: "TOGGLE_AGENT", agent: "claude" });
+    expect(state.agents).toEqual(["codex"]);
+
+    const unchanged = wizardReducer(state, { type: "TOGGLE_AGENT", agent: "codex" });
+    expect(unchanged).toBe(state);
+    expect(unchanged.agents).toEqual(["codex"]);
+  });
+
+  test("preserves enforcement targets across pack selection and backward navigation", () => {
+    let state = createInitialWizardState({
+      availablePackIds: ["python-fastapi", "rails"],
+      fallbackPackId: "python-fastapi",
+      defaultAgents: ["codex"]
+    });
+
+    state = wizardReducer(state, { type: "NEXT" });
+    state = wizardReducer(state, { type: "NEXT" });
+    state = wizardReducer(state, { type: "NEXT" });
+    expect(state.step).toBe("Hooks");
+    state = wizardReducer(state, { type: "BACK" });
+    state = wizardReducer(state, { type: "SELECT_PACK", packId: "rails", skills: [], hooks: ["secret-shield"] });
+
+    expect(state.agents).toEqual(["codex"]);
+    expect(state.step).toBe("Create");
   });
 
   test("toggles learn", () => {
