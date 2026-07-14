@@ -120,7 +120,7 @@ The wizard's Skills step is tuned so neither the network nor the skills CLI ever
 
 ## What got generated (and why each file exists)
 
-For `python-fastapi` with the default Claude-only binding, 33 rendered harness files, plus the selected installed skills and their `skills-lock.json` entries (selecting both agents adds `.codex/hooks.json`):
+For `python-fastapi` with the default Claude-only binding, 45 rendered harness files, plus the selected installed skills and their `skills-lock.json` entries (selecting both agents adds `.codex/hooks.json`):
 
 | File | Job |
 |---|---|
@@ -133,13 +133,14 @@ For `python-fastapi` with the default Claude-only binding, 33 rendered harness f
 | `.claude/hooks/prompts/*.txt` | Versioned prompts for the LLM judges. |
 | `.claude/skills/harness-advisor/SKILL.md` | Teaches the in-session agent to manage the harness itself. |
 | `.claude/skills/claude-automation-recommender/` | Claude wrapper plus an unchanged, pinned Anthropic reference snapshot with Apache-2.0 attribution, provenance, and SHA-256 hashes. |
-| `.agents/skills/farrier-project-advisor/SKILL.md` | Codex-native wrapper for the same shared, report-only advice engine. |
+| `.agents/skills/codex-automation-recommender/` | Codex recommender plus references for skills, plugins, hooks, MCP, and custom agents. |
+| `.agents/skills/farrier-project-advisor/SKILL.md` | Compatibility entry point that delegates to the Codex automation recommender. |
 | `justfile` | The stable verbs: `just check` / `test` / `fmt` / `konpy` (Python) or `konsistent` (TypeScript). |
 | `konpy.json` / `konsistent.json` | Structure conventions (v1 grammar) enforced at Stop — `konpy.json` on Python, `konsistent.json` on TypeScript. |
 | `.farrier.json` | Manifest: selected enforcement agents, packs, hooks, skills, judge config. **Never edit by hand.** |
 | `.gitignore` | Gains `.env`, `.env.*`, `!.env.example`. |
 
-With the default Claude-only binding, Rails renders 32 (no structure linter — konpy/konsistent are TS/Python-only) and `generic` renders 27.
+With the default Claude-only binding, Rails renders 44 (no structure linter because konpy/konsistent are TS/Python-only) and `generic` renders 39.
 
 Binding files are selected independently: Claude uses `.claude/settings.json`, Codex uses `.codex/hooks.json`, and selecting both emits both. The six scripts, their colocated tests, prompts, and the one canonical `.claude/hooks/tool-policy-rules.json` remain shared; Farrier does not generate a second `.rules` translation. An unselected vendor binding is outside the render/update/doctor inventory, so an existing user-owned file is preserved and left unmanaged.
 
@@ -256,21 +257,21 @@ Static checks: manifest and its non-empty agent selection parse, all selected in
 
 ### `farrier advise` — evidence-backed project advice
 
-Farrier deterministically profiles the resolved project directory—stack, languages, tests, CI, services, structure, and existing agent configuration—then recommends high-value guidance, hooks, skills, subagents, plugins, and MCP servers:
+Farrier profiles the resolved project directory, including dependencies, package manager, scripts, migrations, API specifications, tests, CI, services, and installed agent configuration. It then runs the selected provider's policy for guidance, hooks, skills, subagents, plugins, and MCP servers:
 
 ```bash
 farrier advise --dir .
 farrier advise --dir . --sessions none                         # codebase evidence only
 farrier advise --dir . --since 14d                             # exact-project sessions from the past 14 days
 farrier advise --dir . --since all                             # explicit full-history opt-in
-farrier advise --dir . --targets claude,codex
+farrier advise --dir . --targets codex --backend codex
 farrier advise --dir . --only guidance,hooks,mcp
 farrier advise --dir . --backend codex --model <name> --json
 ```
 
-With `--sessions auto` (the default), Farrier includes only the past 7 days of exact-project sessions. Use `--since 14d` for a two-week window or `--since all` to opt into full history. Claude JSONL is accepted only from the matching project directory. Codex history is read through Codex App Server: Farrier pages `thread/list` newest-first by `updated_at` with the exact resolved `cwd`, applies the window before any `thread/read`, verifies the returned directory, and calls read-only `thread/read`. It consumes visible prompts, responses, corrections, tool events, failures, and outcomes; reasoning records are ignored. Equivalent events are normalized into bounded patterns with separate occurrence and distinct-session counts. Secrets and personal identifiers are redacted locally, and at most 40 patterns—not complete transcripts—reach the recommendation backend. Evidence selection is balanced across requested sources before the global limit, so one high-volume source cannot starve another. If no matching sessions exist, the same command cleanly falls back to codebase-only analysis.
+With `--sessions auto` (the default), Farrier includes only the past 7 days of exact-project sessions for the selected provider. Use `--since 14d` for a two-week window or `--since all` to opt into full history. Claude JSONL is accepted only from the matching project directory. Codex history is read through Codex App Server: Farrier pages `thread/list` newest-first by `updated_at` with the exact resolved `cwd`, applies the window before any `thread/read`, verifies the returned directory, and calls read-only `thread/read`. Visible user requests, corrections, typed actions, outcomes, and blockers become bounded episodes. Reasoning records, screenshots, image data, raw tool output, and injected instructions are excluded. Secrets and personal identifiers are redacted locally before a backend call.
 
-Session count measures input volume; it does not measure recommendation strength. Recurring actionable patterns across distinct sessions determine strength. Reports expose the full funnel by source—sessions discovered, eligible, read, and parsed; visible events; filtering, redaction, deduplication, malformed-record, and limit drops; recurring patterns; and backend acceptance or rejection. A compact summary such as `34 sessions → 187 visible events → 12 recurring patterns → 5 supported recommendations` makes low-output runs explainable.
+Sessions enrich codebase analysis but are never required. A single reusable task can support a recommendation. Similar requests carry occurrence and distinct-session counts as evidence metadata; repetition is not a gate. Episode selection uses byte limits and rotates across sessions before taking a second task from one session. Reports show sessions discovered, parsed, retained, omitted, and truncated, plus backend acceptance and rejection counts.
 
 The interactive advice workflow starts with a visible **Reasoning backend** picker and shows Claude/Codex counts for **past 7 days**, **past 14 days**, and **all history**. When both backends are available, Claude is initially selected for compatibility and Left/Right switches to Codex; when only one is available, Farrier selects it and labels the other unavailable. Claude selection consumes Claude sessions and targets Claude artifacts; Codex selection consumes Codex sessions and targets Codex artifacts. Compatible shared routes remain available. Move to a visible setup control with Up/Down or Tab, then use Left/Right to change that control's value. In the report, Up/Down selects a recommendation and immediately shows the observed problem, expected value, strongest evidence, and exact artifact Farrier would create. PageUp/PageDown scrolls the full report. The visible action row contains **Create selected** and **Create all (N)**; Left/Right focuses an action and Enter activates it, so individual creation remains the default.
 
@@ -280,18 +281,18 @@ Concurrent backend work does not mean concurrent filesystem commits. Skill-creat
 
 While batch planning/authoring runs, Ctrl+C or Command-Z requests cancellation through the batch's one abort signal, stops queued work, terminates running backend process groups, and waits for all jobs to settle. A cancellation arriving after the atomic file transaction begins does not interrupt it mid-commit; the transaction finishes or rolls back first. OpenTUI exposes Command as the `super` modifier, so the binding is `super+z`, never plain `z`. The host terminal must deliver an enhanced Super-modified key event (for example through the Kitty keyboard protocol); terminals that intercept Command-Z or cannot encode Super will not deliver it, and Ctrl+C remains the portable cancellation key. Headless users continue to choose with `--backend claude|codex`; headless advice remains report-only, progress stages go to stderr, and `--json` stdout remains valid machine-readable JSON.
 
-Every accepted recommendation has a stable ID, category, target vendors, concise evidence-backed reason, distinct expected benefit, validated project/session evidence IDs, confidence, and a catalogued implementation route. The reason says what observed problem or opportunity triggered the recommendation; the benefit says how the user or workflow improves if it is implemented. Registry references must match Farrier's candidate catalog. Malformed, duplicated, unsupported, hallucinated, or over-limit results are dropped with reasons. The normal report is capped at two recommendations per applicable category; a focused single category may return up to five. Every requested category reports one outcome: accepted, no evidence, weak evidence, supported evidence without a route, backend omission, or validation rejection. Low-confidence ideas appear under **Weak leads**, with the missing evidence stated, rather than counting as successful recommendations. When at least three categories have recurring support but the broad response returns fewer than three medium/high-confidence items, Farrier may make one recovery call limited to omitted supported categories; session volume alone never triggers recovery. Hook output is declarative—the LLM never supplies executable hook code.
+Every accepted recommendation has a stable ID, category, one target provider, reason, benefit, validated evidence IDs, confidence, evidence origin, and a provider-supported implementation route. Registry references must match an exact verified candidate. Malformed, duplicated, unsupported, invented, or unsafe results are rejected with reasons. A broad report keeps the top two recommendations per applicable category; a focused category may return up to five. Valid items past that bound remain in `omittedRecommendations` with their ranking reason. There is no global recommendation target and no recovery call that fills missing categories. Hook output is declarative, and hooks that commit, push, publish, or deploy automatically are rejected.
 
 Advice analysis is always read-only, and headless advice remains report-only. The interactive TUI may create one selected recommendation or a reviewed batch only after opening a separate review screen and receiving explicit confirmation; no report result is applied automatically. Human and JSON output remain two renderings of the same validated report.
 
-The earlier skills.sh advisor remains available through both spellings:
+Provider-native focused skill advice and the earlier skills.sh advisor use different spellings:
 
 ```bash
 farrier advise skills --dir . --context ./docs/brief.md
 farrier advise --dir . --only skills --backend codex --json
 ```
 
-It generates registry queries, validates every selected ref against the returned candidates, and also remains available as the optional ★ advice toggle in the harness wizard's Skills step.
+`--only skills` uses the full codebase profile, optional sessions, and provider policy. The `advise skills` subcommand is registry-only and also remains available as the optional ★ advice toggle in the harness wizard's Skills step.
 
 ### `farrier skill new` — create a skill with each vendor's own skill-creator
 
@@ -345,7 +346,7 @@ When `per-agent` creates both copies successfully, Farrier compares them and ask
 
 Every generated project carries `.claude/skills/harness-advisor/SKILL.md`, so the *in-session agent* knows this loop too: it runs `farrier update` when it notices new file types, suggests skills.sh searches for new frameworks, points at `skill-creator` when you repeat yourself, and refuses to hand-edit `.farrier.json`.
 
-Generated projects also carry a Claude automation-recommender wrapper and a Codex-native project-advisor skill. Both delegate to `farrier advise --sessions auto --since 7d` instead of implementing separate transcript or recommendation logic. The Claude skill includes Anthropic's upstream `claude-automation-recommender` from commit `a5c7fb5d86a4cd34c4f47819658654c3d8f08dda` unchanged under `upstream/`, together with every reference file, the Apache-2.0 license, source provenance, and per-file SHA-256 hashes.
+Generated projects also carry provider-specific automation recommenders. Both use the same `farrier advise --sessions auto --since 7d` orchestration, but Claude and Codex have separate policies, routes, artifact paths, and reference catalogs. The Claude skill includes Anthropic's upstream `claude-automation-recommender` from commit `a5c7fb5d86a4cd34c4f47819658654c3d8f08dda` unchanged under `upstream/`, together with every reference file, the Apache-2.0 license, source provenance, and per-file SHA-256 hashes. The Codex skill documents `.agents/skills`, `agents/openai.yaml`, Codex plugins and hooks, `.codex/config.toml`, `.codex/agents`, and MCP.
 
 ---
 

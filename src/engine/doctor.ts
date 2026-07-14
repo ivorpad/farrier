@@ -978,6 +978,7 @@ async function addBundledSkillCaseProblems(targetDir: string, problems: DoctorPr
   const paths = [
     ".claude/skills/harness-advisor",
     ".claude/skills/claude-automation-recommender",
+    ".agents/skills/codex-automation-recommender",
     ".agents/skills/farrier-project-advisor"
   ];
   for (const path of paths) {

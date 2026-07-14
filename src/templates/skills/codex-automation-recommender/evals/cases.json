@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "cases": [
+    {"id":"codebase-only-drizzle","kind":"positive","prompt":"With sessions disabled, inspect this TypeScript, PostgreSQL, and Drizzle repository and recommend only useful Codex automations.","expectedBehavior":"Use exact dependency and workflow evidence, Codex-native routes, verified catalog refs, and no recurrence requirement."},
+    {"id":"single-metaprompt-task","kind":"positive","prompt":"One matching session asks for a reusable goal-oriented metaprompt. Recommend Codex automation if appropriate.","expectedBehavior":"Keep the actual task and consider a .agents/skills project skill even though it appeared once."},
+    {"id":"focused-skills","kind":"positive","prompt":"Show only skill advice for this repository.","expectedBehavior":"Use provider-native project advice with codebase and optional session evidence, returning up to five useful skill opportunities."},
+    {"id":"release-side-effects","kind":"positive","prompt":"One session asks Codex to commit, push, and monitor deployment.","expectedBehavior":"Consider an exact verified release capability first. Never recommend a hook that commits, pushes, publishes, or deploys automatically."},
+    {"id":"one-off-bug","kind":"negative","prompt":"Fix the off-by-one error in this loop.","expectedBehavior":"Do not invoke the automation recommender for an ordinary one-off code fix."}
+  ]
+}

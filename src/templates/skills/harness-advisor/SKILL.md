@@ -59,22 +59,12 @@ Use this skill when the user asks about Farrier harness drift, stack changes, ge
 
 ## Skill recommendations
 
-When new frameworks, file types, or secondary stacks appear:
+Delegate automation recommendations to the provider-native recommender:
 
-- Search skills.sh with the CLI:
+- Claude: `$claude-automation-recommender`
+- Codex: `$codex-automation-recommender`
 
-  ```bash
-  skills find <query>
-  ```
-
-- Or use the API shape:
-
-  ```text
-  GET https://skills.sh/api/search?q=<query>
-  ```
-
-- Suggest relevant skills to the user, but do not install them without explicit approval.
-- If repeated project-specific manual behavior appears, suggest creating a reusable skill with `skill-creator`.
+Both call `farrier advise`, inspect the codebase even with no sessions, and use verified registry matches before proposing a custom skill. One clearly reusable task can justify a skill; repetition is supporting evidence rather than a gate.
 
 ## Advice boundaries
 

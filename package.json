@@ -12,6 +12,7 @@
     "src/templates/**/*.py",
     "src/templates/**/*.txt",
     "src/templates/**/*.md",
+    "src/templates/**/*.json",
     "README.md"
   ],
   "repository": {

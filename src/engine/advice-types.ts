@@ -25,6 +25,35 @@ export type AdviceEvidence = {
   selectedProvider?: AdviceVendor;
 };
 
+export type ProjectDependency = {
+  name: string;
+  manifest: string;
+  group: "runtime" | "development" | "optional" | "tooling";
+  version?: string;
+};
+
+export type ProjectWorkflow = {
+  kind: "test" | "lint" | "typecheck" | "format" | "build" | "database" | "release" | "deployment" | "ci" | "api" | "docs" | "generation";
+  name: string;
+  path: string;
+  command?: string;
+  triggers?: string[];
+  evidence: string[];
+};
+
+export type ProjectCapability = {
+  id: string;
+  group: "runtime" | "language" | "framework" | "database" | "orm" | "migrations" | "testing" | "ci" | "api" | "release" | "deployment" | "automation";
+  name: string;
+  evidence: string[];
+};
+
+export type ProjectAutomation = {
+  category: AdviceCategory;
+  path: string;
+  summary: string;
+};
+
 export type ProjectProfile = {
   targetDir: string;
   stacks: string[];
@@ -34,7 +63,34 @@ export type ProjectProfile = {
   services: string[];
   structure: string[];
   configuration: Record<string, string[]>;
+  dependencies?: ProjectDependency[];
+  packageManagers?: string[];
+  workspaces?: string[];
+  workflows?: ProjectWorkflow[];
+  capabilities?: ProjectCapability[];
+  automations?: ProjectAutomation[];
   evidence: AdviceEvidence[];
+};
+
+export type AdviceSessionAction = {
+  type: "command" | "verification" | "file-change" | "web" | "mcp" | "delegation" | "other";
+  summary: string;
+  status?: "completed" | "failed" | "blocked" | "unknown";
+};
+
+export type AdviceSessionEpisode = {
+  id: string;
+  provider: AdviceVendor;
+  sessionId: string;
+  turnId: string;
+  request: string;
+  corrections: string[];
+  actions: AdviceSessionAction[];
+  outcome?: string;
+  occurrences: number;
+  distinctSessions: number;
+  truncated: boolean;
+  allowedCategories: AdviceCategory[];
 };
 
 export type AdviceSessionSourceSummary = {
@@ -44,6 +100,7 @@ export type AdviceSessionSourceSummary = {
 
 export type AdviceSessionEvidence = {
   sources: AdviceSessionSourceSummary[];
+  episodes?: AdviceSessionEpisode[];
   signals: AdviceEvidence[];
   notes: string[];
   funnel?: AdviceEvidenceFunnel;
@@ -66,6 +123,9 @@ export type AdviceSourceFunnel = {
   visibleEvents: number;
   discarded: AdviceDiscardCounts;
   retainedPatterns: number;
+  retainedEpisodes?: number;
+  omittedEpisodes?: number;
+  truncatedEpisodes?: number;
 };
 
 export type AdviceRecommendationFunnel = {
@@ -82,6 +142,9 @@ export type AdviceEvidenceFunnel = {
   sources: AdviceSourceFunnel[];
   visibleEvents: number;
   recurringPatterns: number;
+  retainedEpisodes?: number;
+  omittedEpisodes?: number;
+  truncatedEpisodes?: number;
   recommendation?: AdviceRecommendationFunnel;
 };
 
@@ -103,6 +166,23 @@ export type AdviceRecommendation = {
   implementationRoute: AdviceImplementationRoute;
   creates?: AdviceArtifact[];
   registryRef?: string;
+  evidenceOrigin?: "codebase" | "sessions" | "both";
+};
+
+export type AdviceOmittedRecommendation = {
+  recommendation: AdviceRecommendation;
+  reason: string;
+};
+
+export type AdviceRegistryQuery = {
+  query: string;
+  evidence: string[];
+  matches: string[];
+};
+
+export type AdviceRegistrySummary = {
+  queries: AdviceRegistryQuery[];
+  verifiedMatches: string[];
 };
 
 export type AdviceArtifact = {
@@ -126,7 +206,7 @@ export function adviceCategoryBenefit(category: AdviceCategory): string {
 
 export type AdviceCoverage = {
   category: AdviceCategory;
-  status: "accepted" | "no-evidence" | "weak-evidence" | "supported-no-route" | "backend-omission" | "validation-rejection" | "recommended" | "no-strong-evidence";
+  status: "accepted" | "no-evidence" | "weak-evidence" | "supported-no-route" | "backend-omission" | "validation-rejection" | "presentation-omission" | "recommended" | "no-strong-evidence";
   reason: string;
 };
 
@@ -144,10 +224,14 @@ export type AdviceReport = {
     requestedSources?: AdviceVendor[];
     sources: AdviceSessionSourceSummary[];
     evidence: AdviceEvidence[];
+    episodes?: AdviceSessionEpisode[];
     funnel?: AdviceEvidenceFunnel;
   };
   profile: ProjectProfile;
+  policy?: { provider: AdviceVendor; id: string };
+  registry?: AdviceRegistrySummary;
   recommendations: AdviceRecommendation[];
+  omittedRecommendations?: AdviceOmittedRecommendation[];
   weakLeads?: AdviceRecommendation[];
   coverage: AdviceCoverage[];
   evidence?: EvidenceComparison;

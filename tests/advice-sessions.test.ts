@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { collectProjectSessionEvidence, discoverProjectSessionCounts, redactSessionText } from "../src/engine/advice-sessions";
+import { collectProjectSessionEvidence, discoverProjectSessionCounts, extractUserRequest, redactSessionText } from "../src/engine/advice-sessions";
 import type { CodexAppServerClient } from "../src/engine/codex-app-server";
 
 async function tempDir(prefix: string): Promise<string> {
@@ -17,6 +17,12 @@ describe("session evidence", () => {
     expect(redacted).toContain("[REDACTED_EMAIL]");
     expect(redacted).toContain("[REDACTED_KEY]");
     expect(redacted).not.toContain("super-secret");
+  });
+
+  test("extracts wrapped Codex requests and persistent objectives before truncation", () => {
+    const wrapped = `<in-app-browser-context>page.run screenshot payload</in-app-browser-context>\n# AGENTS.md instructions\n<INSTRUCTIONS>injected rules</INSTRUCTIONS>\n## My request for Codex:\nCreate a reusable goal-oriented metaprompt`;
+    expect(extractUserRequest(wrapped)).toBe("Create a reusable goal-oriented metaprompt");
+    expect(extractUserRequest("continue the goal\n<objective>Commit, push, and monitor deployment</objective>")).toBe("Commit, push, and monitor deployment");
   });
 
   test("reads only Claude JSONL sessions explicitly matching the resolved project", async () => {
@@ -37,9 +43,10 @@ describe("session evidence", () => {
     const result = await collectProjectSessionEvidence({ targetDir: project, targets: ["claude"], claudeTranscriptsDir: transcripts });
 
     expect(result.sources).toEqual([{ source: "claude", count: 1 }]);
-    expect(result.signals.map((item) => item.kind).sort()).toEqual(["correction", "external-lookup", "verification"]);
-    expect(result.signals.map((item) => item.summary).join(" ")).not.toContain("private");
-    expect(result.signals.map((item) => item.summary).join(" ")).not.toContain("me@example.com");
+    expect(result.signals.map((item) => item.kind)).toEqual(["session-episode"]);
+    expect(result.episodes?.[0]?.actions.map((item) => item.type)).toEqual(["verification", "web"]);
+    expect(JSON.stringify(result.episodes)).not.toContain("private");
+    expect(JSON.stringify(result.episodes)).not.toContain("me@example.com");
     expect(result.notes).toContain("Skipped 1 malformed Claude session record(s).");
   });
 
@@ -172,6 +179,28 @@ describe("session evidence", () => {
     expect(calls.filter((call) => call.method === "thread/list")).toHaveLength(1);
   });
 
+  test("attaches a later Codex correction to the original task episode", async () => {
+    const targetDir = "/target";
+    const client: CodexAppServerClient = {
+      request: async (method, params) => method === "thread/list"
+        ? { data: [{ id: "corrected", cwd: targetDir, updatedAt: Math.floor(Date.UTC(2026, 6, 9) / 1_000) }], nextCursor: null }
+        : { thread: { id: params?.threadId, cwd: targetDir, turns: [
+            { id: "one", items: [{ type: "userMessage", content: "Create a reusable release checklist" }, { type: "agentMessage", text: "Drafted the checklist." }] },
+            { id: "two", items: [{ type: "userMessage", content: "No, keep commit and deploy as explicit user actions." }, { type: "agentMessage", text: "Updated the checklist." }] }
+          ] } },
+      close: async () => {}
+    };
+
+    const result = await collectProjectSessionEvidence({
+      targetDir, targets: ["codex"], codexClientFactory: async () => client, now: Date.UTC(2026, 6, 10)
+    });
+
+    expect(result.episodes).toHaveLength(1);
+    expect(result.episodes?.[0]?.request).toBe("Create a reusable release checklist");
+    expect(result.episodes?.[0]?.corrections).toEqual(["No, keep commit and deploy as explicit user actions."]);
+    expect(result.episodes?.[0]?.outcome).toBe("Updated the checklist.");
+  });
+
   test("discovers per-window source counts without reading Codex thread bodies", async () => {
     const targetDir = resolve(await tempDir("farrier-advice-counts-project-"));
     const transcripts = await tempDir("farrier-advice-counts-claude-");
@@ -206,7 +235,7 @@ describe("session evidence", () => {
     expect(methods).toEqual(["thread/list"]);
   });
 
-  test("normalizes superficial command differences and counts distinct sessions", async () => {
+  test("does not turn command-only sessions into automation candidates", async () => {
     const project = resolve(await tempDir("farrier-advice-normalize-project-"));
     const transcripts = await tempDir("farrier-advice-normalize-claude-");
     const commands = ["bun test --no-color", "bun   test", "./bun test"];
@@ -220,17 +249,15 @@ describe("session evidence", () => {
       targetDir: project, targets: ["claude"], claudeTranscriptsDir: transcripts, now: Date.UTC(2026, 6, 10)
     });
 
-    expect(result.signals).toHaveLength(1);
-    expect(result.signals[0]?.occurrences).toBe(3);
-    expect(result.signals[0]?.distinctSessions).toBe(3);
-    expect(result.funnel?.visibleEvents).toBe(3);
-    expect(result.funnel?.recurringPatterns).toBe(1);
+    expect(result.episodes).toEqual([]);
+    expect(result.signals).toEqual([]);
+    expect(result.funnel?.visibleEvents).toBe(0);
   });
 
-  test("keeps unique Codex patterns when Claude exceeds the global evidence budget", async () => {
+  test("selects episodes round-robin across sessions before taking a second task", async () => {
     const project = resolve(await tempDir("farrier-advice-fair-project-"));
     const transcripts = await tempDir("farrier-advice-fair-claude-");
-    const claudeRecords = Array.from({ length: 55 }, (_, index) => ({
+    const claudeRecords = Array.from({ length: 90 }, (_, index) => ({
       cwd: project, timestamp: "2026-07-09T12:00:00.000Z", type: "user",
       message: { content: [{ type: "text", text: `Please review and update release workflow ${String.fromCharCode(97 + Math.floor(index / 26))}${String.fromCharCode(97 + index % 26)}` }] }
     }));
@@ -238,7 +265,10 @@ describe("session evidence", () => {
     const client: CodexAppServerClient = {
       request: async (method, params) => method === "thread/list"
         ? { data: [{ id: "codex-unique", cwd: project, updatedAt: Math.floor(Date.UTC(2026, 6, 9) / 1_000) }], nextCursor: null }
-        : { thread: { id: params?.threadId, cwd: project, turns: [{ items: [{ type: "mcpToolCall", server: "release-api", tool: "deployment_status" }] }] } },
+        : { thread: { id: params?.threadId, cwd: project, turns: [{ items: [
+            { type: "userMessage", content: "Create a reusable deployment status checklist" },
+            { type: "mcpToolCall", server: "release-api", tool: "deployment_status" }
+          ] }] } },
       close: async () => {}
     };
 
@@ -246,10 +276,11 @@ describe("session evidence", () => {
       targetDir: project, claudeTranscriptsDir: transcripts, codexClientFactory: async () => client, now: Date.UTC(2026, 6, 10)
     });
 
-    expect(result.signals).toHaveLength(40);
-    expect(result.signals.some((signal) => signal.source === "codex" && signal.summary.includes("release-api"))).toBe(true);
+    expect(result.episodes).toHaveLength(80);
+    expect(result.episodes?.some((item) => item.provider === "codex" && item.request.includes("deployment status checklist"))).toBe(true);
+    expect(JSON.stringify(result.episodes)).toContain("release-api/deployment_status");
     expect(result.funnel?.sources.find((source) => source.source === "claude")?.discarded.limits).toBeGreaterThan(0);
-    expect(result.funnel?.sources.find((source) => source.source === "codex")?.retainedPatterns).toBe(1);
+    expect(result.funnel?.sources.find((source) => source.source === "codex")?.retainedEpisodes).toBe(1);
   });
 
   test("extracts recurring actionable patterns from a realistic 20-Claude/14-Codex corpus", async () => {
@@ -287,10 +318,10 @@ describe("session evidence", () => {
     });
 
     expect(result.sources).toEqual([{ source: "claude", count: 20 }, { source: "codex", count: 14 }]);
-    expect(result.signals.filter((signal) => signal.source === "claude")).toHaveLength(6);
-    expect(result.signals.filter((signal) => signal.source === "codex")).toHaveLength(6);
+    expect(result.episodes?.filter((item) => item.provider === "claude")).toHaveLength(40);
+    expect(result.episodes?.filter((item) => item.provider === "codex")).toHaveLength(28);
     expect(result.signals.every((signal) => (signal.distinctSessions ?? 0) >= 14)).toBe(true);
     expect(result.funnel?.visibleEvents).toBe(204);
-    expect(result.funnel?.recurringPatterns).toBe(12);
+    expect(result.funnel?.recurringPatterns).toBe(4);
   });
 });

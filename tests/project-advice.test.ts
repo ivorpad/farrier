@@ -1,23 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { formatAdviceReport, parseAdviseArgs } from "../src/cli/advise";
 import { adviseProject } from "../src/engine/project-advice";
-import type { AdviceCategory } from "../src/engine/advice-types";
+import type { AdviceSessionEpisode, AdviceSessionEvidence, AdviceVendor } from "../src/engine/advice-types";
 import { defaultBackendRunner, type BackendCommandRunner, type BackendCommandRunnerInput } from "../src/engine/backend";
+import { formatAdviceTuiReportLines } from "../src/tui/advise-app";
 
 async function projectFixture(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "farrier-project-advice-"));
-  await mkdir(join(root, ".github", "workflows"), { recursive: true });
-  await mkdir(join(root, "src", "hooks", "__pycache__"), { recursive: true });
-  await mkdir(join(root, "tests"), { recursive: true });
-  await writeFile(join(root, "AGENTS.md"), "# Commands\n\nRun the checks.\n", "utf8");
-  await writeFile(join(root, "CLAUDE.md"), "@AGENTS.md\n", "utf8");
-  await writeFile(join(root, "package.json"), JSON.stringify({ scripts: { test: "bun test", check: "tsc --noEmit" }, devDependencies: { typescript: "latest" } }), "utf8");
-  await writeFile(join(root, "tests", "unit.test.ts"), "export {};\n", "utf8");
-  await writeFile(join(root, ".github", "workflows", "ci.yml"), "name: ci\n", "utf8");
-  await writeFile(join(root, "src", "hooks", "__pycache__", "ignored.pyc"), "generated", "utf8");
+  const parent = await mkdtemp(join(tmpdir(), "farrier-project-advice-"));
+  const root = join(parent, "project");
+  await cp(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "advice", "typescript-drizzle"), root, { recursive: true });
   return root;
 }
 
@@ -32,335 +27,222 @@ function queuedRunner(output: unknown): { runner: BackendCommandRunner; calls: B
   };
 }
 
-function sequentialRunner(outputs: unknown[]): { runner: BackendCommandRunner; calls: BackendCommandRunnerInput[] } {
-  const calls: BackendCommandRunnerInput[] = [];
+function capturedPrompt(call: BackendCommandRunnerInput | undefined): string {
+  return call?.stdin ?? call?.cmd.at(-1) ?? "";
+}
+
+function recommendation(provider: AdviceVendor, input: {
+  id: string; category: string; evidence: string; routeId: string; confidence?: string; registryRef?: string;
+}) {
   return {
-    calls,
-    runner: async (input) => {
-      calls.push(input);
-      return { exitCode: 0, stdout: JSON.stringify(outputs[calls.length - 1] ?? outputs.at(-1)), stderr: "" };
-    }
+    id: input.id,
+    category: input.category,
+    targetVendors: [provider],
+    reason: `The cited ${input.id} evidence describes a reusable project opportunity.`,
+    benefit: `Makes the ${input.category} workflow repeatable for this repository.`,
+    evidence: [input.evidence],
+    confidence: input.confidence ?? "high",
+    routeId: input.routeId,
+    ...(input.registryRef ? { registryRef: input.registryRef } : {})
+  };
+}
+
+function episode(provider: AdviceVendor, request: string): AdviceSessionEpisode {
+  return {
+    id: `session:${provider}:episode:metaprompt`, provider, sessionId: "one", turnId: "turn-1", request,
+    corrections: [], actions: [], outcome: "Created the requested metaprompt.", occurrences: 1,
+    distinctSessions: 1, truncated: false, allowedCategories: ["skills"]
+  };
+}
+
+function sessionEvidence(provider: AdviceVendor, item: AdviceSessionEpisode): AdviceSessionEvidence {
+  return {
+    sources: [{ source: provider, count: 1 }], episodes: [item],
+    signals: [{
+      id: item.id, source: provider, kind: "session-episode", summary: item.request, sessionId: item.sessionId,
+      occurrences: 1, distinctSessions: 1, allowedCategories: item.allowedCategories, targetVendors: [provider]
+    }], notes: [],
+    funnel: { sources: [], visibleEvents: 2, recurringPatterns: 0, retainedEpisodes: 1, omittedEpisodes: 0, truncatedEpisodes: 0 }
   };
 }
 
 describe("project advice", () => {
-  test("profiles code, validates evidence/catalog references, deduplicates, and caps categories", async () => {
+  test("profiles a no-session Drizzle project, plans capability searches, and preserves bounded opportunities", async () => {
     const root = await projectFixture();
-    const hook = (id: string, reason: string) => ({
-      id: `hooks:${id}`,
-      category: "hooks",
-      targetVendors: ["claude"],
-      reason,
-      benefit: "Makes verification consistent while removing a repeated manual step.",
-      evidence: ["project:package-scripts"],
-      confidence: "high",
-      routeId: "hooks:shared-policy"
-    });
+    const verifiedRef = "acme/database-skills@drizzle-review";
     const { runner, calls } = queuedRunner({ recommendations: [
-      hook("verify", "Run the established checks after changes."),
-      hook("protect", "Protect the established project workflow."),
-      hook("extra", "A third lower-value hook."),
-      hook("verify", "Duplicate id."),
-      hook("executable", "```bash\necho unsafe\n```"),
-      {
-        id: "mcp:unknown",
-        category: "mcp",
-        targetVendors: ["codex"],
-        reason: "Use an invented integration.",
-        evidence: ["project:root"],
-        confidence: "low",
-        routeId: "mcp:codex-project",
-        registryRef: "mcp@invented"
+      recommendation("codex", { id: "skills:verified-drizzle-review", category: "skills", evidence: "project:capability:orm:drizzle", routeId: "skills:agents-shared", registryRef: verifiedRef }),
+      recommendation("codex", { id: "skills:migration-procedure", category: "skills", evidence: "project:capability:migrations:database-migrations", routeId: "skills:agents-shared" }),
+      recommendation("codex", { id: "skills:schema-review", category: "skills", evidence: "project:capability:database:postgresql", routeId: "skills:agents-shared" }),
+      recommendation("codex", { id: "hooks:post-change-check", category: "hooks", evidence: "project:capability:testing:automated-tests", routeId: "hooks:codex-hooks-json" })
+    ], coverage: [] });
+    const searches: string[] = [];
+    const report = await adviseProject({
+      targetDir: root, backend: "codex", sessions: "none", runner,
+      search: async (query) => {
+        searches.push(query);
+        return query === "typescript drizzle postgres" ? [{ source: "acme/database-skills", skillId: "drizzle-review", name: "Drizzle review", installs: 12 }] : [];
       }
-    ], coverage: [{ category: "guidance", reason: "The existing shared guidance already covers the observed workflow." }] });
-
-    const progress: string[] = [];
-    const controller = new AbortController();
-    const report = await adviseProject({
-      targetDir: root,
-      backend: "claude",
-      sessions: "none",
-      runner,
-      signal: controller.signal,
-      search: async () => [],
-      onProgress: (event) => progress.push(event.stage)
-    });
-
-    expect(report.reportOnly).toBe(true);
-    expect(report.sessions.lookback).toBe("7d");
-    expect(JSON.stringify(report.profile)).not.toContain("__pycache__");
-    expect(report.profile.evidence.find((item) => item.path === "AGENTS.md")?.summary).toContain("headings: Commands");
-    expect(report.profile.evidence.find((item) => item.path === "CLAUDE.md")?.summary).toContain("delegates to: AGENTS.md");
-    expect(report.recommendations.map((item) => item.id)).toEqual(["hooks:verify", "hooks:protect"]);
-    expect(report.coverage).toHaveLength(6);
-    expect(report.coverage.find((item) => item.category === "hooks")?.status).toBe("accepted");
-    expect(report.coverage.find((item) => item.category === "guidance")?.status).toBe("no-evidence");
-    expect(report.coverage.find((item) => item.category === "guidance")?.reason).toContain("already covers");
-    expect(report.notes.some((note) => note.includes("beyond the 2 hooks limit"))).toBe(true);
-    expect(report.notes.some((note) => note.includes("executable hook content"))).toBe(true);
-    expect(report.notes.some((note) => note.includes("mcp:unknown") && note.includes("invalid target vendors"))).toBe(true);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.signal).toBe(controller.signal);
-    expect(calls[0]?.cmd).toContain("--no-session-persistence");
-    expect(calls[0]?.stdin).toContain("Never output executable hook code");
-    expect(calls[0]?.stdin).toContain("benefit must explain why implementing it is useful");
-    expect(calls[0]?.stdin).toContain("A path-only summary proves existence only");
-    expect(calls[0]?.stdin).toContain("Aim for 3–8 distinct recommendations overall");
-    expect(calls[0]?.stdin).not.toContain('"source":"claude"');
-    expect(calls[0]?.stdin).not.toContain('"source":"codex"');
-    const human = formatAdviceReport(report);
-    for (const recommendation of report.recommendations) {
-      expect(human).toContain(recommendation.id);
-      expect(human).toContain(recommendation.reason);
-      expect(human).toContain(recommendation.benefit);
-    }
-    expect(human).toContain("report only");
-    expect(progress).toEqual(["profile", "sessions", "sessions", "catalog", "backend", "validation", "complete"]);
-  });
-
-  test("propagates recommendation backend failure", async () => {
-    const root = await projectFixture();
-    const runner: BackendCommandRunner = async () => ({ exitCode: 2, stdout: "", stderr: "backend unavailable" });
-    expect(adviseProject({ targetDir: root, backend: "claude", sessions: "none", runner, search: async () => [] })).rejects.toThrow(
-      "claude backend exited with code 2: backend unavailable"
-    );
-  });
-
-  test("aborting project advice terminates its running backend process", async () => {
-    const root = await projectFixture();
-    const controller = new AbortController();
-    let markStarted: (() => void) | undefined;
-    const started = new Promise<void>((resolve) => { markStarted = resolve; });
-    const runner: BackendCommandRunner = (input) => {
-      markStarted?.();
-      return defaultBackendRunner({ ...input, cmd: ["sleep", "30"] });
-    };
-    const beganAt = Date.now();
-    const run = adviseProject({
-      targetDir: root,
-      backend: "claude",
-      sessions: "none",
-      only: ["guidance"],
-      runner,
-      signal: controller.signal,
-      search: async () => []
-    });
-
-    await started;
-    controller.abort();
-
-    await expect(run).rejects.toThrow(/claude backend exited with code/);
-    expect(Date.now() - beganAt).toBeLessThan(5_000);
-  });
-
-  test("falls back to codebase evidence when auto session discovery finds nothing", async () => {
-    const root = await projectFixture();
-    const { runner } = queuedRunner({ recommendations: [] });
-    const report = await adviseProject({
-      targetDir: root,
-      backend: "claude",
-      sessions: "auto",
-      sessionEvidence: { sources: [{ source: "claude", count: 0 }, { source: "codex", count: 0 }], signals: [], notes: [] },
-      runner,
-      search: async () => []
     });
 
     expect(report.sessions.included).toBe(false);
-    expect(report.notes).toContain("No matching project sessions were found; recommendations use codebase evidence only.");
+    expect(report.policy).toEqual({ provider: "codex", id: "codex-official-manual-2026-07" });
+    expect(report.profile.dependencies?.map((item) => item.name)).toEqual(expect.arrayContaining(["typescript", "drizzle-orm", "drizzle-kit", "pg"]));
+    expect(report.profile.capabilities?.map((item) => item.name)).toEqual(expect.arrayContaining(["TypeScript", "PostgreSQL", "Drizzle", "Database migrations", "Automated tests", "CI workflows"]));
+    expect(report.profile.workflows?.map((item) => item.name)).toEqual(expect.arrayContaining(["db:generate", "db:migrate", "test", "CI"]));
+    expect(searches).toEqual(expect.arrayContaining(["typescript drizzle postgres", "drizzle migrations", "postgres schema review"]));
+    expect(report.registry?.verifiedMatches).toContain(verifiedRef);
+    expect(report.recommendations.map((item) => item.id)).toEqual(["skills:verified-drizzle-review", "skills:migration-procedure", "hooks:post-change-check"]);
+    expect(report.omittedRecommendations?.map((item) => item.recommendation.id)).toEqual(["skills:schema-review"]);
+    expect(report.recommendations[0]?.evidenceOrigin).toBe("codebase");
+    expect(report.recommendations[0]?.creates).toEqual([{ vendor: "shared", path: ".agents/skills/<name>/SKILL.md", kind: "skill" }]);
+    expect(calls).toHaveLength(1);
+    expect(capturedPrompt(calls[0])).toContain("Never add filler or target a global recommendation count");
+    expect(capturedPrompt(calls[0])).not.toContain("Aim for 3–8");
+    expect(formatAdviceReport(report)).toContain("Omitted by presentation bounds");
   });
 
-  test("isolates mixed session evidence, targets, artifacts, and funnel counts to the selected provider", async () => {
+  test("keeps one wrapped metaprompt task as Codex skill evidence without recurrence", async () => {
+    const root = await projectFixture();
+    const item = episode("codex", "Create a reusable goal-oriented metaprompt for planning difficult work.");
+    const { runner, calls } = queuedRunner({ recommendations: [recommendation("codex", {
+      id: "skills:goal-metaprompt", category: "skills", evidence: item.id, routeId: "skills:agents-shared"
+    })], coverage: [] });
+    const report = await adviseProject({ targetDir: root, backend: "codex", only: ["skills"], runner, search: async () => [], sessionEvidence: sessionEvidence("codex", item) });
+
+    expect(report.recommendations.map((entry) => entry.id)).toEqual(["skills:goal-metaprompt"]);
+    expect(report.recommendations[0]?.evidenceOrigin).toBe("sessions");
+    expect(report.sessions.funnel?.recurringPatterns).toBe(0);
+    expect(capturedPrompt(calls[0])).toContain("goal-oriented metaprompt");
+    expect(capturedPrompt(calls[0])).toContain("A single useful episode can justify a recommendation");
+  });
+
+  test("isolates provider sessions and policy routes before backend invocation", async () => {
     for (const provider of ["claude", "codex"] as const) {
       const opposite = provider === "claude" ? "codex" : "claude";
-      const root = await projectFixture();
-      const selectedId = `session:${provider}:verification:selected`;
-      const oppositeId = `session:${opposite}:verification:dominant`;
-      const incompatibleId = `session:${provider}:verification:incompatible-target`;
-      const { runner, calls } = queuedRunner({ recommendations: [
-        {
-          id: `guidance:shared-${provider}`,
-          category: "guidance",
-          targetVendors: [provider],
-          reason: `Repeated ${provider} verification should be documented.`,
-          benefit: "Keeps the shared workflow visible to the selected provider.",
-          evidence: [selectedId],
-          confidence: "high",
-          routeId: "guidance:agents-md"
-        },
-        {
-          id: "hooks:opposite-provider",
-          category: "hooks",
-          targetVendors: [opposite],
-          reason: `Create an opposite-provider hook.`,
-          benefit: "Invalid cross-provider candidate.",
-          evidence: [oppositeId],
-          confidence: "high",
-          routeId: provider === "claude" ? "hooks:codex-hooks-json" : "hooks:claude-settings"
-        }
-      ], coverage: [] });
-      const funnelSource = (source: "claude" | "codex", count: number, visibleEvents: number) => ({
-        source, discovered: count, eligible: count, read: count, parsed: count, visibleEvents,
-        discarded: { filtering: 0, redaction: 0, deduplication: 0, malformed: 0, limits: 0 }, retainedPatterns: 1
-      });
-      const report = await adviseProject({
-        targetDir: root,
-        backend: provider,
-        runner,
-        search: async () => [],
-        sessionEvidence: {
-          sources: [{ source: provider, count: 5 }, { source: opposite, count: 41 }],
-          signals: [
-            { id: selectedId, source: provider, kind: "verification", summary: `${provider}-selected-check`, occurrences: 5, distinctSessions: 5, allowedCategories: ["guidance", "hooks"] },
-            { id: incompatibleId, source: provider, kind: "verification", summary: `${provider}-source-${opposite}-only-target`, occurrences: 9, distinctSessions: 9, allowedCategories: ["hooks"], targetVendors: [opposite] },
-            { id: oppositeId, source: opposite, kind: "verification", summary: `${opposite}-dominant-check`, occurrences: 41, distinctSessions: 41, allowedCategories: ["guidance", "hooks"] }
-          ],
-          notes: [],
-          funnel: {
-            sources: [funnelSource(provider, 5, 5), funnelSource(opposite, 41, 41)],
-            visibleEvents: 46,
-            recurringPatterns: 2
-          }
-        }
-      });
-
-      expect(report.targets).toEqual([provider]);
-      expect(report.sessions.requestedSources).toEqual([provider]);
-      expect(report.sessions.sources).toEqual([{ source: provider, count: 5 }]);
-      expect(report.sessions.evidence.every((item) => item.source === provider)).toBe(true);
-      expect(report.sessions.funnel?.visibleEvents).toBe(5);
-      expect(report.sessions.funnel?.recommendation?.patternsSent).toBe(1);
-      expect(report.recommendations.map((item) => item.id)).toEqual([`guidance:shared-${provider}`]);
-      expect(report.recommendations[0]?.targetVendors).toEqual([provider]);
-      expect(report.recommendations[0]?.creates).toEqual([{ vendor: "shared", path: "AGENTS.md", kind: "guidance" }]);
-      const prompt = calls[0]?.stdin ?? calls[0]?.cmd.at(-1) ?? "";
-      expect(prompt).toContain(`${provider}-selected-check`);
-      expect(prompt).toContain(`"targetVendors":["${provider}"]`);
-      expect(prompt).not.toContain(`"targetVendors":["${opposite}"]`);
-      expect(prompt).not.toContain(`${opposite}-dominant-check`);
-      expect(prompt).not.toContain(oppositeId);
-      expect(prompt).not.toContain(incompatibleId);
-      expect(prompt).not.toContain(`.${opposite}/hooks`);
-      expect(prompt).not.toContain(`.${opposite}/agents`);
+      const selected = episode(provider, `${provider} release checklist`);
+      const other = episode(opposite, `${opposite} private task`);
+      const routeId = provider === "claude" ? "guidance:claude-md" : "guidance:agents-md";
+      const { runner, calls } = queuedRunner({ recommendations: [recommendation(provider, { id: `guidance:${provider}-release`, category: "guidance", evidence: selected.id, routeId })], coverage: [] });
+      const mixed: AdviceSessionEvidence = {
+        sources: [{ source: provider, count: 1 }, { source: opposite, count: 9 }], episodes: [selected, other],
+        signals: [selected, other].map((entry) => ({ id: entry.id, source: entry.provider, kind: "session-episode", summary: entry.request, targetVendors: [entry.provider] })), notes: []
+      };
+      const report = await adviseProject({ targetDir: await projectFixture(), backend: provider, runner, search: async () => [], sessionEvidence: mixed });
+      const prompt = capturedPrompt(calls[0]);
+      expect(report.sessions.sources).toEqual([{ source: provider, count: 1 }]);
+      expect(prompt).toContain(selected.request);
+      expect(prompt).not.toContain(other.request);
       expect(JSON.stringify(report.recommendations)).not.toContain(`.${opposite}/`);
     }
   });
 
-  test("rejects explicitly incompatible advice targets and session sources", async () => {
+  test("rejects invented registry refs, opposite-provider routes, and side-effecting hooks", async () => {
     const root = await projectFixture();
-    const { runner } = queuedRunner({ recommendations: [] });
-    await expect(adviseProject({ targetDir: root, backend: "claude", targets: ["codex"], runner })).rejects.toThrow("targets must equal the selected backend (claude)");
-    await expect(adviseProject({ targetDir: root, backend: "codex", sessionSources: ["claude"], runner })).rejects.toThrow("session sources must equal the selected backend (codex)");
+    const { runner } = queuedRunner({ recommendations: [
+      recommendation("codex", { id: "skills:invented", category: "skills", evidence: "project:root", routeId: "skills:agents-shared", registryRef: "invented/repo@skill" }),
+      recommendation("codex", { id: "skills:claude-path", category: "skills", evidence: "project:root", routeId: "skills:claude-local" }),
+      { ...recommendation("codex", { id: "hooks:auto-deploy", category: "hooks", evidence: "project:root", routeId: "hooks:codex-hooks-json" }), reason: "Automatically deploy after each edit." }
+    ], coverage: [] });
+    const report = await adviseProject({ targetDir: root, backend: "codex", sessions: "none", runner, search: async () => [] });
+    expect(report.recommendations).toEqual([]);
+    expect(report.notes.join(" ")).toContain("registry ref 'invented/repo@skill' is unsupported");
+    expect(report.notes.join(" ")).toContain("unsupported implementation route for codex");
+    expect(report.notes.join(" ")).toContain("unsafe or executable hook behavior");
   });
 
-  test("allows up to five recommendations for a focused non-legacy category", async () => {
+  test("focused advice accepts five and reports the sixth as an omission", async () => {
     const root = await projectFixture();
-    const recommendations = Array.from({ length: 6 }, (_, index) => ({
-      id: `guidance:route-${index}`,
-      category: "guidance",
-      targetVendors: ["claude"],
-      reason: `Project guidance improvement ${index}.`,
-      evidence: ["project:root"],
-      confidence: "medium",
-      routeId: "guidance:agents-md"
+    const recs = Array.from({ length: 6 }, (_, index) => recommendation("claude", {
+      id: `guidance:route-${index}`, category: "guidance", evidence: "project:root", routeId: "guidance:agents-md"
     }));
-    const { runner } = queuedRunner({ recommendations });
+    const { runner } = queuedRunner({ recommendations: recs, coverage: [] });
     const report = await adviseProject({ targetDir: root, backend: "claude", sessions: "none", only: ["guidance"], runner, search: async () => [] });
-
     expect(report.recommendations).toHaveLength(5);
-    expect(report.recommendations[0]?.benefit).toContain("persistent and visible");
-    expect(report.notes.some((note) => note.includes("beyond the 5 guidance limit"))).toBe(true);
+    expect(report.omittedRecommendations).toHaveLength(1);
+    expect(report.omittedRecommendations?.[0]?.reason).toContain("top 5");
   });
 
-  test("recovers only omitted evidence-supported categories in an evidence-rich 34-session run", async () => {
+  test("does not recover categories or require sessions", async () => {
     const root = await projectFixture();
-    const patterns = [
-      { id: "p:verify", kind: "verification", allowedCategories: ["hooks", "guidance", "skills"] },
-      { id: "p:correct", kind: "correction", allowedCategories: ["guidance", "skills"] },
-      { id: "p:delegate", kind: "delegation", allowedCategories: ["subagents", "skills"] },
-      { id: "p:lookup", kind: "external-lookup", allowedCategories: ["mcp", "plugins", "skills"] },
-      { id: "p:release", kind: "manual-workflow", allowedCategories: ["skills", "subagents", "hooks"] },
-      { id: "p:config", kind: "guidance-edit", allowedCategories: ["guidance", "skills"] }
-    ].map((item, index) => ({
-      ...item, source: "claude" as const,
-      allowedCategories: item.allowedCategories as AdviceCategory[],
-      summary: `Recurring actionable pattern ${index}`, occurrences: 6, distinctSessions: 5,
-      targetVendors: ["claude" as const]
-    }));
-    const recommendation = (category: string, evidence: string, routeId: string) => ({
-      id: `${category}:fixture`, category, targetVendors: ["claude"],
-      reason: `Recurring ${category} evidence supports a bounded improvement.`,
-      benefit: `Makes the repeated ${category} workflow more reliable.`, evidence: [evidence], confidence: "high", routeId
-    });
-    const { runner, calls } = sequentialRunner([
-      { recommendations: [recommendation("guidance", "p:correct", "guidance:agents-md")], coverage: [] },
-      { recommendations: [
-        recommendation("hooks", "p:verify", "hooks:shared-policy"),
-        recommendation("skills", "p:release", "skills:agents-shared"),
-        recommendation("subagents", "p:delegate", "subagents:cross-vendor"),
-        recommendation("mcp", "p:lookup", "mcp:shared-project")
-      ], coverage: [] }
-    ]);
-
-    const report = await adviseProject({
-      targetDir: root, backend: "claude", runner, search: async () => [],
-      sessionEvidence: {
-        sources: [{ source: "claude", count: 20 }, { source: "codex", count: 14 }], signals: patterns, notes: [],
-        funnel: { sources: [], visibleEvents: 187, recurringPatterns: 6 }
-      }
-    });
-
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.stdin).toContain("hooks, skills, subagents, plugins, mcp");
-    expect(report.recommendations).toHaveLength(5);
-    expect(new Set(report.recommendations.map((item) => item.category)).size).toBe(5);
-    expect(report.sessions.funnel?.recommendation?.recoveryCalls).toBe(1);
-    expect(formatAdviceReport(report)).toContain("20 sessions → 36 visible events → 6 recurring patterns → 5 supported recommendations");
-  });
-
-  test("stays sparse without recurring actionable evidence and does not call recovery", async () => {
-    const root = await projectFixture();
-    const { runner, calls } = sequentialRunner([{ recommendations: [], coverage: [] }]);
-    const report = await adviseProject({
-      targetDir: root, backend: "claude", runner, search: async () => [],
-      sessionEvidence: {
-        sources: [{ source: "claude", count: 20 }, { source: "codex", count: 14 }], signals: [], notes: [],
-        funnel: { sources: [], visibleEvents: 34, recurringPatterns: 0 }
-      }
-    });
-
-    expect(calls).toHaveLength(1);
-    expect(report.recommendations).toEqual([]);
-    expect(report.weakLeads).toEqual([]);
-    expect(report.coverage.every((item) => item.status === "no-evidence")).toBe(true);
-    expect(formatAdviceReport(report)).toContain("No visible recurring actionable evidence");
-  });
-
-  test("moves low-confidence candidates into weak leads with strengthening guidance", async () => {
-    const root = await projectFixture();
-    const { runner } = queuedRunner({ recommendations: [{
-      id: "skills:possible-review", category: "skills", targetVendors: ["claude"],
-      reason: "One session requested a review workflow.", benefit: "Could make reviews repeatable.",
-      evidence: ["project:root"], confidence: "low", routeId: "skills:agents-shared"
-    }], coverage: [] });
+    const { runner, calls } = queuedRunner({ recommendations: [], coverage: [] });
     const report = await adviseProject({ targetDir: root, backend: "claude", sessions: "none", runner, search: async () => [] });
-    expect(report.recommendations).toEqual([]);
-    expect(report.weakLeads?.map((item) => item.id)).toEqual(["skills:possible-review"]);
-    const human = formatAdviceReport(report);
-    expect(human).toContain("Weak leads");
-    expect(human).toContain("Would strengthen: recurrence in another distinct session");
+    expect(calls).toHaveLength(1);
+    expect(report.coverage.every((item) => item.status === "no-evidence")).toBe(true);
+    expect(report.notes).toContain("Project sessions were disabled; recommendations use codebase evidence only.");
   });
 
-  test("parses complete headless controls and preserves both legacy skill-only spellings", () => {
-    const parsed = parseAdviseArgs(["--dir", ".", "--sessions", "none", "--since", "14d", "--targets", "codex", "--only", "guidance,hooks", "--backend", "codex", "--model", "gpt-x", "--json"]);
-    expect(parsed.sessions).toBe("none");
-    expect(parsed.since).toBe("14d");
-    expect(parsed.targets).toEqual(["codex"]);
-    expect(parsed.only).toEqual(["guidance", "hooks"]);
-    expect(parsed.backend).toBe("codex");
-    expect(parsed.model).toBe("gpt-x");
-    expect(parsed.json).toBe(true);
+  test("prefers a verified release capability and rejects an automatic deployment hook", async () => {
+    const root = await projectFixture();
+    const item = episode("codex", "Commit the current changes, push the branch, and monitor the deployment until it finishes.");
+    const verifiedRef = "acme/release-skills@ship-and-monitor";
+    const { runner, calls } = queuedRunner({ recommendations: [
+      recommendation("codex", { id: "skills:verified-release", category: "skills", evidence: item.id, routeId: "skills:agents-shared", registryRef: verifiedRef }),
+      { ...recommendation("codex", { id: "hooks:auto-deploy", category: "hooks", evidence: item.id, routeId: "hooks:codex-hooks-json" }), reason: "Commit, push, and deploy automatically after each change." }
+    ], coverage: [] });
+    const report = await adviseProject({
+      targetDir: root,
+      backend: "codex",
+      runner,
+      sessionEvidence: sessionEvidence("codex", item),
+      search: async (query) => query === "release deployment github actions"
+        ? [{ source: "acme/release-skills", skillId: "ship-and-monitor", name: "Ship and monitor", installs: 20 }]
+        : []
+    });
+
+    expect(capturedPrompt(calls[0])).toContain(item.request);
+    expect(report.recommendations.map((entry) => entry.id)).toEqual(["skills:verified-release"]);
+    expect(report.recommendations[0]?.registryRef).toBe(verifiedRef);
+    expect(report.notes.join(" ")).toContain("unsafe or executable hook behavior");
+  });
+
+  test("removes wrappers and seeded credentials from every report rendering", async () => {
+    const root = await projectFixture();
+    const canary = "sk-farrier-secret-canary-123456";
+    const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+    packageJson.scripts.secretCheck = `TOKEN=${canary} run-check`;
+    packageJson.dependencies["private-helper"] = canary;
+    await writeFile(join(root, "package.json"), JSON.stringify(packageJson), "utf8");
+    const item = episode("codex", `<in-app-browser-context>page ${canary}</in-app-browser-context>\n## My request for Codex:\nCreate a reusable release checklist with token=${canary}.`);
+    item.corrections = [`Use authorization ${canary} when testing.`];
+    item.actions = [{ type: "command", summary: `TOKEN=${canary} deploy`, status: "completed" }];
+    item.outcome = `Finished with password=${canary}.`;
+    const { runner, calls } = queuedRunner({ recommendations: [recommendation("codex", {
+      id: "skills:release-checklist", category: "skills", evidence: item.id, routeId: "skills:agents-shared"
+    })], coverage: [] });
+    const report = await adviseProject({ targetDir: root, backend: "codex", runner, search: async () => [], sessionEvidence: sessionEvidence("codex", item) });
+    const surfaces = [
+      capturedPrompt(calls[0]),
+      JSON.stringify(report),
+      formatAdviceReport(report),
+      formatAdviceTuiReportLines(report).join("\n")
+    ].join("\n");
+
+    expect(surfaces).not.toContain(canary);
+    expect(surfaces).not.toContain("<in-app-browser-context>");
+    expect(surfaces).toContain("[REDACTED");
+  });
+
+  test("propagates backend failure and aborts a running backend", async () => {
+    const root = await projectFixture();
+    const failure: BackendCommandRunner = async () => ({ exitCode: 2, stdout: "", stderr: "backend unavailable" });
+    await expect(adviseProject({ targetDir: root, backend: "claude", sessions: "none", runner: failure, search: async () => [] })).rejects.toThrow("backend unavailable");
+
+    const controller = new AbortController();
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const runner: BackendCommandRunner = (input) => { started(); return defaultBackendRunner({ ...input, cmd: ["sleep", "30"] }); };
+    const run = adviseProject({ targetDir: root, backend: "claude", sessions: "none", only: ["guidance"], runner, signal: controller.signal, search: async () => [] });
+    await began;
+    controller.abort();
+    await expect(run).rejects.toThrow(/claude backend exited with code/);
+  });
+
+  test("parses project-focused skills separately from the legacy subcommand", () => {
+    const parsed = parseAdviseArgs(["--sessions", "none", "--since", "14d", "--targets", "codex", "--only", "skills", "--backend", "codex", "--json"]);
+    expect(parsed.only).toEqual(["skills"]);
+    expect(parsed.legacySkills).toBe(false);
     expect(parseAdviseArgs(["skills"]).legacySkills).toBe(true);
-    expect(parseAdviseArgs(["--only", "skills"]).legacySkills).toBe(true);
     expect(() => parseAdviseArgs(["--since", "30d"])).toThrow("--since must be 7d, 14d, or all");
     expect(() => parseAdviseArgs(["--targets", "claude,codex"])).toThrow("--targets must be exactly one provider");
   });
