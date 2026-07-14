@@ -73,10 +73,25 @@ test("reviewed hook creation plans stay declarative and apply transactionally to
     };
   };
 
-  const plan = await planAdviceRecommendation({ report: report(root, recommendation), recommendation, backend: "claude", runner });
+  const inputReport = report(root, recommendation);
+  inputReport.profile.evidence[0]!.summary = "token=seeded-secret dev@example.com sk-abcdefghijklmnop";
+  Object.assign(inputReport.profile.evidence[0]!, {
+    token: "object-secret",
+    nested: { password: "long object secret with spaces" },
+    credential: "github_pat_123456789012345678901234567890"
+  });
+  const plan = await planAdviceRecommendation({ report: inputReport, recommendation, backend: "claude", runner });
   const inspection = await inspectAdviceCreationPlan(root, plan);
 
   expect(sawPrompt).toContain("declarative JSON/TOML configuration only");
+  expect(sawPrompt).not.toContain("seeded-secret");
+  expect(sawPrompt).not.toContain("dev@example.com");
+  expect(sawPrompt).not.toContain("sk-abcdefghijklmnop");
+  expect(sawPrompt).not.toContain("object-secret");
+  expect(sawPrompt).not.toContain("long object secret with spaces");
+  expect(sawPrompt).not.toContain("github_pat_123456789012345678901234567890");
+  expect(JSON.stringify(plan)).not.toContain("object-secret");
+  expect(plan.evidence).toMatchObject({ result: "inconclusive" });
   expect(inspection.existingHarness).toBe(true);
   expect(inspection.replacementPaths).toEqual([".claude/settings.json"]);
   await expect(applyAdviceCreationPlan(root, plan, false)).rejects.toThrow("without --force");
@@ -139,12 +154,17 @@ test("batch skill authoring uses the report backend and leaves only a review pla
     command = input.cmd;
     receivedSignal = input.signal;
     const prompt = input.stdin ?? input.cmd.at(-1) ?? "";
-    const stagingRoot = prompt.match(/(\.farrier-staging\/[a-f0-9]+)/)?.[1];
+    const stagingRoot = prompt.match(/under (\S+)\/ only/)?.[1];
     if (!stagingRoot) throw new Error("missing staging root in skill prompt");
-    const skillDir = join(root, stagingRoot, "verification-helper");
+    const skillDir = join(input.cwd, stagingRoot, "verification-helper");
     await mkdir(join(skillDir, "references"), { recursive: true });
+    await mkdir(join(skillDir, "evals"), { recursive: true });
     await writeFile(join(skillDir, "SKILL.md"), "---\nname: verification-helper\ndescription: Reuse the project verification workflow.\n---\n\nRun the project checks.\n");
     await writeFile(join(skillDir, "references", "checks.md"), "# Checks\n\nRun `bun test`.\n");
+    await writeFile(join(skillDir, "evals", "cases.json"), JSON.stringify({ version: 1, cases: [
+      { id: "run-verification", kind: "positive", prompt: "Run verification", expectedBehavior: "Run project checks" },
+      { id: "unrelated", kind: "negative", prompt: "Write a poem", expectedBehavior: "Do not use this skill" }
+    ] }));
     return { exitCode: 0, stdout: "", stderr: "" };
   };
 
@@ -165,16 +185,18 @@ test("batch skill authoring uses the report backend and leaves only a review pla
 
   expect(command).toContain("codex-skill");
   expect(command).toContain("model_reasoning_effort=high");
-  expect(receivedSignal).toBe(controller.signal);
+  expect(receivedSignal).toBeDefined();
+  expect(receivedSignal?.aborted).toBe(false);
   expect(plan.files.map((file) => file.path)).toEqual([
     ".agents/skills/verification-helper/SKILL.md",
+    ".agents/skills/verification-helper/evals/cases.json",
     ".agents/skills/verification-helper/references/checks.md"
   ]);
   expect(existsSync(join(root, ".agents"))).toBe(false);
   expect(existsSync(join(root, ".farrier-staging"))).toBe(false);
 
   const inspection = await inspectAdviceCreationPlan(root, plan);
-  expect(inspection.files.map((file) => file.action)).toEqual(["create", "create"]);
+  expect(inspection.files.map((file) => file.action)).toEqual(["create", "create", "create"]);
   await applyAdviceCreationPlan(root, plan, false);
   expect(await readFile(join(root, ".agents", "skills", "verification-helper", "SKILL.md"), "utf8")).toContain("Reuse the project verification workflow");
 
@@ -206,7 +228,7 @@ test("cancelled batch skill authoring removes disposable staging and writes no d
   let started!: () => void;
   const backendStarted = new Promise<void>((resolve) => { started = resolve; });
   const runner: BackendCommandRunner = async (input) => new Promise((_resolve, reject) => {
-    expect(input.signal).toBe(controller.signal);
+    expect(input.signal).toBeDefined();
     started();
     input.signal?.addEventListener("abort", () => reject(new Error("backend cancelled")), { once: true });
   });
@@ -222,7 +244,7 @@ test("cancelled batch skill authoring removes disposable staging and writes no d
   await backendStarted;
   controller.abort();
 
-  await expect(planning).rejects.toThrow("backend cancelled");
+  await expect(planning).rejects.toThrow(/aborted|cancelled/i);
   expect(existsSync(join(root, ".farrier-staging"))).toBe(false);
   expect(existsSync(join(root, ".agents"))).toBe(false);
 });

@@ -136,7 +136,22 @@ describe("CLI e2e", () => {
       expect(dryRun.stderr).toBe("");
       expect(dryRun.stdout).toContain("declared project generator: bun run setup (from @acme/demo); harness creation does not run it");
       expect(dryRun.stdout).toContain(".claude/hooks/@acme/guard/guard.sh");
+      expect(dryRun.stdout).toContain("Registry executable review (exact bytes):");
+      expect(dryRun.stdout).toContain("registry: @acme/guard v1.0.0");
+      expect(dryRun.stdout).toContain("content sha256:");
+      expect(dryRun.stdout).toContain("echo guard");
       expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
+
+      const jsonDryRun = await runCli(["--stack", "@acme/demo", "--dry-run", "--json", "--dir", dir], { env });
+      expect(jsonDryRun.exitCode).toBe(0);
+      const jsonReport = JSON.parse(jsonDryRun.stdout);
+      const reviewedHook = jsonReport.files.find(
+        (file: { path: string }) => file.path === ".claude/hooks/@acme/guard/guard.sh"
+      );
+      expect(reviewedHook.content).toBe("echo guard\n");
+      expect(reviewedHook.executableProvenance.registryRef).toBe("@acme/guard");
+      expect(reviewedHook.executableProvenance.sourceIdentity).toBeString();
+      expect(reviewedHook.executableProvenance.contentSha256).toHaveLength(64);
 
       const list = await runCli(["registry", "list", "--dir", dir], { env });
       expect(list.exitCode).toBe(0);
@@ -153,6 +168,8 @@ describe("CLI e2e", () => {
       expect(manifest.hookIds).toContain("@acme/guard");
       expect(manifest.versions.hooks["@acme/guard"]).toBe(4);
       expect(manifest.registry.items["@acme/guard"].type).toBe("hook");
+      expect(manifest.registry.items["@acme/guard"].ref).toBe("@acme/guard");
+      expect(manifest.registry.items["@acme/guard"].sourceIdentity).toBeString();
     } finally {
       await server.stop(true);
     }

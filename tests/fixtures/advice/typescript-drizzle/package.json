@@ -1,0 +1,23 @@
+{
+  "packageManager": "pnpm@10.0.0",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "test": "vitest",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "release": "changeset publish",
+    "deploy": "vercel deploy"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.44",
+    "pg": "^8",
+    "postgres": "^3.4"
+  },
+  "devDependencies": {
+    "typescript": "latest",
+    "drizzle-kit": "^0.31",
+    "vitest": "^3"
+  }
+}

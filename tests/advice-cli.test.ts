@@ -27,10 +27,10 @@ test("headless advice accepts realistic Claude and Codex final JSON in human and
   await mkdir(bin);
   await Bun.write(join(root, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }));
   await Bun.write(join(root, "AGENTS.md"), "Run the test suite before stopping.\n");
-  const payload = `JSON.stringify({ recommendations: [{
+  const payload = (provider: "claude" | "codex") => `JSON.stringify({ recommendations: [{
   id: "guidance:cli-parity",
   category: "guidance",
-  targetVendors: ["claude", "codex"],
+  targetVendors: ["${provider}"],
   reason: "Keep the discovered verification command in shared guidance.",
   benefit: "Gives every supported agent the same completion standard without repeated prompting.",
   evidence: ["project:root"],
@@ -40,13 +40,13 @@ test("headless advice accepts realistic Claude and Codex final JSON in human and
   const claude = join(bin, "claude");
   await writeFile(claude, `#!/usr/bin/env bun
 await Bun.stdin.text();
-console.log(${payload});
+console.log(${payload("claude")});
 `, "utf8");
   await chmod(claude, 0o755);
   const codex = join(bin, "codex");
   await writeFile(codex, `#!/usr/bin/env bun
 console.log("I inspected the bounded project evidence.\\n\\n\`\`\`json");
-console.log(${payload});
+console.log(${payload("codex")});
 console.log("\`\`\`");
 `, "utf8");
   await chmod(codex, 0o755);
@@ -60,9 +60,9 @@ console.log("\`\`\`");
     expect(human.exitCode).toBe(0);
     expect(json.exitCode).toBe(0);
     for (const stderr of [human.stderr, json.stderr]) {
-      expect(stderr).toContain("Profiling project structure");
-      expect(stderr).toContain(`Asking ${backend} for bounded recommendations`);
-      expect(stderr).toContain("Report ready with 1 validated recommendation");
+      expect(stderr).toContain("Profiling dependencies, workflows, services, and installed automation");
+      expect(stderr).toContain("recommender for bounded recommendations");
+      expect(stderr).toContain("Report ready with 1 supported recommendation");
     }
     const report = JSON.parse(json.stdout);
     expect(report.reportOnly).toBe(true);

@@ -29,6 +29,16 @@ async function writeSkill(dir: string, root: string, name: string): Promise<void
   await writeFile(join(dir, root, name, "SKILL.md"), `---\nname: ${name}\ndescription: Test skill.\n---\n\nBody.\n`, "utf8");
 }
 
+async function writeCases(
+  dir: string,
+  root: string,
+  name: string,
+  cases: Array<{ id: string; kind: "positive" | "negative"; prompt: string; expectedBehavior: string }>
+): Promise<void> {
+  await mkdir(join(dir, root, name, "evals"), { recursive: true });
+  await writeFile(join(dir, root, name, "evals", "cases.json"), JSON.stringify({ version: 1, cases }));
+}
+
 async function writePinnedCreator(dir: string): Promise<void> {
   const files = [
     ".claude/skills/skill-creator/SKILL.md",
@@ -118,6 +128,8 @@ describe("per-agent skill eval engine", () => {
     expect(verdict.copies.claude.path).toBe(".claude/skills/pii-masker");
     expect(verdict.copies.codex.path).toBe(".agents/skills/pii-masker");
     expect(verdict.copies.claude.score).toBe(8);
+    expect(verdict.evidence).toMatchObject({ availability: "unavailable", result: "inconclusive", caseCount: 0 });
+    expect(verdict.notes).toContainEqual(expect.stringContaining("Behavior cases unavailable"));
 
     // Two swapped passes, both read-only, both blind: the prompt names only
     // staged neutral paths, never the vendor-revealing native paths.
@@ -128,7 +140,7 @@ describe("per-agent skill eval engine", () => {
       expect(call.cmd[0]).toBe("codex");
       expect(call.cmd).toContain("read-only");
       const prompt = promptOf(call);
-      expect(prompt).toContain(".farrier-staging/eval-");
+      expect(prompt).toContain("Candidate A: candidate-");
       expect(prompt).not.toContain(".claude/skills/pii-masker");
       expect(prompt).not.toContain(".agents/skills/pii-masker");
       expect(prompt).not.toContain("Claude copy");
@@ -145,6 +157,105 @@ describe("per-agent skill eval engine", () => {
     // The neutral staging copies are cleaned up.
     const staging = await readdir(join(dir, ".farrier-staging")).catch(() => [] as string[]);
     expect(staging.filter((entry) => entry.startsWith("eval-"))).toEqual([]);
+  });
+
+  test("distinct full case declarations are redacted, neutral, and non-directional", async () => {
+    const dir = await tempDir();
+    await writePinnedCreator(dir);
+    await writeSkill(dir, ".claude/skills", "case-skill");
+    await writeSkill(dir, ".agents/skills", "case-skill");
+    const positive = { id: "expected-use", kind: "positive" as const, prompt: "token=seeded-secret dev@example.com", expectedBehavior: "Use the skill" };
+    const negative = { id: "unrelated", kind: "negative" as const, prompt: "Unrelated request", expectedBehavior: "Do not use the skill" };
+    await writeCases(dir, ".claude/skills", "case-skill", [positive, negative]);
+    await writeCases(dir, ".agents/skills", "case-skill", [positive, { ...negative, prompt: "Changed full declaration", expectedBehavior: "Different expected behavior" }]);
+    const prompts: string[] = [];
+    const runner: BackendCommandRunner = async (input) => {
+      prompts.push(promptOf(input));
+      return {
+        exitCode: 0,
+        stdout: labeledVerdictJson(promptOf(input), "case-skill", "codex"),
+        stderr: ""
+      };
+    };
+
+    const verdict = await evaluatePerAgentSkill({ targetDir: dir, skillName: "case-skill", backend: "codex", runner });
+    expect(verdict.recommendedWinner).toBe("codex");
+    expect(verdict.evidence).toMatchObject({ availability: "available", result: "inconclusive", regressionVeto: false, caseCount: 3 });
+    expect(verdict.notes).toContainEqual(expect.stringContaining("Declarations were supplied"));
+    expect(verdict.notes).toContainEqual(expect.stringContaining("non-directional mismatch"));
+    expect(prompts.every((prompt) => prompt.includes("Changed full declaration") && prompt.includes("Different expected behavior"))).toBeTrue();
+    const serialized = JSON.stringify(verdict) + prompts.join("\n");
+    expect(serialized).not.toContain("seeded-secret");
+    expect(serialized).not.toContain("dev@example.com");
+  });
+
+  test("case-declaration comparison is symmetric when physical vendor copies are swapped", async () => {
+    const declarations = [
+      [
+        { id: "expected-use", kind: "positive" as const, prompt: "first prompt", expectedBehavior: "first behavior" },
+        { id: "unrelated", kind: "negative" as const, prompt: "unrelated", expectedBehavior: "do not use" }
+      ],
+      [
+        { id: "expected-use", kind: "positive" as const, prompt: "changed prompt", expectedBehavior: "changed behavior" },
+        { id: "unrelated", kind: "negative" as const, prompt: "unrelated", expectedBehavior: "do not use" }
+      ]
+    ] as const;
+    const evaluate = async (swapped: boolean) => {
+      const dir = await tempDir();
+      await writePinnedCreator(dir);
+      await writeSkill(dir, ".claude/skills", "swap-skill");
+      await writeSkill(dir, ".agents/skills", "swap-skill");
+      await writeCases(dir, ".claude/skills", "swap-skill", [...declarations[swapped ? 1 : 0]]);
+      await writeCases(dir, ".agents/skills", "swap-skill", [...declarations[swapped ? 0 : 1]]);
+      return evaluatePerAgentSkill({
+        targetDir: dir,
+        skillName: "swap-skill",
+        backend: "codex",
+        runner: async (input) => ({
+          exitCode: 0,
+          stdout: labeledVerdictJson(promptOf(input), "swap-skill", "claude"),
+          stderr: ""
+        })
+      });
+    };
+
+    const [one, two] = await Promise.all([evaluate(false), evaluate(true)]);
+    expect(one.recommendedWinner).toBe(two.recommendedWinner);
+    expect(one.evidence).toMatchObject({ result: "inconclusive", regressionVeto: false });
+    expect(two.evidence).toMatchObject({ result: "inconclusive", regressionVeto: false });
+    expect(one.evidence?.inputDigest).toBe(two.evidence?.inputDigest);
+  });
+
+  test("evaluation cancellation stops before backend work", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let calls = 0;
+    await expect(evaluatePerAgentSkill({
+      targetDir: await tempDir(),
+      skillName: "cancelled-skill",
+      backend: "codex",
+      signal: controller.signal,
+      runner: async () => {
+        calls += 1;
+        return { exitCode: 0, stdout: "{}", stderr: "" };
+      }
+    })).rejects.toThrow("cancelled before start");
+    expect(calls).toBe(0);
+  });
+
+  test("evaluation rejects unexpected staged output without writing reports", async () => {
+    const dir = await tempDir();
+    await writePinnedCreator(dir);
+    await writeSkill(dir, ".claude/skills", "pii-masker");
+    await writeSkill(dir, ".agents/skills", "pii-masker");
+    const runner: BackendCommandRunner = async (input) => {
+      await writeFile(join(input.cwd, "unexpected.txt"), "not allowed");
+      return { exitCode: 0, stdout: labeledVerdictJson(promptOf(input), "pii-masker", "claude"), stderr: "" };
+    };
+
+    await expect(evaluatePerAgentSkill({ targetDir: dir, skillName: "pii-masker", backend: "claude", runner }))
+      .rejects.toThrow("unexpected output");
+    expect(existsSync(join(dir, ".farrier-staging", "eval", "pii-masker"))).toBe(false);
   });
 
   test("evaluatePerAgentSkill passes reasoningEffort through to the codex judge command", async () => {
@@ -244,7 +355,7 @@ describe("per-agent skill eval engine", () => {
 
       const globalRoot = join(fakeHome, ".claude/skills/skill-creator");
       const runner: BackendCommandRunner = async (input) => {
-        expect(promptOf(input)).toContain(`Read ${globalRoot}/agents/comparator.md`);
+        expect(promptOf(input)).toContain("Read creator/agents/comparator.md");
         return { exitCode: 0, stdout: labeledVerdictJson(promptOf(input), "pii-masker", "claude"), stderr: "" };
       };
 
@@ -410,6 +521,7 @@ describe("per-agent skill eval engine", () => {
     expect(resolution.deleted).toEqual([".agents/skills/pii-masker"]);
     expect(resolution.links[0]?.path).toBe(".agents/skills/pii-masker");
     expect(resolution.backupPath).toBeUndefined();
+    expect(await lstat(join(dir, ".farrier-staging", "transactions")).catch(() => undefined)).toBeUndefined();
     expect(await readlink(join(dir, ".agents/skills/pii-masker"))).toBe("../../.claude/skills/pii-masker");
     expect((await lstat(join(dir, ".agents/skills/pii-masker"))).isSymbolicLink()).toBe(true);
     expect(await realpath(join(dir, ".agents/skills/pii-masker/SKILL.md"))).toBe(
@@ -436,6 +548,7 @@ describe("per-agent skill eval engine", () => {
     expect(await readFile(join(dir, resolution.backupPath!, "SKILL.md"), "utf8")).toContain("name: pii-masker");
     expect((await lstat(join(dir, ".claude/skills/pii-masker"))).isSymbolicLink()).toBe(true);
     expect(resolution.notes.join(" ")).toContain("change your mind");
+    expect(resolution.backupPath).toBeDefined();
   });
 
   test("resolvePerAgentSkillWinner refuses unsafe paths and missing confirmation", async () => {
@@ -518,7 +631,7 @@ describe("per-agent skill eval engine", () => {
         }
       },
       {
-        writeRenderPlan: async () => undefined,
+        writeRenderPlan: async () => ({ written: [], unchanged: [], writtenFiles: [], unchangedFiles: [], backupDir: null }),
         installSkills: async () => [],
         createSkills: async (_requests, _targetDir, deps) => {
           expect(deps).toBeDefined();

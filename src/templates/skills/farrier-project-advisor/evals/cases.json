@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "cases": [
+    {"id":"advise-project","kind":"positive","prompt":"Recommend evidence-backed improvements to this project's existing Farrier harness.","expectedBehavior":"Use project evidence and existing supported routes; report only unless the user confirms an existing apply flow."},
+    {"id":"unrelated-recipe","kind":"negative","prompt":"Give me a soup recipe.","expectedBehavior":"Do not invoke the Farrier project advisor workflow."}
+  ]
+}

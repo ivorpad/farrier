@@ -22,7 +22,7 @@ import {
   type FileFingerprint,
   type FileSnapshot,
 } from "./create-plan-fs";
-import type { RenderPlan } from "./render";
+import { renderPlanDigest, type RenderPlan } from "./render";
 
 type OriginalFile = { existed: false } | { existed: true; snapshot: FileSnapshot };
 type AppliedChange = { path: string; absolutePath: string; original: OriginalFile; written: FileFingerprint };
@@ -209,6 +209,12 @@ async function assertOriginalStillCurrent(change: HarnessFileChange, original: O
 }
 
 export async function applyHarnessChangePlan(renderPlan: RenderPlan, options: ApplyHarnessChangePlanOptions, deps: ApplyHarnessChangePlanDeps = {}): Promise<ApplyHarnessChangePlanResult> {
+  if (renderPlan.reviewedDigest && renderPlanDigest(renderPlan.files) !== renderPlan.reviewedDigest) {
+    throw new HarnessApplyError(
+      "Refusing to apply: rendered bytes changed after review; rerun preview and review the new executable payload",
+      { cause: new Error("review digest mismatch"), mutationState: "rolled-back", backupDir: null }
+    );
+  }
   const plan = await inspectHarnessChangePlan(renderPlan);
   assertHarnessChangePlanWritable(plan, options);
   const targetRoot = resolve(renderPlan.targetDir);

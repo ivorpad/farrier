@@ -11,6 +11,8 @@ export type AdviceRegistryEntry = {
   category: "skills" | "plugins" | "mcp";
   name: string;
   vendors: AdviceVendor[];
+  query?: string;
+  evidence?: string[];
 };
 
 export const adviceRoutes: AdviceRouteDefinition[] = [

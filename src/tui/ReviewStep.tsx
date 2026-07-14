@@ -1,6 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
+import type { ExecutableProvenance } from "../engine/render";
 import { formatAgents, type EnforcementAgent } from "../engine/agent-selection";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
@@ -24,7 +25,8 @@ const runVerb = pickHarnessVerb();
 // window is the only thing that keeps the box bounded without hiding files.
 const maxVisibleFiles = 6;
 
-const previewLineCount = 3;
+const previewLineCount = 4;
+const previewScrollAmount = 3;
 
 // Usable inner width inside the step's border+padding on an 80-col terminal.
 // Rows are truncated to this so a long path + note never wraps onto a second
@@ -34,14 +36,17 @@ const manifestInnerWidth = 74;
 // Cap the path column so the widest real path (a hook prompt template, ~42
 // cols) can't starve the note column into wrapping.
 const maxPathColWidth = 44;
+const reviewPaneWidth = 56;
 
 export type ReviewFile = {
   path: string;
   content: string;
+  previousContent?: string;
   action: "create" | "unchanged" | "merge" | "update" | "replace" | "blocked";
   purpose: string;
   reason?: string;
   requiresForce: boolean;
+  executableProvenance?: ExecutableProvenance;
 };
 
 type ReviewStepProps = {
@@ -101,19 +106,59 @@ function actionView(action: ReviewFile["action"]): {
   }
 }
 
-function previewLines(file: ReviewFile, offset: number): PaneLine[] {
+function allPreviewLines(file: ReviewFile): PaneLine[] {
   const action = actionView(file.action);
   const reasonFg = file.action === "replace" || file.action === "blocked" ? palette.warn : palette.muted;
-  const metadata: PaneLine[] = [{ fg: action.fg, text: `${action.label} — ${file.purpose}` }, ...(file.reason ? [{ fg: reasonFg, text: file.reason }] : [])];
-  const content = file.content
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => ({ fg: palette.muted, text: line.trimEnd() }));
-  const allLines = [...metadata, ...content];
-  const start = Math.min(offset, Math.max(allLines.length - previewLineCount, 0));
-  const lines = allLines.slice(start, start + previewLineCount);
+  const provenance = file.executableProvenance;
+  const provenanceLines: PaneLine[] = [
+    ...(provenance
+      ? [
+          { fg: palette.gold, text: `registry ${provenance.registryRef} v${provenance.version}` },
+          { fg: palette.muted, text: `source ${provenance.sourceIdentity ?? "legacy-unbound"}` },
+          { fg: palette.muted, text: `item sha256 ${provenance.itemSha256}` },
+          { fg: palette.muted, text: `content sha256 ${provenance.contentSha256}` }
+        ]
+      : [])
+  ];
+  const descriptiveLines: PaneLine[] = [
+    { fg: action.fg, text: `${action.label} — ${file.purpose}` },
+    ...(file.reason ? [{ fg: reasonFg, text: file.reason }] : [])
+  ];
+  const contentLines = (value: string) =>
+    value.split("\n").map((line, index) => ({
+      fg: palette.muted,
+      text: `${index + 1}: ${JSON.stringify(line)}`
+    }));
+  const changed = file.previousContent !== undefined && file.previousContent !== file.content;
+  const content = changed
+    ? [
+        { fg: palette.warn, text: "--- previous bytes" },
+        ...contentLines(file.previousContent!),
+        { fg: palette.success, text: "+++ reviewed bytes" },
+        ...contentLines(file.content)
+      ]
+    : contentLines(file.content);
+  const orderedLines = provenance ? [...provenanceLines, ...content, ...descriptiveLines] : [...descriptiveLines, ...content];
+  const allLines = orderedLines.flatMap((line) => {
+    if (line.text.length === 0) return [line];
+    const chunks: PaneLine[] = [];
+    for (let index = 0; index < line.text.length; index += reviewPaneWidth) {
+      chunks.push({ fg: line.fg, text: line.text.slice(index, index + reviewPaneWidth) });
+    }
+    return chunks;
+  });
+  return allLines.length > 0 ? allLines : [{ fg: palette.faint, text: "(empty file)" }];
+}
 
-  return lines.length > 0 ? lines : [{ fg: palette.faint, text: "(empty file)" }];
+export function reviewPreviewOffset(file: ReviewFile, current: number, delta: number): number {
+  const maximum = Math.max(allPreviewLines(file).length - previewLineCount, 0);
+  return Math.min(maximum, Math.max(0, current + delta));
+}
+
+function previewLines(file: ReviewFile, offset: number): PaneLine[] {
+  const allLines = allPreviewLines(file);
+  const start = Math.min(offset, Math.max(allLines.length - previewLineCount, 0));
+  return allLines.slice(start, start + previewLineCount);
 }
 
 export function ReviewStep(props: ReviewStepProps) {
@@ -176,7 +221,10 @@ export function ReviewStep(props: ReviewStepProps) {
       return;
     }
     if (intent === "scroll") {
-      setPreviewOffset((current) => Math.max(0, current + (key.name === "pagedown" ? previewLineCount : -previewLineCount)));
+      const focused = props.files[Math.min(focusedFileIndex, Math.max(props.files.length - 1, 0))];
+      if (focused) {
+        setPreviewOffset((current) => reviewPreviewOffset(focused, current, key.name === "pagedown" ? previewScrollAmount : -previewScrollAmount));
+      }
       return;
     }
     if (intent === "activate") {
@@ -431,7 +479,12 @@ export function DoneStep(props: DoneStepProps) {
           ))}
         </box>
       ) : (
-        <text fg={palette.warn}>{`✗ ${props.writeStatus?.message ?? "Write failed."}`}</text>
+        <box style={{ flexDirection: "column", gap: 0 }}>
+          <text fg={palette.warn}>{`✗ ${props.writeStatus?.message ?? "Write failed."}`}</text>
+          {props.writeStatus?.mutationState ? <text fg={palette.gold}>{`Transaction: ${props.writeStatus.mutationState}`}</text> : null}
+          {props.writeStatus?.recoveryPath ? <text fg={palette.warn}>{`Recovery material: ${props.writeStatus.recoveryPath}`}</text> : null}
+          {props.writeStatus?.remediation ? <text fg={palette.muted}>{props.writeStatus.remediation}</text> : null}
+        </box>
       )}
 
       {ok ? (

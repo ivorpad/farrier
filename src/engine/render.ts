@@ -2,20 +2,44 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import type { HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef } from "../packs/types";
+import { hookCapabilities, packCapabilityProjection } from "../packs/index";
 import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
 import type { RegistryPin } from "../registry/catalog";
 import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
+
+export type ExecutableProvenance = {
+  registryRef: string;
+  version: string;
+  sourceIdentity: string | null;
+  itemSha256: string;
+  contentSha256: string;
+};
 
 export type RenderedFile = {
   path: string;
   content: string;
   mode?: number;
+  executableProvenance?: ExecutableProvenance;
 };
 
 export type RenderPlan = {
   targetDir: string;
   files: RenderedFile[];
+  reviewedDigest?: string;
 };
+
+function sha256(value: string): string {
+  return new Bun.CryptoHasher("sha256").update(value).digest("hex");
+}
+
+export function renderPlanDigest(files: readonly RenderedFile[]): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  for (const file of files) {
+    hasher.update(JSON.stringify([file.path, file.mode ?? null, file.content]));
+    hasher.update("\n");
+  }
+  return hasher.digest("hex");
+}
 
 export interface NativeGenerator {
   maybeGenerate(input: { targetDir: string; pack: ResolvedPack }): Promise<void>;
@@ -95,16 +119,16 @@ type ClaudeSettingsHooks = Partial<Record<ClaudeHookEvent, ClaudeHookEntry[]>>;
 export const farrierManifestVersion = 2;
 
 export const hookCatalogVersions: Record<HookId, number> = {
-  "secret-shield": 2,
-  "tool-policy": 1,
-  "write-guard": 2,
-  "verb-runner": 2,
-  "quality-judge": 2,
-  "stop-judge": 1
+    "secret-shield": 4,
+    "tool-policy": 3,
+    "write-guard": 4,
+    "verb-runner": 4,
+    "quality-judge": 4,
+    "stop-judge": 3
 };
 
 export const hookTemplateFiles: Record<HookId, string[]> = {
-  "secret-shield": ["secret-shield.py", "test_secret_shield.py"],
+  "secret-shield": ["secret-shield.py", "test_secret_shield.py", "test_hook_contract.py"],
   "tool-policy": ["tool-policy.py", "test_tool_policy.py"],
   "write-guard": ["write-guard.py", "test_write_guard.py"],
   "verb-runner": ["verb-runner.py", "test_verb_runner.py"],
@@ -211,6 +235,7 @@ function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[])
   }
 
   const selectedAgents = normalizeAgents(agents);
+  const capability = packCapabilityProjection(pack);
   const hardRules = agentsHardRules(pack, selectedAgents);
   const targetLines = [
     `- Selected enforcement targets: ${selectedAgents.join(", ")}.`,
@@ -226,7 +251,8 @@ function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[])
           "- Remote hooks without explicit Codex event and payload compatibility remain unbound.",
           "- AGENTS.md instructions and project verification commands remain mandatory regardless of hook coverage."
         ]
-      : [])
+      : []),
+    ...capability.limitations.map((limitation) => `- ${limitation}`)
   ];
 
   const acceptedRisks = pack.packIds.includes("python-uv") && pack.verbs.konsistent
@@ -288,65 +314,14 @@ function renderClaudeSettingsJson(pack: ResolvedPack): string {
   const postToolUse: ClaudeHookEntry[] = [];
   const stop: ClaudeHookEntry[] = [];
 
-  if (pack.hooks.includes("secret-shield")) {
-    preToolUse.push(
-      hookEntry({
-        matcher: "Read|Bash|Grep",
-        command: 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/secret-shield.py"'
-      })
-    );
-  }
-
-  if (pack.hooks.includes("tool-policy")) {
-    preToolUse.push(
-      hookEntry({
-        matcher: "Bash",
-        command: 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/tool-policy.py"'
-      })
-    );
-  }
-
-  if (pack.hooks.includes("write-guard")) {
-    preToolUse.push(
-      hookEntry({
-        matcher: "Edit|Write|MultiEdit|NotebookEdit",
-        command: 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/write-guard.py"'
-      })
-    );
-  }
-
-  if (pack.hooks.includes("verb-runner")) {
-    postToolUse.push(
-      hookEntry({
-        matcher: "Edit|Write|MultiEdit|NotebookEdit",
-        command: 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/verb-runner.py"'
-      })
-    );
-  }
-
-  if (pack.hooks.includes("quality-judge")) {
-    postToolUse.push(
-      hookEntry({
-        matcher: "Edit|Write|MultiEdit|NotebookEdit",
-        command: 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/quality-judge.py"'
-      })
-    );
-  }
-
-  if (pack.hooks.includes("verb-runner")) {
-    stop.push(
-      hookEntry({
-        command: 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/verb-runner.py"'
-      })
-    );
-  }
-
-  if (pack.hooks.includes("stop-judge")) {
-    stop.push(
-      hookEntry({
-        command: 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/stop-judge.py"'
-      })
-    );
+  for (const hookId of pack.hooks.filter(isBuiltinHookId)) {
+    for (const binding of hookCapabilities[hookId].agents.claude ?? []) {
+      const target = binding.event === "PreToolUse" ? preToolUse : binding.event === "PostToolUse" ? postToolUse : stop;
+      target.push(hookEntry({
+        matcher: binding.matcher,
+        command: `python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/${binding.fileName}"`
+      }));
+    }
   }
 
   for (const remoteHook of pack.remoteHooks) {
@@ -396,13 +371,12 @@ function renderCodexHooksJson(pack: ResolvedPack): string {
     entries.push(hookEntry({ matcher, command: codexCommand(fileName) }));
   };
 
-  if (pack.hooks.includes("secret-shield")) add(preToolUse, "^Bash$", "secret-shield.py");
-  if (pack.hooks.includes("tool-policy")) add(preToolUse, "^Bash$", "tool-policy.py");
-  if (pack.hooks.includes("write-guard")) add(preToolUse, "^apply_patch$", "write-guard.py");
-  if (pack.hooks.includes("verb-runner")) add(postToolUse, "^apply_patch$", "verb-runner.py");
-  if (pack.hooks.includes("quality-judge")) add(postToolUse, "^apply_patch$", "quality-judge.py");
-  if (pack.hooks.includes("verb-runner")) add(stop, undefined, "verb-runner.py");
-  if (pack.hooks.includes("stop-judge")) add(stop, undefined, "stop-judge.py");
+  for (const hookId of pack.hooks.filter(isBuiltinHookId)) {
+    for (const binding of hookCapabilities[hookId].agents.codex ?? []) {
+      const target = binding.event === "PreToolUse" ? preToolUse : binding.event === "PostToolUse" ? postToolUse : stop;
+      add(target, binding.matcher, binding.fileName);
+    }
+  }
 
   const hooks: ClaudeSettingsHooks = {};
   if (preToolUse.length > 0) hooks.PreToolUse = preToolUse;
@@ -412,9 +386,10 @@ function renderCodexHooksJson(pack: ResolvedPack): string {
 }
 
 function renderJustfile(pack: ResolvedPack): string {
+  const hookCheck = pack.hooks.some(isBuiltinHookId) ? " && uv run --with pytest pytest .claude/hooks" : "";
   const recipes = [
     `check:
-  ${pack.verbs.check}`,
+  ${pack.verbs.check}${hookCheck}`,
     `test:
   ${pack.verbs.test}`,
     `fmt:
@@ -603,6 +578,14 @@ const claudeAutomationReferenceFiles = [
   "upstream/references/subagent-templates.md"
 ];
 
+const codexAutomationReferenceFiles = [
+  "references/skills-reference.md",
+  "references/plugins-reference.md",
+  "references/hooks-patterns.md",
+  "references/mcp-servers.md",
+  "references/subagent-templates.md"
+];
+
 export async function createRenderPlan(options: CreateRenderPlanOptions): Promise<RenderPlan> {
   const agents = normalizeAgents(options.agents ?? options.existingManifest?.agents);
   const existingSkills = stringArray(options.existingManifest?.skills);
@@ -652,6 +635,26 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     {
       path: ".agents/skills/farrier-project-advisor/SKILL.md",
       content: await readTemplate("skills", "farrier-project-advisor", "SKILL.md")
+    },
+    {
+      path: ".agents/skills/codex-automation-recommender/SKILL.md",
+      content: await readTemplate("skills", "codex-automation-recommender", "SKILL.md")
+    },
+    {
+      path: ".claude/skills/harness-advisor/evals/cases.json",
+      content: await readTemplate("skills", "harness-advisor", "evals", "cases.json")
+    },
+    {
+      path: ".claude/skills/claude-automation-recommender/evals/cases.json",
+      content: await readTemplate("skills", "claude-automation-recommender", "evals", "cases.json")
+    },
+    {
+      path: ".agents/skills/farrier-project-advisor/evals/cases.json",
+      content: await readTemplate("skills", "farrier-project-advisor", "evals", "cases.json")
+    },
+    {
+      path: ".agents/skills/codex-automation-recommender/evals/cases.json",
+      content: await readTemplate("skills", "codex-automation-recommender", "evals", "cases.json")
     }
   );
 
@@ -659,6 +662,20 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     files.push({
       path: posixPath(join(".claude", "skills", "claude-automation-recommender", relativePath)),
       content: await readTemplate("skills", "claude-automation-recommender", relativePath)
+    });
+  }
+
+  for (const relativePath of codexAutomationReferenceFiles) {
+    files.push({
+      path: posixPath(join(".agents", "skills", "codex-automation-recommender", relativePath)),
+      content: await readTemplate("skills", "codex-automation-recommender", relativePath)
+    });
+  }
+
+  if (options.pack.hooks.some((hook) => hook === "verb-runner" || hook === "quality-judge" || hook === "stop-judge")) {
+    files.push({
+      path: ".claude/hooks/_hook_runtime.py",
+      content: await readHookTemplate("_hook_runtime.py")
     });
   }
 
@@ -677,7 +694,14 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
       files.push({
         path: posixPath(join(".claude", "hooks", remoteHook.id, file.path)),
         content: file.content,
-        mode: file.executable === true || file.path === remoteHook.entry ? 0o755 : undefined
+        mode: file.executable === true || file.path === remoteHook.entry ? 0o755 : undefined,
+        executableProvenance: {
+          registryRef: remoteHook.registryRef ?? remoteHook.id,
+          version: remoteHook.version,
+          sourceIdentity: remoteHook.sourceIdentity ?? null,
+          itemSha256: remoteHook.sha256,
+          contentSha256: sha256(file.content)
+        }
       });
     }
   }
@@ -735,11 +759,15 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
 
   return {
     targetDir: options.targetDir,
-    files
+    files,
+    reviewedDigest: renderPlanDigest(files)
   };
 }
 
 export async function writeRenderPlan(plan: RenderPlan): Promise<void> {
+  if (plan.reviewedDigest && renderPlanDigest(plan.files) !== plan.reviewedDigest) {
+    throw new Error("Refusing to write: rendered bytes changed after review; rerun preview and review the new executable payload");
+  }
   for (const file of plan.files) {
     const absolutePath = join(plan.targetDir, file.path);
     await mkdir(dirname(absolutePath), { recursive: true });

@@ -1,6 +1,26 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ReasoningEffort } from "../config/farrier-config";
 
 export type AgentBackend = "claude" | "codex";
+
+const backendEnvironmentNames: Record<AgentBackend, readonly string[]> = {
+  codex: ["OPENAI_API_KEY", "CODEX_HOME"],
+  claude: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"]
+};
+
+/** Explicit authentication/config passthrough for an isolated backend process. */
+export function backendEnvironmentPassthrough(backend: AgentBackend): readonly string[] {
+  return backendEnvironmentNames[backend];
+}
+
+/** Preserve the backend's standard login config without exposing the ambient HOME. */
+export function backendEnvironmentOverrides(backend: AgentBackend): Readonly<Record<string, string>> {
+  const home = homedir();
+  return backend === "codex"
+    ? { CODEX_HOME: process.env.CODEX_HOME ?? join(home, ".codex") }
+    : { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude") };
+}
 
 export type BackendCommandRunnerInput = {
   cmd: string[];
@@ -10,6 +30,8 @@ export type BackendCommandRunnerInput = {
   signal?: AbortSignal;
   /** Called with each stdout line as it arrives; stdout is still returned in full. */
   onStdoutLine?: (line: string) => void;
+  /** Explicit scrubbed environment for isolated external execution. */
+  env?: Record<string, string>;
 };
 
 export type BackendCommandRunnerOutput = {
@@ -137,7 +159,8 @@ export async function defaultBackendRunner(input: BackendCommandRunnerInput): Pr
     stderr: "pipe",
     // Agent CLIs may spawn shells and helpers. A dedicated process group lets
     // cancellation terminate the complete run instead of only its root PID.
-    detached: true
+    detached: true,
+    env: input.env
   });
 
   const onAbort = () => {
@@ -348,6 +371,7 @@ export async function invokeBackend(input: {
   runner: BackendCommandRunner;
   signal?: AbortSignal;
   ephemeral?: boolean;
+  env?: Record<string, string>;
 }): Promise<unknown> {
   const command = backendCommand(input.backend, input.model, input.prompt, {
     reasoningEffort: input.reasoningEffort,
@@ -358,7 +382,8 @@ export async function invokeBackend(input: {
     cmd: command.cmd,
     cwd: input.targetDir,
     stdin: command.stdin,
-    signal: input.signal
+    signal: input.signal,
+    env: input.env
   });
 
   if (output.exitCode !== 0) {

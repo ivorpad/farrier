@@ -1,5 +1,5 @@
-import type { FarrierConfig, RegistryEntryConfig } from "../config/farrier-config";
-import { getPack as getBuiltinPack, resolvePack as resolveBuiltinPack, supportedPackIds } from "../packs/index";
+import type { FarrierConfig, RegistryConfigSource, RegistryEntryConfig } from "../config/farrier-config";
+import { builtinDetectionOrder, getPack as getBuiltinPack, resolvePack as resolveBuiltinPack, supportedPackIds } from "../packs/index";
 import {
   dedupe,
   mergeDetect,
@@ -15,6 +15,8 @@ export type RegistryPin = {
   type: "pack" | "hook" | "skill";
   version: string;
   sha256: string;
+  sourceIdentity?: string;
+  ref?: string;
 };
 
 export type PackListing = {
@@ -37,10 +39,26 @@ export type PackCatalog = {
   remoteHook(id: string): ResolvedRemoteHook | undefined;
   detectablePackIds(): string[];
   registryPins(): Record<string, RegistryPin>;
+  latestRegistryPins?(): Record<string, RegistryPin>;
   warnings: PackCatalogWarning[];
 };
 
-export type RegistryCatalogClient = Pick<RegistryClient, "fetchRegistryIndex" | "fetchRegistryItem">;
+export type RegistryCatalogClient = {
+  fetchRegistryIndex(namespace: string, entry: RegistryEntryConfig, configSource?: RegistryConfigSource): Promise<RegistryFetchResult<RegistryIndex>>;
+  fetchRegistryItem(namespace: string, entry: RegistryEntryConfig, item: RegistryIndexItem, configSource?: RegistryConfigSource): Promise<RegistryFetchResult<RegistryItem>>;
+  fetchRegistryItemPinned?(
+    namespace: string,
+    entry: RegistryEntryConfig,
+    item: RegistryIndexItem,
+    pin: {
+      type: RegistryIndexItem["type"];
+      version: string;
+      sha256: string;
+      sourceIdentity: string;
+    },
+    configSource?: RegistryConfigSource
+  ): Promise<RegistryFetchResult<RegistryItem> | undefined>;
+};
 
 type RemotePackRecord = {
   pack: Pack;
@@ -64,26 +82,17 @@ type LoadedRegistry = {
   items: Array<RegistryFetchResult<RegistryItem>>;
 };
 
-const builtinDetectOrder = [
-  "python-lambda-powertools",
-  "python-fastapi",
-  "python-uv",
-  "ts-nextjs",
-  "ts-react-vite",
-  "ts-lambda",
-  "ts-base",
-  "rails"
-];
-
 function registryErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function pinFor(result: RegistryFetchResult<RegistryItem>): RegistryPin {
+function pinFor(namespace: string, result: RegistryFetchResult<RegistryItem>): RegistryPin {
   return {
     type: result.value.type,
     version: result.value.version,
-    sha256: result.sha256
+    sha256: result.sha256,
+    sourceIdentity: result.sourceIdentity,
+    ref: `${namespace}/${result.value.name}`
   };
 }
 
@@ -99,6 +108,8 @@ function remoteHookFrom(
     id,
     version: result.value.version,
     sha256: result.sha256,
+    sourceIdentity: result.sourceIdentity,
+    registryRef: id,
     fromCache: result.fromCache,
     hookVersion: result.value.hook.hookVersion,
     events: result.value.hook.events,
@@ -179,6 +190,7 @@ function createCatalog(input: {
   remoteHooks: Map<string, ResolvedRemoteHook>;
   remoteSkills: Map<string, RemoteSkillRecord>;
   pins: Record<string, RegistryPin>;
+  latestPins?: Record<string, RegistryPin>;
   warnings: PackCatalogWarning[];
 }): PackCatalog {
   function getPack(id: string): Pack | undefined {
@@ -261,10 +273,13 @@ function createCatalog(input: {
       return input.remoteHooks.get(id);
     },
     detectablePackIds() {
-      return [...(input.useDefaultPacks ? builtinDetectOrder : []), ...input.remotePackOrder];
+      return [...(input.useDefaultPacks ? builtinDetectionOrder() : []), ...input.remotePackOrder];
     },
     registryPins() {
       return { ...input.pins };
+    },
+    latestRegistryPins() {
+      return { ...(input.latestPins ?? input.pins) };
     },
     warnings: input.warnings
   };
@@ -280,6 +295,7 @@ export function builtinCatalog(): PackCatalog {
     remoteHooks: new Map(),
     remoteSkills: new Map(),
     pins: {},
+    latestPins: {},
     warnings: []
   });
 }
@@ -287,10 +303,13 @@ export function builtinCatalog(): PackCatalog {
 async function loadRegistry(
   namespace: string,
   entry: RegistryEntryConfig,
-  client: RegistryCatalogClient
+  client: RegistryCatalogClient,
+  configSource?: RegistryConfigSource
 ): Promise<LoadedRegistry> {
-  const index = await client.fetchRegistryIndex(namespace, entry);
-  const items = await Promise.all(index.value.items.map((item: RegistryIndexItem) => client.fetchRegistryItem(namespace, entry, item)));
+  const index = await client.fetchRegistryIndex(namespace, entry, configSource);
+  const items = await Promise.all(
+    index.value.items.map((item: RegistryIndexItem) => client.fetchRegistryItem(namespace, entry, item, configSource))
+  );
 
   return {
     namespace,
@@ -304,6 +323,8 @@ export async function loadPackCatalog(input: {
   config: FarrierConfig;
   client?: RegistryCatalogClient;
   requireNamespaces?: Iterable<string> | Map<string, string>;
+  requiredPins?: Record<string, RegistryPin>;
+  registrySources?: Record<string, RegistryConfigSource>;
 }): Promise<PackCatalog> {
   const registryEntries = Object.entries(input.config.registries);
   const required = input.requireNamespaces instanceof Map
@@ -322,12 +343,13 @@ export async function loadPackCatalog(input: {
   const remoteHooks = new Map<string, ResolvedRemoteHook>();
   const remoteSkills = new Map<string, RemoteSkillRecord>();
   const pins: Record<string, RegistryPin> = {};
+  const latestPins: Record<string, RegistryPin> = {};
 
   for (const [namespace, entry] of registryEntries) {
     seenNamespaces.add(namespace);
     let loaded: LoadedRegistry;
     try {
-      loaded = await loadRegistry(namespace, entry, client);
+      loaded = await loadRegistry(namespace, entry, client, input.registrySources?.[namespace]);
     } catch (error) {
       const message = registryErrorMessage(error);
       const requiredRef = required.get(namespace);
@@ -338,9 +360,46 @@ export async function loadPackCatalog(input: {
       continue;
     }
 
-    for (const result of loaded.items) {
-      const id = itemId(namespace, result.value.name);
-      pins[id] = pinFor(result);
+    const resolvedItems: Array<RegistryFetchResult<RegistryItem>> = [];
+    for (const latestResult of loaded.items) {
+      const id = itemId(namespace, latestResult.value.name);
+      const latestPin = pinFor(namespace, latestResult);
+      latestPins[id] = latestPin;
+      const requiredPin = input.requiredPins?.[id];
+      let result = latestResult;
+      if (requiredPin?.sourceIdentity) {
+        if (
+          latestResult.sha256 !== requiredPin.sha256 ||
+          latestResult.sourceIdentity !== requiredPin.sourceIdentity
+        ) {
+          const descriptor = loaded.index.value.items.find((item) => item.name === latestResult.value.name)!;
+          const pinned = await client.fetchRegistryItemPinned?.(
+            namespace,
+            entry,
+            descriptor,
+            {
+              type: requiredPin.type,
+              version: requiredPin.version,
+              sha256: requiredPin.sha256,
+              sourceIdentity: requiredPin.sourceIdentity
+            },
+            input.registrySources?.[namespace]
+          );
+          if (!pinned) {
+            throw new Error(
+              `cannot resolve exact pin ${id}@${requiredPin.version} (${requiredPin.sha256.slice(0, 12)}): source-bound cache entry is unavailable; restore the original cache or run farrier update --dir <target> --yes to explicitly migrate`
+            );
+          }
+          result = pinned;
+        }
+      } else if (requiredPin) {
+        warnings.push({
+          namespace,
+          message: `legacy registry pin ${id} is source-unbound; review current provenance and run farrier update --dir <target> --yes to migrate safely`
+        });
+      }
+      resolvedItems.push(result);
+      pins[id] = pinFor(namespace, result);
 
       if (result.value.type === "pack") {
         remotePackOrder.push(id);
@@ -357,7 +416,8 @@ export async function loadPackCatalog(input: {
       }
     }
 
-    if (loaded.index.fromCache || loaded.items.some((item) => item.fromCache)) {
+    loaded.items = resolvedItems;
+    if (loaded.index.fromCache || resolvedItems.some((item) => item.fromCache)) {
       warnings.push({
         namespace,
         message: `registry ${namespace} loaded from cache (cached)`
@@ -378,6 +438,7 @@ export async function loadPackCatalog(input: {
     remoteHooks,
     remoteSkills,
     pins,
+    latestPins,
     warnings
   });
 }

@@ -1,9 +1,12 @@
 import { Effect } from "effect";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, readdir, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SkillRef } from "../packs/types";
+import { applyMutationPlan, inspectMutationPlan, type MutationOperation } from "./mutation-transaction";
+import { withIsolatedExecution, type IsolationFact, type IsolatedInput } from "./execution-isolation";
 
 export type SkillSearchResult = {
   skillId: string;
@@ -15,6 +18,8 @@ export type SkillSearchResult = {
 export type CommandRunnerInput = {
   cmd: string[];
   cwd: string;
+  signal?: AbortSignal;
+  env?: Record<string, string>;
 };
 
 export type CommandRunnerOutput = {
@@ -32,6 +37,7 @@ export type InstallSkillResult = {
   stderr: string;
   exitCode: number;
   error?: string;
+  isolation?: IsolationFact;
 };
 
 function stringField(value: unknown): string | undefined {
@@ -107,7 +113,16 @@ function parseSkillRef(ref: SkillRef): { source: string; skillId: string } | und
   return { source, skillId };
 }
 
-const INSTALL_CONCURRENCY = 4;
+// The external CLI owns a shared lock/manifest surface. Run sources one at a
+// time so reviewed staged transactions cannot race each other.
+const INSTALL_CONCURRENCY = 1;
+const skillsEnvironmentPassthrough = [
+  "GITHUB_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "GITLAB_PRIVATE_TOKEN",
+  "BITBUCKET_TOKEN", "BITBUCKET_USERNAME", "BITBUCKET_APP_PASSWORD",
+  "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT",
+  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+  "http_proxy", "https_proxy", "all_proxy", "no_proxy"
+] as const;
 
 async function readLockedSkillIds(targetDir: string): Promise<Set<string> | undefined> {
   try {
@@ -175,8 +190,15 @@ async function defaultRunner(input: CommandRunnerInput): Promise<CommandRunnerOu
     cmd: input.cmd,
     cwd: input.cwd,
     stdout: "pipe",
-    stderr: "pipe"
+    stderr: "pipe",
+    env: input.env,
+    detached: true
   });
+
+  const abort = () => {
+    try { process.kill(-proc.pid, "SIGTERM"); } catch { proc.kill(); }
+  };
+  input.signal?.addEventListener("abort", abort, { once: true });
 
   const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
@@ -184,6 +206,7 @@ async function defaultRunner(input: CommandRunnerInput): Promise<CommandRunnerOu
     proc.stderr ? new Response(proc.stderr).text() : Promise.resolve("")
   ]);
 
+  input.signal?.removeEventListener("abort", abort);
   return {
     exitCode,
     stdout,
@@ -251,15 +274,71 @@ export async function installSkills(
     let output: CommandRunnerOutput;
     let runError: string | undefined;
 
+    let isolation: IsolationFact | undefined;
+    let workspace: string | undefined;
     try {
-      output = await runner({
-        cmd,
-        cwd: targetDir
+      const inputs: IsolatedInput[] = [];
+      const localSource = source.startsWith("./") ? join(targetDir, source.slice(2)) : undefined;
+      if (localSource && (await lstat(localSource).catch(() => undefined))) inputs.push({ source: localSource, path: source.slice(2) });
+      const lockPath = join(targetDir, "skills-lock.json");
+      if (!global && (await lstat(lockPath).catch(() => undefined))) inputs.push({ source: lockPath, path: "skills-lock.json" });
+      const isolated = await withIsolatedExecution({
+        targetDir,
+        inputs,
+        nativeConfinement: false,
+        environmentPassthrough: skillsEnvironmentPassthrough,
+        environmentOverrides: {
+          GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL ?? join(homedir(), ".gitconfig")
+        },
+        retainWorkspace: true,
+        run: async (context) => ({
+          output: await runner({ cmd, cwd: context.workspace, signal: context.signal, env: context.environment }),
+          workspace: context.workspace
+        })
       });
+      output = isolated.value.output;
+      workspace = isolated.value.workspace;
+      isolation = isolated.isolation;
+      if (output.exitCode === 0) {
+        const allowed = new Set([".claude", ".agents", ".codex", "skills-lock.json", "skills", "home", "tmp"]);
+        const unexpected = (await readdir(workspace)).filter((entry) => !allowed.has(entry));
+        if (unexpected.length > 0) throw new Error(`skills CLI produced unexpected output: ${unexpected.sort().join(", ")}`);
+
+        const outputRoot = global ? join(workspace, "home") : workspace;
+        const destinationRoot = global ? (process.env.HOME || homedir()) : targetDir;
+        const roots = agents.map((agent) => global
+          ? (agent === "claude-code" ? ".claude/skills" : ".codex/skills")
+          : (agent === "claude-code" ? ".claude/skills" : ".agents/skills"));
+        const operations: MutationOperation[] = [];
+        for (const root of roots) {
+          for (const skillId of skillIds) {
+            const staged = join(outputRoot, root, skillId);
+            if ((await lstat(staged).catch(() => undefined))?.isDirectory()) {
+              operations.push({ kind: "replace-tree", path: `${root}/${skillId}`, sourcePath: staged });
+            }
+          }
+        }
+        const stagedLock = join(workspace, "skills-lock.json");
+        if (!global && (await lstat(stagedLock).catch(() => undefined))?.isFile()) {
+          const stagedDocument = JSON.parse(await readFile(stagedLock, "utf8")) as { version?: unknown; skills?: Record<string, unknown> };
+          const currentDocument = await readFile(join(targetDir, "skills-lock.json"), "utf8")
+            .then((value) => JSON.parse(value) as { version?: unknown; skills?: Record<string, unknown> })
+            .catch(() => ({ version: stagedDocument.version, skills: {} }));
+          const merged = {
+            ...currentDocument,
+            ...stagedDocument,
+            skills: { ...(currentDocument.skills ?? {}), ...(stagedDocument.skills ?? {}) }
+          };
+          operations.push({ kind: "write-file", path: "skills-lock.json", content: `${JSON.stringify(merged, null, 2)}\n` });
+        }
+        if (operations.length > 0) await applyMutationPlan(await inspectMutationPlan(destinationRoot, operations));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       output = { exitCode: 1, stdout: "", stderr: "" };
       runError = `${message} (ran '${commandLabel}'). Try installing the skills CLI or set FARRIER_SKILLS_BIN.`;
+    } finally {
+      if (workspace) await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
     }
 
     return refs.map((ref) => ({
@@ -268,6 +347,7 @@ export async function installSkills(
       stdout: output.stdout,
       stderr: output.stderr,
       exitCode: output.exitCode,
+      isolation,
       error:
         runError ??
         (output.exitCode === 0

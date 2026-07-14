@@ -7,6 +7,7 @@ import type { AdviceEvidence, AdviceRecommendation, AdviceReport, AdviceVendor }
 import type { SkillCreationRequest } from "./create-skill";
 import { authorSkillCreationPlan } from "./skill-creation-plan";
 import type { RenderPlan, RenderedFile } from "./render";
+import { compareEvidence, createEvidenceSet, redactEvidence, type BoundedEvidenceSet, type EvidenceComparison } from "./behavior-evidence";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -16,6 +17,7 @@ export type AdviceCreationPlan = {
   recommendationId: string;
   summary: string;
   files: AdviceCreationFile[];
+  evidence?: EvidenceComparison;
 };
 
 export type AdviceCreationSupport =
@@ -30,7 +32,7 @@ type PathPolicy = {
 };
 
 const exact = (paths: string[]) => (path: string): boolean => paths.includes(path);
-const skillPath = (root: string) => (path: string): boolean => new RegExp(`^${root.replaceAll(".", "\\.")}/[a-z0-9]+(?:-[a-z0-9]+)*/(?:SKILL\\.md|references/[^/]+\\.md|assets/[^/]+)$`).test(path);
+const skillPath = (root: string) => (path: string): boolean => new RegExp(`^${root.replaceAll(".", "\\.")}/[a-z0-9]+(?:-[a-z0-9]+)*/(?:SKILL\\.md|evals/cases\\.json|references/[^/]+\\.md|assets/[^/]+)$`).test(path);
 
 function pathPolicy(recommendation: AdviceRecommendation): PathPolicy | undefined {
   switch (recommendation.implementationRoute.id) {
@@ -118,10 +120,8 @@ function evidenceFor(report: AdviceReport, recommendation: AdviceRecommendation)
 }
 
 function planningPrompt(input: {
-  recommendation: AdviceRecommendation;
-  evidence: AdviceEvidence[];
+  dataset: BoundedEvidenceSet<unknown>;
   policy: PathPolicy;
-  existing: Array<{ path: string; content: string }>;
 }): string {
   return `Create a reviewed file plan for one Farrier recommendation. Return JSON only:
 {"summary":"one sentence","files":[{"path":"relative/path","purpose":"short explanation","content":"complete final file content"}]}
@@ -134,14 +134,8 @@ Rules:
 - JSON files must parse as JSON objects. Skill files must remain inside one skill directory.
 - Return 1–8 files, each at most 50,000 characters.
 
-Recommendation:
-${JSON.stringify(input.recommendation)}
-
-Validated evidence:
-${JSON.stringify(input.evidence)}
-
-Existing editable files (empty means they do not exist):
-${JSON.stringify(input.existing)}
+Bounded redacted planning dataset (reuse this digest for any comparison):
+${JSON.stringify({ digest: input.dataset.digest, items: input.dataset.items, truncated: input.dataset.truncated })}
 `;
 }
 
@@ -223,17 +217,29 @@ export async function planAdviceRecommendation(input: {
   const policy = pathPolicy(input.recommendation);
   if (!policy) throw new Error(adviceCreationSupport(input.recommendation).description);
   const existing = await existingFileContext(input.report.targetDir, policy);
+  const dataset = createEvidenceSet({
+    workflow: "advice",
+    items: [
+      { kind: "recommendation", value: input.recommendation },
+      { kind: "evidence", value: evidenceFor(input.report, input.recommendation) },
+      { kind: "existing", value: existing }
+    ],
+    maxItemBytes: 16_000,
+    maxTotalBytes: 32_000
+  });
   const raw = await invokeBackend({
     backend: input.backend,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
-    prompt: planningPrompt({ recommendation: input.recommendation, evidence: evidenceFor(input.report, input.recommendation), policy, existing }),
+    prompt: planningPrompt({ dataset, policy }),
     targetDir: input.report.targetDir,
     runner: input.runner ?? defaultBackendRunner,
     signal: input.signal,
     ephemeral: true
   });
-  return validateRawPlan(raw, input.recommendation, policy, existing);
+  const plan = validateRawPlan(raw, input.recommendation, policy, existing);
+  const cases = [{ id: input.recommendation.id, outcome: "inconclusive" as const }];
+  return { ...plan, evidence: compareEvidence({ beforeSet: dataset, afterSet: dataset, before: cases, after: cases }) };
 }
 
 export async function planAdviceSkillRecommendation(input: {
@@ -257,7 +263,7 @@ export async function planAdviceSkillRecommendation(input: {
     ? ".agents/skills"
     : ".claude/skills";
   const authored = await authorSkillCreationPlan({
-    request: input.request,
+    request: { ...input.request, description: redactEvidence(input.request.description) },
     targetDir: input.report.targetDir,
     outputRoot,
     creatorReady: input.creatorReady,
@@ -272,10 +278,13 @@ export async function planAdviceSkillRecommendation(input: {
     if (secretLike(file.content)) throw new Error(`Authored skill file '${file.path}' contains a secret-like value.`);
     return { ...file, purpose: `Skill-creator output for ${authored.name}.` };
   });
+  const dataset = createEvidenceSet({ workflow: "advice", items: [{ recommendation: input.recommendation, request: redactEvidence(input.request) }] });
+  const cases = [{ id: input.recommendation.id, outcome: "inconclusive" as const }];
   return {
     recommendationId: input.recommendation.id,
     summary: `Author ${authored.name} with ${input.report.backend} for reviewed project installation.`,
-    files
+    files,
+    evidence: compareEvidence({ beforeSet: dataset, afterSet: dataset, before: cases, after: cases })
   };
 }
 
