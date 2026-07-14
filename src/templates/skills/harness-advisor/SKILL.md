@@ -49,32 +49,22 @@ Use this skill when the user asks about Farrier harness drift, stack changes, ge
 4. Explain that update mode:
    - reports stack drift without switching packs automatically,
    - repairs missing files, including a missing selected Claude/Codex binding,
-   - repairs outdated Farrier-owned hook and harness-advisor files,
+   - applies reviewed Farrier-owned repairs transactionally and reports committed, rolled-back, or incomplete rollback state,
    - reports modified selected binding files and other user-mutable files for manual review,
    - preserves and ignores unselected vendor bindings,
    - acknowledges detected secondary findings,
    - does not install suggested skills automatically.
 
-5. Use `farrier doctor --dir .` for static harness health checks and `farrier learn --dir .` to review transcript-derived tool-policy rule proposals.
+5. Use `farrier doctor --dir .` for static harness health checks and `farrier learn --dir .` to review transcript-derived tool-policy rule proposals. Doctor does not execute hooks or project tests. Run the generated aggregate check separately.
 
 ## Skill recommendations
 
-When new frameworks, file types, or secondary stacks appear:
+Delegate automation recommendations to the provider-native recommender:
 
-- Search skills.sh with the CLI:
+- Claude: `$claude-automation-recommender`
+- Codex: `$codex-automation-recommender`
 
-  ```bash
-  skills find <query>
-  ```
-
-- Or use the API shape:
-
-  ```text
-  GET https://skills.sh/api/search?q=<query>
-  ```
-
-- Suggest relevant skills to the user, but do not install them without explicit approval.
-- If repeated project-specific manual behavior appears, suggest creating a reusable skill with `skill-creator`.
+Both call `farrier advise`, inspect the codebase even with no sessions, and use verified registry matches before proposing a custom skill. One clearly reusable task can justify a skill; repetition is supporting evidence rather than a gate.
 
 ## Advice boundaries
 

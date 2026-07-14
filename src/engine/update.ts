@@ -1,5 +1,5 @@
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { detectPacks, detectSecondary } from "./detect";
 import {
   createRenderPlan,
@@ -12,6 +12,7 @@ import type { HookId, PackHookRef, ResolvedPack, SecondaryDetectionFinding, Skil
 import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 import { parseItemRef } from "../registry/ref";
 import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
+import { applyMutationPlan, fingerprintPath, inspectMutationPlan, type MutationOperation, type PathFingerprint } from "./mutation-transaction";
 
 export const notFarrierProjectMessage = "not a farrier project; run farrier first";
 
@@ -20,6 +21,10 @@ export type InventoryOwnership = "farrier-owned" | "user-mutable" | "manifest";
 export type UpdateInput = {
   targetDir: string;
   catalog?: PackCatalog;
+};
+
+export type UpdateApplyDeps = {
+  beforeTransaction?: () => void | Promise<void>;
 };
 
 export type FarrierVersionDrift = {
@@ -233,7 +238,9 @@ function parseRegistry(value: unknown): NormalizedManifest["registry"] {
       items[id] = {
         type: pin.type,
         version: pin.version,
-        sha256: pin.sha256
+        sha256: pin.sha256,
+        ...(typeof pin.sourceIdentity === "string" ? { sourceIdentity: pin.sourceIdentity } : {}),
+        ...(typeof pin.ref === "string" ? { ref: pin.ref } : {})
       };
     }
   }
@@ -397,7 +404,7 @@ function registryPinsForManifest(manifest: NormalizedManifest, catalog: PackCata
 }
 
 function registryPinDriftForManifest(manifest: NormalizedManifest, catalog: PackCatalog): RegistryPinDrift[] {
-  const currentPins = catalog.registryPins();
+  const currentPins = catalog.latestRegistryPins?.() ?? catalog.registryPins();
   const drift: RegistryPinDrift[] = [];
 
   for (const [id, manifestPin] of Object.entries(manifest.registry.items)) {
@@ -437,6 +444,7 @@ export function inventoryOwnership(path: string): InventoryOwnership {
   if (
     path === ".claude/skills/harness-advisor/SKILL.md" ||
     path.startsWith(".claude/skills/claude-automation-recommender/") ||
+    path.startsWith(".agents/skills/codex-automation-recommender/") ||
     path === ".agents/skills/farrier-project-advisor/SKILL.md"
   ) {
     return "farrier-owned";
@@ -657,16 +665,6 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
   };
 }
 
-async function writeRenderedFile(targetDir: string, file: RenderedFile): Promise<void> {
-  const absolutePath = join(targetDir, file.path);
-  await mkdir(dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, file.content, "utf8");
-
-  if (file.mode !== undefined) {
-    await chmod(absolutePath, file.mode);
-  }
-}
-
 async function manifestContentDiffers(targetDir: string, expectedManifestContent: string): Promise<boolean> {
   try {
     const current = await readFile(join(targetDir, ".farrier.json"), "utf8");
@@ -676,10 +674,15 @@ async function manifestContentDiffers(targetDir: string, expectedManifestContent
   }
 }
 
-export async function applyUpdate(input: UpdateInput | string): Promise<UpdateApplyResult> {
+export async function applyUpdate(input: UpdateInput | string, deps: UpdateApplyDeps = {}): Promise<UpdateApplyResult> {
   const targetDir = targetDirFromInput(input);
   const catalog = typeof input === "string" ? builtinCatalog() : input.catalog ?? builtinCatalog();
   const report = await createUpdateReport({ targetDir, catalog });
+  const reviewedFingerprints = new Map<string, PathFingerprint>();
+  const initiallyRepairable = new Set([...report.missingInventoryFiles, ...report.outdatedOwnedFiles, ".farrier.json"]);
+  await Promise.all([...initiallyRepairable].map(async (path) => {
+    reviewedFingerprints.set(path, await fingerprintPath(join(targetDir, path)));
+  }));
   const manifest = await readProjectManifest(targetDir, catalog);
   const acknowledgedSecondaryIds = report.unacknowledgedSecondaryFindings.map((finding) => finding.id);
   const secondaryAcknowledged = unique([...manifest.secondaryAcknowledged, ...acknowledgedSecondaryIds]);
@@ -713,16 +716,17 @@ export async function applyUpdate(input: UpdateInput | string): Promise<UpdateAp
     repairPaths.add(".farrier.json");
   }
 
-  const repairedFiles: string[] = [];
-
-  for (const file of plan.files) {
-    if (!repairPaths.has(file.path)) {
-      continue;
-    }
-
-    await writeRenderedFile(targetDir, file);
-    repairedFiles.push(file.path);
+  const operations: MutationOperation[] = plan.files
+    .filter((file) => repairPaths.has(file.path))
+    .map((file) => ({ kind: "write-file", path: file.path, content: file.content, mode: file.mode }));
+  const mutationPlan = await inspectMutationPlan(targetDir, operations);
+  for (const operation of mutationPlan.operations) {
+    const expected = reviewedFingerprints.get(operation.path);
+    if (expected) operation.expected = expected;
   }
+  await deps.beforeTransaction?.();
+  const transaction = await applyMutationPlan(mutationPlan);
+  const repairedFiles = transaction.written;
 
   return {
     report,

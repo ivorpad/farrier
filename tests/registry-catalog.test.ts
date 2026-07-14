@@ -216,6 +216,71 @@ describe("PackCatalog", () => {
     await expect(detectPacks(dir, catalog)).resolves.toEqual(["@acme/demo"]);
   });
 
+
+  test("uses a source-bound exact pinned item while retaining latest drift facts", async () => {
+    const latestHook = { ...guardHook, version: "2.0.0", hook: { ...guardHook.hook, hookVersion: 4 } };
+    const pinnedSha = "pinned".padEnd(64, "0");
+    const latestSha = "latest".padEnd(64, "0");
+    const sourceIdentity = "source-bound-identity";
+    const client: RegistryCatalogClient = {
+      async fetchRegistryIndex() {
+        return {
+          value: {
+            schemaVersion: 1,
+            name: "@acme",
+            items: [{ name: "guard", type: "hook", version: "2.0.0" }]
+          },
+          raw: "{}",
+          sha256: "index".padEnd(64, "0"),
+          sourceIdentity,
+          fromCache: false
+        };
+      },
+      async fetchRegistryItem() {
+        return { value: latestHook, raw: "latest", sha256: latestSha, sourceIdentity, fromCache: false };
+      },
+      async fetchRegistryItemPinned() {
+        return { value: guardHook, raw: "pinned", sha256: pinnedSha, sourceIdentity, fromCache: true };
+      }
+    };
+
+    const catalog = await loadPackCatalog({
+      config: { useDefaultPacks: true, registries: { "@acme": "https://registry.example/{name}.json" }, models: {} },
+      client,
+      requiredPins: {
+        "@acme/guard": {
+          type: "hook",
+          version: "1.2.0",
+          sha256: pinnedSha,
+          sourceIdentity,
+          ref: "@acme/guard"
+        }
+      }
+    });
+
+    expect(catalog.remoteHook("@acme/guard")?.hookVersion).toBe(3);
+    expect(catalog.registryPins()["@acme/guard"]?.sha256).toBe(pinnedSha);
+    expect(catalog.latestRegistryPins?.()["@acme/guard"]?.sha256).toBe(latestSha);
+  });
+
+  test("keeps legacy source-unbound pins available with an explicit migration warning", async () => {
+    const catalog = await loadPackCatalog({
+      config: baseConfig,
+      client: fixtureClient(registries),
+      requiredPins: {
+        "@acme/guard": {
+          type: "hook",
+          version: "1.2.0",
+          sha256: "legacy".padEnd(64, "0")
+        }
+      }
+    });
+
+    expect(catalog.resolvePack("@acme/demo").remoteHooks).toHaveLength(1);
+    expect(catalog.warnings.some((warning) => warning.message.includes("source-unbound"))).toBe(true);
+    expect(catalog.warnings.some((warning) => warning.message.includes("farrier update"))).toBe(true);
+  });
+
   test("detects extends cycles", async () => {
     const config: FarrierConfig = {
       useDefaultPacks: true,

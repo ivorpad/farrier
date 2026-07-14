@@ -1,14 +1,10 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import {
-  backendCommand,
-  defaultBackendRunner,
-  formatBackendStreamActivity,
-  type AgentBackend,
-  type BackendCommandRunner
+  backendCommand, backendEnvironmentOverrides, backendEnvironmentPassthrough, defaultBackendRunner,
+  formatBackendStreamActivity, type AgentBackend, type BackendCommandRunner
 } from "./backend";
 import type { ResolvedModelSettings } from "../config/farrier-config";
 import {
@@ -28,7 +24,21 @@ import {
   type InstallSkillResult,
   type ResolveSkillsCommandDeps
 } from "./skills";
+import { applyMutationPlan, fingerprintPath, inspectMutationPlan } from "./mutation-transaction";
+import { withIsolatedExecution, type IsolationFact } from "./execution-isolation";
+import {
+  canonicalSkillRoot,
+  creatorRef,
+  globalSkillRoot,
+  nativeSkillRoots,
+  resolvedHomedir,
+  skillsCliAgentIds,
+} from "./skill-paths";
+import { buildAuthoringPrompt } from "./skill-authoring-prompt";
+import { redactEvidence } from "./behavior-evidence";
 
+export { canonicalSkillRoot, creatorRef, globalSkillRoot, nativeSkillRoots, resolvedHomedir } from "./skill-paths";
+export { buildAuthoringPrompt } from "./skill-authoring-prompt";
 export { scaffoldSkillDraft, slugifySkillName, validateCreatedSkill, type SkillDraft } from "./skill-validate";
 
 export type CreateAgent = AgentBackend;
@@ -50,59 +60,8 @@ export type SkillCreationOutcome = {
   installed: boolean;
   notes: string[];
   error?: string;
+  isolation?: IsolationFact;
 };
-
-// Codex ships $skill-creator built in (~/.codex/skills/.system), so it has no
-// ref to pin by default; pinning one anyway (FARRIER_CREATOR_CODEX) is possible
-// but both vendors use the skill id `skill-creator`, so pinning both into one
-// project would collide in .agents/skills and skills-lock.json.
-const defaultCreatorRefs: Record<CreateAgent, string | undefined> = {
-  claude: "anthropics/skills@skill-creator",
-  codex: undefined
-};
-
-const creatorRefEnvVars: Record<CreateAgent, string> = {
-  claude: "FARRIER_CREATOR_CLAUDE",
-  codex: "FARRIER_CREATOR_CODEX"
-};
-
-export function creatorRef(agent: CreateAgent): string | undefined {
-  const override = process.env[creatorRefEnvVars[agent]];
-  return override !== undefined && override.trim() !== "" ? override : defaultCreatorRefs[agent];
-}
-
-// Agent ids as the skills CLI's -a flag spells them.
-const skillsCliAgentIds: Record<CreateAgent, string> = {
-  claude: "claude-code",
-  codex: "codex"
-};
-
-// Where each agent natively discovers repo-level skills; per-agent authoring
-// writes here. Codex reads the universal .agents/skills directory.
-export const nativeSkillRoots: Record<CreateAgent, string> = {
-  claude: ".claude/skills",
-  codex: ".agents/skills"
-};
-
-export const canonicalSkillRoot = "skills";
-
-// Bun's homedir() reads the OS user record directly and ignores a
-// runtime-mutated $HOME (unlike Node's, which checks it first on POSIX) —
-// check it ourselves so tests can point HOME at a scratch directory.
-export function resolvedHomedir(): string {
-  return process.env.HOME || homedir();
-}
-
-// Each agent's user-level (global) skill directory — where a `skills add -g`
-// install lands, and where the agent's own CLI discovers skills regardless of
-// which project it's running in. Resolved per call (not cached at module
-// load) so tests can point HOME at a scratch directory.
-export function globalSkillRoot(agent: CreateAgent): string {
-  const dir = agent === "claude" ? ".claude" : ".codex";
-  return join(resolvedHomedir(), dir, "skills");
-}
-
-const descriptionCharLimit = 16_000;
 
 async function lockedSkillIds(targetDir: string): Promise<Set<string>> {
   try {
@@ -148,37 +107,6 @@ export async function ensureCreatorInstalled(
   return results[0];
 }
 
-function truncateRequest(text: string): string {
-  if (text.length <= descriptionCharLimit) {
-    return text;
-  }
-
-  return `${text.slice(0, descriptionCharLimit)}\n\n[request truncated to ${descriptionCharLimit} characters]`;
-}
-
-export function buildAuthoringPrompt(input: {
-  agent: CreateAgent;
-  description: string;
-  outputRoot: string;
-  nameOverride?: string;
-}): string {
-  const creator =
-    input.agent === "claude"
-      ? "Use the skill-creator skill installed in this project"
-      : "Use the built-in $skill-creator skill";
-
-  const nameLine = input.nameOverride ? `\n- Name the skill exactly '${input.nameOverride}'.` : "";
-
-  return `${creator} to create exactly one agent skill for the request below.
-Requirements:
-- Create the skill directory under ${input.outputRoot}/ only, as ${input.outputRoot}/<skill-name>/SKILL.md plus any supporting files inside that same directory. Do not create or modify any other files.
-- SKILL.md must start with YAML frontmatter containing name (kebab-case, at most 64 characters, matching the directory name) and description (one sentence saying what the skill does and when to use it).${nameLine}
-- Do not ask questions; make reasonable decisions and finish.
-Skill request:
-${truncateRequest(input.description)}
-`;
-}
-
 export type SkillCreationPhase = "creator" | "authoring" | "validating" | "installing";
 
 export type CollisionDecision = "replace" | "keep";
@@ -217,7 +145,7 @@ function throwIfCancelled(signal: AbortSignal | undefined): void {
   }
 }
 
-const stagingRootBase = ".farrier-staging";
+const stagingRootBase = ".farrier-output";
 
 /**
  * Each authoring run gets its own empty staging root, so concurrent runs can't
@@ -237,27 +165,29 @@ async function placeSkill(
 
   if (existsSync(destination)) {
     const decision = onCollision
-      ? await onCollision({ path: `${finalRoot}/${validated.name}`, stagingPath: `${stagingRoot}/${validated.name}` })
+      ? await onCollision({ path: `${finalRoot}/${validated.name}`, stagingPath: join(stagingRoot, validated.name) })
       : "keep";
 
     if (decision !== "replace") {
       throw new Error(
-        `${finalRoot}/${validated.name} already exists. Authored files kept at ${stagingRoot}/${validated.name} for inspection.`
+        `${finalRoot}/${validated.name} already exists. Authored files kept at ${join(stagingRoot, validated.name)} for inspection.`
       );
     }
 
-    await rm(destination, { recursive: true, force: true });
     notes.push(`Replaced the existing ${finalRoot}/${validated.name}.`);
   }
 
-  await mkdir(dirname(destination), { recursive: true });
-  await rename(join(targetDir, stagingRoot, validated.name), destination);
-  await rm(join(targetDir, stagingRoot), { recursive: true, force: true });
+  await applyMutationPlan(await inspectMutationPlan(targetDir, [{
+    kind: "replace-tree",
+    path: `${finalRoot}/${validated.name}`,
+    sourcePath: join(stagingRoot, validated.name)
+  }]));
+  await rm(dirname(stagingRoot), { recursive: true, force: true });
 
   return {
     ...validated,
     notes,
-    files: validated.files.map((file) => `${finalRoot}/${file.slice(stagingRoot.length + 1)}`)
+    files: validated.files.map((file) => `${finalRoot}/${file.slice(stagingRootBase.length + 1)}`)
   };
 }
 
@@ -272,7 +202,7 @@ export type StageSkillInput = {
   cleanupOnFailure?: boolean;
 };
 
-export async function stageSkill(input: StageSkillInput): Promise<{ stagingRoot: string; validated: ValidatedSkill }> {
+export async function stageSkill(input: StageSkillInput): Promise<{ stagingRoot: string; validated: ValidatedSkill; isolation: IsolationFact }> {
   if (!input.creatorReady) {
     input.deps.progress?.("creator", input.agent);
     const creatorInstall = await ensureCreatorInstalled(
@@ -287,59 +217,66 @@ export async function stageSkill(input: StageSkillInput): Promise<{ stagingRoot:
     }
   }
 
-  const stagingRoot = `${stagingRootBase}/${crypto.randomUUID().slice(0, 8)}`;
-  try {
-    await mkdir(join(input.targetDir, stagingRoot), { recursive: true });
-    const before = await snapshotSkillRoot(join(input.targetDir, stagingRoot));
-    const prompt = buildAuthoringPrompt({
-      agent: input.agent,
-      description: input.description,
-      outputRoot: stagingRoot,
-      nameOverride: input.nameOverride
-    });
-
-    throwIfCancelled(input.deps.signal);
-    input.deps.progress?.("authoring", input.agent);
-    const settings = input.deps.modelSettings?.[input.agent];
-    const model = input.model ?? settings?.model ?? (input.agent === "claude" ? "opus" : undefined);
-    const reasoningEffort = settings?.reasoningEffort ?? (input.agent === "codex" ? "high" : undefined);
-    const command = backendCommand(input.agent, model, prompt, { write: true, stream: true, reasoningEffort });
-    const runner = input.deps.backendRunner ?? defaultBackendRunner;
-    const output = await runner({
-      cmd: command.cmd,
-      cwd: input.targetDir,
-      stdin: command.stdin,
-      signal: input.deps.signal,
-      onStdoutLine: (line) => {
-        const activity = formatBackendStreamActivity(input.agent, line);
-        if (activity) input.deps.progress?.("authoring", input.agent, activity);
+  throwIfCancelled(input.deps.signal);
+  const isolated = await withIsolatedExecution({
+    targetDir: input.targetDir,
+    nativeConfinement: input.agent === "codex",
+    environmentPassthrough: backendEnvironmentPassthrough(input.agent),
+    environmentOverrides: backendEnvironmentOverrides(input.agent),
+    signal: input.deps.signal,
+    retainWorkspace: true,
+    retainWorkspaceOnError: !input.cleanupOnFailure,
+    run: async ({ workspace, environment, signal }) => {
+      const stagingRoot = stagingRootBase;
+      const before = await snapshotSkillRoot(join(workspace, stagingRoot));
+      const prompt = buildAuthoringPrompt({
+        agent: input.agent,
+        description: input.description,
+        outputRoot: stagingRoot,
+        nameOverride: input.nameOverride
+      });
+      input.deps.progress?.("authoring", input.agent);
+      const settings = input.deps.modelSettings?.[input.agent];
+      const model = input.model ?? settings?.model ?? (input.agent === "claude" ? "opus" : undefined);
+      const reasoningEffort = settings?.reasoningEffort ?? (input.agent === "codex" ? "high" : undefined);
+      const command = backendCommand(input.agent, model, prompt, { write: true, stream: true, reasoningEffort });
+      const runner = input.deps.backendRunner ?? defaultBackendRunner;
+      const output = await runner({
+        cmd: command.cmd,
+        cwd: workspace,
+        stdin: command.stdin,
+        signal,
+        env: environment,
+        onStdoutLine: (line) => {
+          const activity = formatBackendStreamActivity(input.agent, line);
+          if (activity) input.deps.progress?.("authoring", input.agent, activity);
+        }
+      });
+      if (signal.aborted) throw new Error(`cancelled — killed the ${input.agent} run`);
+      if (output.exitCode !== 0) {
+        const stderr = output.stderr.trim();
+        throw new Error(`${input.agent} backend exited with code ${output.exitCode}${stderr ? `: ${stderr}` : ""}`);
       }
-    });
-
-    if (input.deps.signal?.aborted) throw new Error(`cancelled — killed the ${input.agent} run`);
-    if (output.exitCode !== 0) {
-      const stderr = output.stderr.trim();
-      throw new Error(`${input.agent} backend exited with code ${output.exitCode}${stderr ? `: ${stderr}` : ""}`);
+      input.deps.progress?.("validating", input.agent);
+      const validated = await validateCreatedSkill({ targetDir: workspace, root: stagingRoot, before, backend: input.agent, nameOverride: input.nameOverride });
+      return { stagingRoot: join(workspace, stagingRoot), validated };
     }
-
-    input.deps.progress?.("validating", input.agent);
-    const validated = await validateCreatedSkill({
-      targetDir: input.targetDir,
-      root: stagingRoot,
-      before,
-      backend: input.agent,
-      nameOverride: input.nameOverride
-    });
-    return { stagingRoot, validated };
-  } catch (error) {
-    if (input.cleanupOnFailure) await rm(join(input.targetDir, stagingRoot), { recursive: true, force: true });
-    throw error;
-  }
+  });
+  return { ...isolated.value, isolation: isolated.isolation };
 }
 
 async function authorSkill(input: StageSkillInput & { finalRoot: string }): Promise<ValidatedSkill> {
-  const { stagingRoot, validated } = await stageSkill(input);
-  return placeSkill(input.targetDir, stagingRoot, input.finalRoot, validated, input.deps.onCollision);
+  const { stagingRoot, validated, isolation } = await stageSkill(input);
+  const placed = await placeSkill(input.targetDir, stagingRoot, input.finalRoot, validated, input.deps.onCollision);
+  return {
+    ...placed,
+    notes: [
+      ...placed.notes,
+      isolation.mode === "native-confinement"
+        ? "Isolation mode: native-confinement (Codex workspace-write sandbox in a temporary workspace)."
+        : `Isolation mode: staged-best-effort. ${isolation.residualRisk}`
+    ]
+  };
 }
 
 export async function installLocalSkill(
@@ -362,6 +299,7 @@ export async function installLocalSkill(
 
 export async function recordSkillInManifest(targetDir: string, ref: string): Promise<boolean> {
   const manifestPath = join(targetDir, ".farrier.json");
+  const expected = await fingerprintPath(manifestPath);
   let manifest: Record<string, unknown>;
 
   try {
@@ -376,7 +314,13 @@ export async function recordSkillInManifest(targetDir: string, ref: string): Pro
 
   if (!manifest.skills.includes(ref)) {
     manifest.skills.push(ref);
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    const plan = await inspectMutationPlan(targetDir, [{
+      kind: "write-file",
+      path: ".farrier.json",
+      content: `${JSON.stringify(manifest, null, 2)}\n`
+    }]);
+    plan.operations[0]!.expected = expected;
+    await applyMutationPlan(plan);
   }
 
   return true;
@@ -389,6 +333,7 @@ export async function createSkill(
 ): Promise<SkillCreationOutcome> {
   const notes: string[] = [];
   const files: string[] = [];
+  const safeRequest = { ...request, description: redactEvidence(request.description) };
 
   const serialize = deps.serializeInstall ?? (<T,>(fn: () => Promise<T>) => fn());
 
@@ -401,7 +346,7 @@ export async function createSkill(
           try {
             const validated = await authorSkill({
               agent,
-              description: request.description,
+              description: safeRequest.description,
               targetDir,
               finalRoot: nativeSkillRoots[agent],
               model: request.model,
@@ -434,7 +379,7 @@ export async function createSkill(
       }
 
       return {
-        request,
+        request: safeRequest,
         name: succeeded[0]?.validated!.name,
         files,
         installed: false,
@@ -450,7 +395,7 @@ export async function createSkill(
     const authoringAgent: CreateAgent = request.mode === "author-claude" ? "claude" : "codex";
     const validated = await authorSkill({
       agent: authoringAgent,
-      description: request.description,
+      description: safeRequest.description,
       targetDir,
       finalRoot: canonicalSkillRoot,
       model: request.model,
@@ -463,7 +408,7 @@ export async function createSkill(
 
     if (deps.install === false) {
       notes.push(`Skipped install; run: skills add ./${canonicalSkillRoot} -s ${validated.name} -a ${request.agents.map((agent) => skillsCliAgentIds[agent]).join(" ")} -y`);
-      return { request, name: validated.name, files, installed: false, notes };
+      return { request: safeRequest, name: validated.name, files, installed: false, notes };
     }
 
     throwIfCancelled(deps.signal);
@@ -474,7 +419,7 @@ export async function createSkill(
 
     if (!install.ok) {
       return {
-        request,
+        request: safeRequest,
         name: validated.name,
         files,
         installed: false,
@@ -487,10 +432,10 @@ export async function createSkill(
       notes.push("Recorded in .farrier.json skills.");
     }
 
-    return { request, name: validated.name, files, installed: true, notes };
+    return { request: safeRequest, name: validated.name, files, installed: true, notes };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { request, name: undefined, files, installed: false, notes, error: message };
+    return { request: safeRequest, name: undefined, files, installed: false, notes, error: message };
   }
 }
 

@@ -318,7 +318,7 @@ export function AdviceApp(props: {
           <span fg={palette.accent}>{setupFocus === index ? "▸ " : "  "}</span><span fg={palette.text}>{label}</span>
         </text>
       ))}
-      <text fg={palette.faint}>The reasoning backend only analyzes evidence; it does not choose recommendation targets or session sources.</text>
+      <text fg={palette.faint}>The selected reasoning backend determines its isolated session evidence and recommendation target.</text>
       <text fg={palette.faint}>Only sessions whose resolved project directory matches exactly are eligible.</text>
       {state.status === "running" ? (
         <box style={{ flexDirection: "column", gap: 0 }}>

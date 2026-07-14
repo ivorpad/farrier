@@ -35,6 +35,7 @@ const advisorFiles = [
   ".claude/skills/harness-advisor/SKILL.md",
   ".claude/skills/claude-automation-recommender/SKILL.md",
   ".agents/skills/farrier-project-advisor/SKILL.md",
+  ".agents/skills/codex-automation-recommender/SKILL.md",
   ".claude/skills/claude-automation-recommender/UPSTREAM.md",
   ".claude/skills/claude-automation-recommender/upstream/SKILL.md",
   ".claude/skills/claude-automation-recommender/upstream/LICENSE.txt",
@@ -42,7 +43,12 @@ const advisorFiles = [
   ".claude/skills/claude-automation-recommender/upstream/references/mcp-servers.md",
   ".claude/skills/claude-automation-recommender/upstream/references/plugins-reference.md",
   ".claude/skills/claude-automation-recommender/upstream/references/skills-reference.md",
-  ".claude/skills/claude-automation-recommender/upstream/references/subagent-templates.md"
+  ".claude/skills/claude-automation-recommender/upstream/references/subagent-templates.md",
+  ".agents/skills/codex-automation-recommender/references/skills-reference.md",
+  ".agents/skills/codex-automation-recommender/references/plugins-reference.md",
+  ".agents/skills/codex-automation-recommender/references/hooks-patterns.md",
+  ".agents/skills/codex-automation-recommender/references/mcp-servers.md",
+  ".agents/skills/codex-automation-recommender/references/subagent-templates.md"
 ];
 
 const pythonFastapiFiles = [
@@ -104,7 +110,7 @@ describe("creation CLI e2e", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Applied 33 file change(s); 0 unchanged.");
+    expect(result.stdout).toContain("Applied 45 file change(s); 0 unchanged.");
     expect(result.stdout).toContain("Skills: installed 3 of 3");
 
     for (const file of pythonFastapiFiles) {
@@ -127,7 +133,7 @@ describe("creation CLI e2e", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 33 create");
+    expect(result.stdout).toContain("File actions: 45 create");
     expect(result.stdout).toContain("Dry run: nothing was written.");
 
     for (const file of pythonFastapiFiles) {
@@ -213,7 +219,7 @@ dependencies = [
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Selected stack: python-fastapi (detected");
-    expect(result.stdout).toContain("Applied 33 file change(s); 0 unchanged.");
+    expect(result.stdout).toContain("Applied 45 file change(s); 0 unchanged.");
 
     for (const file of pythonFastapiFiles) {
       expect(existsSync(join(dir, file))).toBe(true);
@@ -238,7 +244,7 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 33 create");
+    expect(result.stdout).toContain("File actions: 45 create");
     expect(result.stdout).toContain("pyproject.toml dependency: fastapi");
     expect(result.stdout).toContain(".claude/skills/harness-advisor/SKILL.md");
     expect(result.stdout).toContain("konpy.json");
@@ -285,7 +291,7 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 32 create");
+    expect(result.stdout).toContain("File actions: 44 create");
 
     for (const file of railsFiles) {
       expect(result.stdout).toContain(file);
@@ -302,7 +308,7 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 27 create");
+    expect(result.stdout).toContain("File actions: 39 create");
     expect(result.stdout).toContain("AGENTS.md");
     expect(result.stdout).toContain(".claude/skills/harness-advisor/SKILL.md");
     expect(result.stdout).toContain(".claude/hooks/quality-judge.py");
@@ -409,7 +415,7 @@ dependencies = ["fastapi"]
     expect(report.stack.detected[0].evidence).toContain("pyproject.toml dependency: fastapi");
     expect(report.harnessBehavior.skillAction).toBe("install");
     expect(report.harnessBehavior.agents).toEqual(["claude"]);
-    expect(report.summary.create).toBe(33);
+    expect(report.summary.create).toBe(45);
     expect(report.applicable).toBe(true);
     expect(report.files.find((file: { path: string }) => file.path === "AGENTS.md").purpose).toContain("instructions");
     expect(report.written).toBe(false);
@@ -424,7 +430,7 @@ dependencies = ["fastapi"]
     expect(result.stderr).toBe("");
     const report = JSON.parse(result.stdout);
     expect(report).toMatchObject({ mode: "apply", ok: true, written: true, applicable: true });
-    expect(report.applied.writtenFiles).toHaveLength(27);
+    expect(report.applied.writtenFiles).toHaveLength(39);
     expect(report.applied.unchangedFiles).toEqual([]);
     expect(report.applied.backupDir).toBeNull();
   });
@@ -437,7 +443,7 @@ dependencies = ["fastapi"]
     });
 
     expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain("Applied 33 file change(s)");
+    expect(result.stdout).toContain("Applied 45 file change(s)");
     expect(result.stdout).toContain("Skills: installed 0 of 3");
     expect(result.stdout).toContain("retry: skills add");
     expect(existsSync(join(dir, ".farrier.json"))).toBe(true);

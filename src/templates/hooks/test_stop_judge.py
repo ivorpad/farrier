@@ -22,6 +22,10 @@ def write_manifest(
     max_diff_bytes: int = 120000,
     max_untracked_files: int = 50,
 ) -> None:
+    prompt_path = tmp_path / prompt
+    if prompt == ".claude/hooks/prompts/stop-judge-v1.txt":
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text("STOP PROMPT", encoding="utf-8")
     (tmp_path / ".farrier.json").write_text(
         json.dumps(
             {
@@ -158,7 +162,7 @@ def test_disabled_judge_passes_silently(tmp_path: Path) -> None:
     assert not (tmp_path / "called.txt").exists()
 
 
-def test_no_valid_head_passes_silently(tmp_path: Path) -> None:
+def test_no_valid_head_blocks_with_remediation(tmp_path: Path) -> None:
     git(tmp_path, "init")
     write_manifest(tmp_path, enabled=True)
     (tmp_path / "README.md").write_text("uncommitted\n", encoding="utf-8")
@@ -167,7 +171,8 @@ def test_no_valid_head_passes_silently(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
-    assert_allowed(stdout, stderr)
+    assert stderr == ""
+    assert parse_stdout(stdout)["decision"] == "block"
     assert not (tmp_path / "called.txt").exists()
 
 
@@ -246,7 +251,7 @@ def test_fake_backend_advisory_passes_silently(tmp_path: Path) -> None:
     assert_allowed(stdout, stderr)
 
 
-def test_fake_backend_garbage_passes_silently(tmp_path: Path) -> None:
+def test_fake_backend_garbage_blocks(tmp_path: Path) -> None:
     init_repo_with_head(tmp_path)
     write_manifest(tmp_path, enabled=True)
     (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
@@ -255,10 +260,11 @@ def test_fake_backend_garbage_passes_silently(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
-    assert_allowed(stdout, stderr)
+    assert stderr == ""
+    assert parse_stdout(stdout)["decision"] == "block"
 
 
-def test_backend_timeout_passes_silently(tmp_path: Path) -> None:
+def test_backend_timeout_blocks(tmp_path: Path) -> None:
     init_repo_with_head(tmp_path)
     write_manifest(tmp_path, enabled=True, timeout_ms=50)
     (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
@@ -267,7 +273,8 @@ def test_backend_timeout_passes_silently(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
-    assert_allowed(stdout, stderr)
+    assert stderr == ""
+    assert parse_stdout(stdout)["decision"] == "block"
 
 
 def test_untracked_paths_are_included_in_prompt_payload(tmp_path: Path) -> None:
@@ -292,27 +299,189 @@ printf '{"severity":"pass","summary":"ok","findings":[]}'
     assert "new_module.py" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
 
 
-def test_large_diff_is_capped_with_truncated_marker(tmp_path: Path) -> None:
+def test_large_diff_fails_closed_before_backend_when_combined_evidence_truncates(tmp_path: Path) -> None:
     init_repo_with_head(tmp_path)
     write_manifest(tmp_path, enabled=True)
-    (tmp_path / "README.md").write_text("x" * (40 * 1024), encoding="utf-8")
+    (tmp_path / "README.md").write_text("x" * (70 * 1024) + "SERIOUS_BEYOND_64K", encoding="utf-8")
 
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > prompt.txt
-grep -q "\\[truncated\\]" prompt.txt || exit 8
-bytes=$(wc -c < prompt.txt)
-test "$bytes" -lt 40000 || exit 9
-printf '{"severity":"pass","summary":"ok","findings":[]}'
-""",
+        "echo called > called.txt\nprintf '{\"severity\":\"pass\",\"summary\":\"ok\",\"findings\":[]}'",
     )
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
+    assert stderr == ""
+    data = parse_stdout(stdout)
+    assert data["decision"] == "block"
+    assert "no backend judgement was accepted" in data["reason"]
+    assert "Split the change" in data["reason"]
+    assert not (tmp_path / "called.txt").exists()
+
+
+
+def test_final_prompt_redacts_short_and_truncated_diff_prompt_and_untracked_names(
+    tmp_path: Path,
+) -> None:
+    for label, padding in (("short", ""), ("truncated", "x" * (140 * 1024))):
+        case_dir = tmp_path / label
+        case_dir.mkdir()
+        init_repo_with_head(case_dir)
+        write_manifest(case_dir, enabled=True)
+        prompt_path = case_dir / ".claude/hooks/prompts/stop-judge-v1.txt"
+        prompt_path.write_text(
+            "configured token=prompt-secret prompt@example.com", encoding="utf-8"
+        )
+        (case_dir / "README.md").write_text(
+            f"token=seeded-secret dev@example.com {padding}", encoding="utf-8"
+        )
+        (case_dir / "token=filename-secret-dev@example.com.txt").write_text(
+            "new\n", encoding="utf-8"
+        )
+        make_fake_executable(
+            case_dir,
+            "claude",
+            "cat > prompt.txt\nprintf '{\"severity\":\"pass\",\"summary\":\"ok\",\"findings\":[]}'",
+        )
+
+        code, stdout, stderr = run_hook(stop_payload(case_dir), case_dir)
+
+        assert code == 0
+        assert stderr == ""
+        final_prompt = (case_dir / "prompt.txt").read_text(encoding="utf-8") if label == "short" else ""
+        if label == "short":
+            assert_allowed(stdout, stderr)
+        else:
+            assert parse_stdout(stdout)["decision"] == "block"
+            assert "no backend judgement was accepted" in stdout
+            assert not (case_dir / "prompt.txt").exists()
+        for secret in (
+            "prompt-secret",
+            "prompt@example.com",
+            "seeded-secret",
+            "dev@example.com",
+            "filename-secret",
+        ):
+            assert secret not in final_prompt
+        if label == "truncated":
+            assert "seeded-secret" not in stdout
+
+
+def test_backend_output_overflow_blocks_without_raw_tail_leakage(tmp_path: Path) -> None:
+    init_repo_with_head(tmp_path)
+    write_manifest(tmp_path, enabled=True)
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        "head -c 70000 /dev/zero | tr '\\0' x\necho token=raw-tail-secret",
+    )
+
+    code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
+
+    assert code == 0
+    assert stderr == ""
+    data = parse_stdout(stdout)
+    assert data["decision"] == "block"
+    assert "raw-tail-secret" not in stdout
+    assert len(data["reason"].encode("utf-8")) <= 16 * 1024
+
+
+def test_malformed_enabled_config_fields_block_while_disabled_is_inert(
+    tmp_path: Path,
+) -> None:
+    invalid = [
+        ("enabled", "yes"),
+        ("backend", "other"),
+        ("model", ""),
+        ("timeoutMs", 0),
+        ("timeoutMs", 120001),
+        ("prompt", ""),
+        ("maxDiffBytes", 0),
+        ("maxDiffBytes", 120001),
+        ("maxUntrackedFiles", 0),
+        ("maxUntrackedFiles", 1001),
+    ]
+    for index, (field, value) in enumerate(invalid):
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        init_repo_with_head(case_dir)
+        write_manifest(case_dir, enabled=True)
+        data = json.loads((case_dir / ".farrier.json").read_text(encoding="utf-8"))
+        data["judge"]["stop"][field] = value
+        (case_dir / ".farrier.json").write_text(json.dumps(data), encoding="utf-8")
+        code, stdout, stderr = run_hook(stop_payload(case_dir), case_dir)
+        assert code == 0
+        assert stderr == ""
+        assert parse_stdout(stdout)["decision"] == "block"
+        assert "configuration is malformed" in stdout
+
+    disabled_dir = tmp_path / "disabled"
+    disabled_dir.mkdir()
+    init_repo_with_head(disabled_dir)
+    write_manifest(disabled_dir, enabled=False, backend="invalid")
+    code, stdout, stderr = run_hook(stop_payload(disabled_dir), disabled_dir)
+    assert code == 0
     assert_allowed(stdout, stderr)
+
+
+def test_invalid_configured_prompt_path_shapes_block(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    for label, prompt in (
+        ("out-root", "../outside.txt"),
+        ("dot-segment", "./prompt.txt"),
+        ("missing", "missing.txt"),
+        ("oversized", "oversized.txt"),
+        ("symlink", "linked.txt"),
+    ):
+        case_dir = tmp_path / label
+        case_dir.mkdir()
+        init_repo_with_head(case_dir)
+        if label == "oversized":
+            (case_dir / prompt).write_text("x" * (31 * 1024), encoding="utf-8")
+        if label == "symlink":
+            (case_dir / prompt).symlink_to(outside)
+        write_manifest(case_dir, enabled=True, prompt=prompt)
+        code, stdout, stderr = run_hook(stop_payload(case_dir), case_dir)
+        assert code == 0
+        assert stderr == ""
+        assert parse_stdout(stdout)["decision"] == "block"
+        assert "configuration is malformed" in stdout
+
+
+def test_malformed_stop_active_and_unsafe_manifest_reads_block(tmp_path: Path) -> None:
+    active_dir = tmp_path / "active"
+    active_dir.mkdir()
+    payload = stop_payload(active_dir)
+    payload["stop_hook_active"] = "false"
+    code, stdout, stderr = run_hook(payload)
+    assert code == 0
+    assert stderr == ""
+    assert parse_stdout(stdout)["decision"] == "block"
+    assert "malformed stop_hook_active" in stdout
+
+    oversized = tmp_path / "oversized-manifest"
+    oversized.mkdir()
+    (oversized / ".farrier.json").write_text("x" * (257 * 1024), encoding="utf-8")
+    code, stdout, stderr = run_hook(stop_payload(oversized))
+    assert code == 0
+    assert stderr == ""
+    assert parse_stdout(stdout)["decision"] == "block"
+    assert "exceeds 262144 bytes" in stdout
+
+    linked = tmp_path / "linked-manifest"
+    linked.mkdir()
+    outside = tmp_path / "manifest.json"
+    outside.write_text("{}", encoding="utf-8")
+    (linked / ".farrier.json").symlink_to(outside)
+    code, stdout, stderr = run_hook(stop_payload(linked))
+    assert code == 0
+    assert stderr == ""
+    assert parse_stdout(stdout)["decision"] == "block"
+    assert "symlink" in stdout
 
 
 def test_no_changes_passes_without_backend_call(tmp_path: Path) -> None:

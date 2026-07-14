@@ -8,10 +8,33 @@ export type HookId =
 
 export type PackHookRef = HookId | `@${string}`;
 
+export type CapabilityAgent = "claude" | "codex";
+export type CapabilityHookEvent = "PreToolUse" | "PostToolUse" | "Stop";
+
+export type HookCapabilityBinding = {
+  event: CapabilityHookEvent;
+  matcher?: string;
+  fileName: string;
+};
+
+export type HookCapability = {
+  agents: Partial<Record<CapabilityAgent, HookCapabilityBinding[]>>;
+};
+
+export type PackCapabilityProjection = {
+  packId: string;
+  detection: { order: number | null; explicitOnly: boolean };
+  supportedAgents: readonly CapabilityAgent[];
+  hooks: Array<{ id: PackHookRef; agents: readonly CapabilityAgent[] }>;
+  limitations: string[];
+};
+
 export type ResolvedRemoteHook = {
   id: `@${string}`;
   version: string;
   sha256: string;
+  sourceIdentity?: string;
+  registryRef?: string;
   fromCache: boolean;
   hookVersion: number;
   events: {

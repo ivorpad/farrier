@@ -21,7 +21,7 @@ export type AdviseCliOptions = {
   model?: string;
   sessions: "auto" | "none";
   since: AdviceSessionLookback;
-  targets: AdviceVendor[];
+  targets?: AdviceVendor[];
   only?: AdviceCategory[];
   legacySkills: boolean;
   json: boolean;
@@ -32,7 +32,7 @@ function adviseUsage(): string {
   return `farrier advise — inspect a project and recommend agent configuration improvements
 
 Usage:
-  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude,codex]
+  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude|codex]
                  [--only guidance,hooks,skills,subagents,plugins,mcp]
                  [--backend claude|codex] [--model <name>] [--json]
   farrier advise skills [--dir <target>] [--context <path|text>] [--backend claude|codex] [--json]
@@ -41,8 +41,8 @@ Options:
   --dir <path>          Project directory. Defaults to the current working directory.
   --sessions <mode>     Include exact-project Claude/Codex sessions (auto) or use code only (none).
   --since <window>      Session lookback: 7d (default), 14d, or all.
-  --targets <vendors>   Comma-separated recommendation targets: claude,codex. Defaults to both.
-  --only <categories>   Limit the report to selected categories. --only skills preserves skill-only advice.
+  --targets <vendor>    Recommendation target; must match --backend. Defaults to the selected backend.
+  --only <categories>   Limit the provider-native project report to selected categories.
   --context <path|text> Optional context for the legacy skill-only advisor.
   --backend <name>      Reasoning backend: claude or codex. Defaults to Claude when both are found.
   --model <name>        Backend model override.
@@ -64,9 +64,8 @@ function commaValues(value: string, flag: string): string[] {
 }
 
 function parseTargets(value: string): AdviceVendor[] {
-  const values = commaValues(value, "--targets");
-  if (values.some((item) => item !== "claude" && item !== "codex")) throw new Error("--targets must contain only claude,codex");
-  return values as AdviceVendor[];
+  if (value !== "claude" && value !== "codex") throw new Error("--targets must be exactly one provider: claude or codex");
+  return [value];
 }
 
 function parseOnly(value: string): AdviceCategory[] {
@@ -86,7 +85,6 @@ export function parseAdviseArgs(args: string[]): AdviseCliOptions {
     dir: process.cwd(),
     sessions: "auto",
     since: "7d",
-    targets: ["claude", "codex"],
     legacySkills: args[0] === "skills",
     json: false,
     help: false
@@ -130,7 +128,6 @@ export function parseAdviseArgs(args: string[]): AdviseCliOptions {
     else throw new Error(`Unknown advise argument: ${arg}`);
   }
 
-  if (options.only?.length === 1 && options.only[0] === "skills") options.legacySkills = true;
   return options;
 }
 
@@ -145,21 +142,34 @@ function formatSources(report: AdviceReport): string {
 export function formatAdviceReport(report: AdviceReport): string {
   const sessionCount = report.sessions.sources.reduce((sum, source) => sum + source.count, 0);
   const funnel = report.sessions.funnel ?? { sources: [], visibleEvents: report.sessions.evidence.length, recurringPatterns: 0 };
+  const episodeCount = report.sessions.episodes?.length ?? funnel.retainedEpisodes ?? report.sessions.evidence.length;
   const lines = [
     "Farrier project advice — report only",
     `Project: ${report.targetDir}`,
     `Backend: ${report.backend}${report.model ? ` (${report.model})` : ""}`,
+    ...(report.policy ? [`Policy: ${report.policy.id}`] : []),
     `Sessions: ${report.sessions.included ? "included" : "not included"} (${adviceSessionLookbackLabel(report.sessions.lookback)}; ${formatSources(report)})`,
-    `Evidence funnel: ${sessionCount} sessions → ${funnel.visibleEvents} visible events → ${funnel.recurringPatterns} recurring patterns → ${report.recommendations.length} supported recommendations`,
+    `Evidence funnel: ${sessionCount} sessions → ${episodeCount} retained episodes → ${report.recommendations.length} supported recommendations`,
+    ...(report.evidence ? [`Comparable evidence: ${report.evidence.result} (digest ${report.evidence.inputDigest})`] : []),
     "",
     "Codebase profile",
     `  Stacks: ${report.profile.stacks.join(", ") || "generic"}`,
     `  Languages: ${report.profile.languages.join(", ") || "unknown"}`,
+    `  Package managers: ${(report.profile.packageManagers ?? []).join(", ") || "unknown"}`,
+    `  Dependencies: ${(report.profile.dependencies ?? []).map((item) => item.name).join(", ") || "none detected"}`,
+    `  Capabilities: ${(report.profile.capabilities ?? []).map((item) => `${item.group}:${item.name}`).join(", ") || "none detected"}`,
+    `  Workflows: ${(report.profile.workflows ?? []).map((item) => `${item.kind}:${item.name}`).join(", ") || "none detected"}`,
     `  Tests: ${report.profile.tests.join(", ") || "none detected"}`,
     `  CI: ${report.profile.ci.join(", ") || "none detected"}`,
     "",
-    "Recommendations"
+    "Registry searches"
   ];
+  if (!report.registry?.queries.length) lines.push("  None for the selected categories.");
+  for (const query of report.registry?.queries ?? []) {
+    lines.push(`  ${query.query} ← ${query.evidence.join(", ")} → ${query.matches.join(", ") || "no verified matches"}`);
+  }
+  if (report.registry?.verifiedMatches.length) lines.push(`  Verified matches: ${report.registry.verifiedMatches.join(", ")}`);
+  lines.push("", "Recommendations");
   const evidence = new Map([...report.profile.evidence, ...report.sessions.evidence].map((item) => [item.id, item]));
   if (report.recommendations.length === 0) lines.push("  No supported high-value recommendations.");
   for (const category of adviceCategories) {
@@ -168,6 +178,7 @@ export function formatAdviceReport(report: AdviceReport): string {
     lines.push("", category.toUpperCase());
     for (const recommendation of recommendations) {
       lines.push(`  ${recommendation.id} [${recommendation.confidence}] → ${recommendation.targetVendors.join(", ")}`);
+      if (recommendation.evidenceOrigin) lines.push(`    Origin: ${recommendation.evidenceOrigin}`);
       lines.push(`    Why: ${recommendation.reason}`);
       lines.push(`    Benefit: ${recommendation.benefit}`);
       lines.push(`    Route: ${recommendation.implementationRoute.description}`);
@@ -178,12 +189,22 @@ export function formatAdviceReport(report: AdviceReport): string {
       }
     }
   }
+  if ((report.omittedRecommendations ?? []).length > 0) {
+    lines.push("", "Omitted by presentation bounds");
+    for (const item of report.omittedRecommendations ?? []) {
+      lines.push(`  ${item.recommendation.id} [${item.recommendation.category}]`);
+      if (item.recommendation.evidenceOrigin) lines.push(`    Origin: ${item.recommendation.evidenceOrigin}`);
+      lines.push(`    Why omitted: ${item.reason}`);
+      lines.push(`    Opportunity: ${item.recommendation.reason}`);
+    }
+  }
   if ((report.weakLeads ?? []).length > 0) {
     lines.push("", "Weak leads");
     for (const recommendation of report.weakLeads ?? []) {
       lines.push(`  ${recommendation.id} [low] → ${recommendation.targetVendors.join(", ")}`);
+      if (recommendation.evidenceOrigin) lines.push(`    Origin: ${recommendation.evidenceOrigin}`);
       lines.push(`    Why confidence is low: ${recommendation.reason}`);
-      lines.push("    Would strengthen: recurrence in another distinct session or a second independent visible signal.");
+      lines.push("    Would strengthen: a clearer reusable procedure or another independent codebase/session signal.");
       lines.push(`    Possible benefit: ${recommendation.benefit}`);
     }
   }
@@ -196,11 +217,11 @@ export function formatAdviceReport(report: AdviceReport): string {
   lines.push("", "Evidence diagnostics");
   for (const source of funnel.sources) {
     const discarded = Object.entries(source.discarded).filter(([, count]) => count > 0).map(([reason, count]) => `${reason} ${count}`).join(", ") || "none";
-    lines.push(`  ${source.source}: discovered ${source.discovered}, eligible ${source.eligible}, read ${source.read}, parsed ${source.parsed}, events ${source.visibleEvents}, patterns ${source.retainedPatterns}, discarded ${discarded}`);
+    lines.push(`  ${source.source}: discovered ${source.discovered}, eligible ${source.eligible}, read ${source.read}, parsed ${source.parsed}, episodes ${source.retainedEpisodes ?? source.retainedPatterns}, omitted ${source.omittedEpisodes ?? 0}, truncated ${source.truncatedEpisodes ?? 0}, discarded ${discarded}`);
   }
   if (funnel.recommendation) {
     const item = funnel.recommendation;
-    lines.push(`  backend: sent ${item.patternsSent}, returned ${item.returned}, accepted ${item.accepted}, merged ${item.merged}, rejected ${item.rejected}, recovery calls ${item.recoveryCalls}`);
+    lines.push(`  backend: sent ${item.patternsSent} episodes, returned ${item.returned}, validated ${item.accepted}, rejected ${item.rejected}`);
   }
   if (report.notes.length > 0) {
     lines.push("", "Notes");
