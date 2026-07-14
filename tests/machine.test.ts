@@ -514,12 +514,21 @@ describe("wizard machine", () => {
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "START_WRITING" });
-    state = wizardReducer(state, { type: "WRITE_FAILED", message: "disk full" });
+    state = wizardReducer(state, {
+      type: "WRITE_FAILED",
+      message: "rollback conflicted",
+      mutationState: "rollback-incomplete",
+      recoveryPath: ".farrier-staging/backups/recovery",
+      remediation: "Run `farrier doctor --dir /tmp/project` before retrying."
+    });
 
     expect(state.step).toBe("Done");
     expect(state.writeStatus).toEqual({
       ok: false,
-      message: "disk full"
+      message: "rollback conflicted",
+      mutationState: "rollback-incomplete",
+      recoveryPath: ".farrier-staging/backups/recovery",
+      remediation: "Run `farrier doctor --dir /tmp/project` before retrying."
     });
     expect(state.installResults).toEqual([]);
   });

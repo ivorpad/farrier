@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { ReasoningEffort } from "../config/farrier-config";
 import { invokeBackend, defaultBackendRunner, type BackendCommandRunner } from "./backend";
+import { compareEvidence, createEvidenceSet } from "./behavior-evidence";
 import { builtinAdviceRegistry, adviceRouteArtifacts, adviceRoutes, type AdviceRegistryEntry } from "./advice-catalog";
 import { collectProjectSessionEvidence } from "./advice-sessions";
 import {
@@ -90,6 +91,7 @@ function buildPrompt(input: {
   targets: AdviceVendor[];
   registry: AdviceRegistryEntry[];
   focused: boolean;
+  selectedProvider: AdviceVendor;
 }): string {
   const cap = input.focused ? 5 : 2;
   const evidence = input.evidence.slice(0, 120).map((item) => ({
@@ -105,9 +107,10 @@ function buildPrompt(input: {
     ,supportedImplementationRoutes: adviceRoutes.filter((route) =>
       (item.allowedCategories ?? input.categories).includes(route.category) && route.vendors.some((vendor) => input.targets.includes(vendor))
     ).map((route) => route.id)
+    ,selectedProvider: item.selectedProvider
   }));
   return `You are Farrier's project advisor. Return JSON only with this shape:
-{"recommendations":[{"id":"<category>:<stable-kebab-id>","category":"guidance|hooks|skills|subagents|plugins|mcp","targetVendors":["claude"],"reason":"observed problem or opportunity in one concise sentence","benefit":"concrete user-facing outcome in one concise sentence","evidence":["evidence-id"],"confidence":"high|medium|low","routeId":"catalog route id","registryRef":"optional exact catalog ref"}],"coverage":[{"category":"guidance","reason":"why this category did or did not produce a strong recommendation"}]}
+{"recommendations":[{"id":"<category>:<stable-kebab-id>","category":"guidance|hooks|skills|subagents|plugins|mcp","targetVendors":["${input.selectedProvider}"],"reason":"observed problem or opportunity in one concise sentence","benefit":"concrete user-facing outcome in one concise sentence","evidence":["evidence-id"],"confidence":"high|medium|low","routeId":"catalog route id","registryRef":"optional exact catalog ref"}],"coverage":[{"category":"guidance","reason":"why this category did or did not produce a strong recommendation"}]}
 
 Rules:
 - Analyze only the bounded project/session signals below. They contain visible prompts, responses, tool events, failures, and outcomes; never claim access to hidden reasoning.
@@ -118,6 +121,7 @@ Rules:
 - Treat occurrence count and distinct-session count separately. Repetition across sessions is stronger than repetition inside one session.
 - ${input.focused ? "Return every distinct strong recommendation in the focused category." : "Aim for 3–8 distinct recommendations overall when the evidence supports them; do not invent filler to hit a count."}
 - Use only requested categories (${input.categories.join(", ")}) and target vendors (${input.targets.join(", ")}).
+- The selected provider is ${input.selectedProvider}. Use only ${input.selectedProvider} evidence and ${input.selectedProvider}-native or shared routes; never reference the other provider.
 - Every recommendation must cite one or more evidence IDs exactly and use one route ID exactly.
 - reason must explain why the recommendation exists using the cited evidence. benefit must explain why implementing it is useful; do not repeat the reason or route description.
 - registryRef is optional, but when used it must exactly copy a compatible catalog ref.
@@ -151,6 +155,8 @@ function validateRecommendation(input: {
   targets: AdviceVendor[];
   routesById: Map<string, (typeof adviceRoutes)[number]>;
   registryByRef: Map<string, AdviceRegistryEntry>;
+  evidenceById: Map<string, AdviceEvidence>;
+  selectedProvider: AdviceVendor;
 }): { recommendation?: AdviceRecommendation; note?: string } {
   if (!isRecord(input.raw)) return { note: "Dropped recommendation: record must be an object." };
   const raw = input.raw as RawRecommendation;
@@ -159,7 +165,7 @@ function validateRecommendation(input: {
   if (!category || !input.categories.includes(category)) return { note: `Dropped recommendation '${id ?? "unknown"}': unsupported category.` };
   if (!id || !new RegExp(`^${category}:[a-z0-9]+(?:-[a-z0-9]+)*$`).test(id)) return { note: `Dropped recommendation '${id ?? "unknown"}': id must be stable and category-prefixed.` };
   const vendors = stringArray(raw.targetVendors);
-  if (!vendors || vendors.length === 0 || vendors.some((vendor) => !["claude", "codex"].includes(vendor) || !input.targets.includes(vendor as AdviceVendor))) {
+  if (!vendors || vendors.length !== 1 || vendors[0] !== input.selectedProvider) {
     return { note: `Dropped recommendation '${id}': invalid target vendors.` };
   }
   const reason = typeof raw.reason === "string" && raw.reason.trim() ? raw.reason.trim() : undefined;
@@ -172,6 +178,12 @@ function validateRecommendation(input: {
   const evidence = stringArray(raw.evidence);
   if (!evidence || evidence.length === 0 || evidence.some((evidenceId) => !input.evidenceIds.has(evidenceId))) {
     return { note: `Dropped recommendation '${id}': evidence contains an unknown or missing reference.` };
+  }
+  if (evidence.some((evidenceId) => {
+    const source = input.evidenceById.get(evidenceId)?.source;
+    return source !== "project" && source !== input.selectedProvider;
+  })) {
+    return { note: `Dropped recommendation '${id}': evidence references a different provider.` };
   }
   const confidence = raw.confidence;
   if (confidence !== "high" && confidence !== "medium" && confidence !== "low") return { note: `Dropped recommendation '${id}': invalid confidence.` };
@@ -193,6 +205,11 @@ function validateRecommendation(input: {
   if (category === "hooks" && /```|#!|[{}]|(?:^|\s)(?:bash|node|python(?:3)?)\s+-/i.test(`${reason}\n${benefit}`)) {
     return { note: `Dropped recommendation '${id}': executable hook content is not accepted.` };
   }
+  const creates = adviceRouteArtifacts(route, vendors as AdviceVendor[]);
+  const otherProvider = input.selectedProvider === "claude" ? "codex" : "claude";
+  if (creates.some((artifact) => artifact.vendor === otherProvider || artifact.path.toLowerCase().includes(`.${otherProvider}/`))) {
+    return { note: `Dropped recommendation '${id}': generated artifacts reference a different provider.` };
+  }
   return {
     recommendation: {
       id,
@@ -203,7 +220,7 @@ function validateRecommendation(input: {
       evidence: Array.from(new Set(evidence)),
       confidence,
       implementationRoute: { id: route.id, description: route.description },
-      creates: adviceRouteArtifacts(route, vendors as AdviceVendor[]),
+      creates,
       ...(registryRef ? { registryRef } : {})
     }
   };
@@ -215,6 +232,7 @@ function validateRecommendations(input: {
   categories: AdviceCategory[];
   targets: AdviceVendor[];
   registry: AdviceRegistryEntry[];
+  selectedProvider: AdviceVendor;
 }): { recommendations: AdviceRecommendation[]; notes: string[]; rejectedCategories: Set<AdviceCategory>; returned: number } {
   if (!isRecord(input.parsed) || !Array.isArray(input.parsed.recommendations)) {
     throw new Error('advice backend JSON must have shape {"recommendations":[...]}');
@@ -232,6 +250,8 @@ function validateRecommendations(input: {
     targets: input.targets,
     routesById: new Map(adviceRoutes.map((route) => [route.id, route])),
     registryByRef: new Map(input.registry.map((entry) => [entry.ref, entry]))
+    , evidenceById: new Map(input.evidence.map((item) => [item.id, item]))
+    , selectedProvider: input.selectedProvider
   };
   for (const raw of input.parsed.recommendations) {
     const result = validateRecommendation({ raw, ...context });
@@ -321,12 +341,44 @@ function emptyEvidenceFunnel(targets: AdviceVendor[]): AdviceEvidenceFunnel {
   };
 }
 
+function isolateSessionEvidence(evidence: AdviceSessionEvidence, provider: AdviceVendor): AdviceSessionEvidence {
+  const signals = evidence.signals
+    .filter((item) => item.source === provider && (!item.targetVendors || item.targetVendors.includes(provider)))
+    .map((item) => ({
+      ...item,
+      targetVendors: [provider],
+      implementationRoutes: item.implementationRoutes?.filter((routeId) =>
+        adviceRoutes.some((route) => route.id === routeId && route.vendors.includes(provider)))
+    }));
+  const source = evidence.sources.find((item) => item.source === provider) ?? { source: provider, count: 0 };
+  const funnelSource = evidence.funnel?.sources.find((item) => item.source === provider);
+  const visibleEvents = funnelSource?.visibleEvents
+    ?? signals.reduce((sum, item) => sum + (item.occurrences ?? 1), 0);
+  const retainedPatterns = signals.length;
+  return {
+    sources: [source],
+    signals,
+    notes: [...evidence.notes],
+    funnel: {
+      sources: funnelSource ? [{ ...funnelSource, retainedPatterns }] : emptyEvidenceFunnel([provider]).sources,
+      visibleEvents,
+      recurringPatterns: signals.filter((item) => (item.distinctSessions ?? 0) >= 2 || (item.occurrences ?? 1) >= 2).length
+    }
+  };
+}
+
 export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceReport> {
   const targetDir = resolve(input.targetDir);
   const sessions = input.sessions ?? "auto";
   const lookback = input.lookback ?? "7d";
-  const targets = input.targets ?? ["claude", "codex"];
-  const sessionSources = input.sessionSources ?? targets;
+  if (input.targets && (input.targets.length !== 1 || input.targets[0] !== input.backend)) {
+    throw new Error(`Advice targets must equal the selected backend (${input.backend}); choose --targets ${input.backend} or omit --targets.`);
+  }
+  if (input.sessionSources && (input.sessionSources.length !== 1 || input.sessionSources[0] !== input.backend)) {
+    throw new Error(`Advice session sources must equal the selected backend (${input.backend}).`);
+  }
+  const targets: AdviceVendor[] = [input.backend];
+  const sessionSources: AdviceVendor[] = [input.backend];
   const categories = input.only?.length ? input.only : [...adviceCategories];
   const progress = (stage: AdviceProgressEvent["stage"], message: string): void => {
     try {
@@ -339,12 +391,13 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
   progress("sessions", sessions === "auto"
     ? `Finding exact-project sessions from the ${adviceSessionLookbackLabel(lookback)}…`
     : "Skipping project sessions; using codebase evidence only…");
-  const [profile, sessionEvidence] = await Promise.all([
+  const [profile, collectedSessionEvidence] = await Promise.all([
     profileProject(targetDir),
     sessions === "auto"
       ? input.sessionEvidence ?? collectProjectSessionEvidence({ targetDir, targets: sessionSources, lookback, codexClientFactory: input.codexClientFactory })
       : Promise.resolve<AdviceSessionEvidence>({ sources: sessionSources.map((source) => ({ source, count: 0 })), signals: [], notes: [], funnel: emptyEvidenceFunnel(sessionSources) })
   ]);
+  const sessionEvidence = isolateSessionEvidence(collectedSessionEvidence, input.backend);
   const sessionCount = sessionEvidence.sources.reduce((sum, source) => sum + source.count, 0);
   progress("sessions", sessions === "auto"
     ? `Found ${sessionCount} matching session(s); retained ${sessionEvidence.signals.length} bounded signal(s).`
@@ -352,13 +405,27 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
   progress("catalog", categories.includes("skills") ? "Checking the skill registry for supported candidates…" : "Building supported implementation routes…");
   const skills = await collectSkillRegistry({ categories, stacks: profile.stacks, languages: profile.languages, search: input.search ?? searchSkills });
   const registry = [...builtinAdviceRegistry, ...skills.entries].filter((entry) => categories.includes(entry.category) && entry.vendors.some((vendor) => targets.includes(vendor)));
-  const evidence = [...profile.evidence, ...sessionEvidence.signals];
+  const reportEvidenceSet = createEvidenceSet({
+    workflow: "advice",
+    items: [
+      { id: `provenance:selected-provider:${input.backend}`, source: "project" as const, kind: "provenance", summary: `Advice evidence is isolated to selected provider ${input.backend}.`, selectedProvider: input.backend },
+      ...profile.evidence,
+      ...sessionEvidence.signals
+    ],
+    maxItems: 200,
+    maxItemBytes: 8_000,
+    maxTotalBytes: 1_600_000
+  });
+  profile.evidence = reportEvidenceSet.items.filter((item) => item.source === "project");
+  sessionEvidence.signals = reportEvidenceSet.items.filter((item) => item.source !== "project");
+  const evidenceSet = createEvidenceSet({ workflow: "advice", items: reportEvidenceSet.items });
+  const evidence = evidenceSet.items;
   progress("backend", `Asking ${input.backend} for bounded recommendations…`);
   const invoke = (requestCategories: AdviceCategory[]) => invokeBackend({
     backend: input.backend,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
-    prompt: buildPrompt({ profileText: projectProfileSummary(profile), evidence, categories: requestCategories, targets, registry, focused: requestCategories.length === 1 }),
+    prompt: buildPrompt({ profileText: projectProfileSummary(profile), evidence, categories: requestCategories, targets, registry, focused: requestCategories.length === 1, selectedProvider: input.backend }),
     targetDir,
     ephemeral: true,
     runner: input.runner ?? defaultBackendRunner,
@@ -366,7 +433,7 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
   });
   const firstParsed = await invoke(categories);
   progress("validation", "Validating evidence, routes, registry references, duplicates, and category limits…");
-  const firstValidated = validateRecommendations({ parsed: firstParsed, evidence, categories, targets, registry });
+  const firstValidated = validateRecommendations({ parsed: firstParsed, evidence, categories, targets, registry, selectedProvider: input.backend });
   const supportedCategories = categories.filter((category) => sessionEvidence.signals.some((item) =>
     item.allowedCategories?.includes(category) && ((item.distinctSessions ?? 0) >= 2 || (item.occurrences ?? 1) >= 3)));
   const firstStrongCategories = new Set(firstValidated.recommendations.filter((item) => item.confidence !== "low").map((item) => item.category));
@@ -392,7 +459,7 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
         ]
       }
     : firstParsed;
-  const validated = validateRecommendations({ parsed: combinedParsed, evidence, categories, targets, registry });
+  const validated = validateRecommendations({ parsed: combinedParsed, evidence, categories, targets, registry, selectedProvider: input.backend });
   const recommendations = validated.recommendations.filter((item) => item.confidence !== "low");
   const weakLeads = validated.recommendations.filter((item) => item.confidence === "low");
   const coverage = validateCoverage({
@@ -400,12 +467,16 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
     sessionEvidence: sessionEvidence.signals, rejectedCategories: validated.rejectedCategories, targets
   });
   const notes = [...sessionEvidence.notes, ...skills.notes, ...validated.notes];
+  if (reportEvidenceSet.truncated) notes.push(`Advice report evidence was bounded: retained ${reportEvidenceSet.itemCount}/${reportEvidenceSet.inputItemCount} items; ${reportEvidenceSet.truncatedItemCount} truncated and ${reportEvidenceSet.omittedItemCount} omitted.`);
+  if (evidenceSet.truncated) notes.push(`Backend evidence was bounded to ${evidenceSet.itemCount}/${evidenceSet.inputItemCount} items (${evidenceSet.byteCount} bytes); the report retains the larger redacted inventory.`);
   if (sessions === "none") notes.unshift("Project sessions were disabled; recommendations use codebase evidence only.");
   else if (sessionCount === 0) notes.unshift("No matching project sessions were found; recommendations use codebase evidence only.");
   notes.push("Report only: Farrier did not install recommendations or change project configuration.");
   if (weakLeads.length > 0) notes.push(`${weakLeads.length} low-confidence item(s) are shown as weak leads, not supported recommendations.`);
   progress("complete", `Report ready with ${validated.recommendations.length} validated recommendation(s): ${recommendations.length} supported and ${weakLeads.length} weak lead(s).`);
 
+  const evidenceCases = evidence.map((item) => ({ id: item.id, outcome: "inconclusive" as const }));
+  const evidenceComparison = compareEvidence({ beforeSet: evidenceSet, afterSet: evidenceSet, before: evidenceCases, after: evidenceCases });
   const funnel = sessionEvidence.funnel ?? emptyEvidenceFunnel(targets);
   funnel.recommendation = {
     patternsSent: sessionEvidence.signals.length,
@@ -437,6 +508,7 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
     recommendations,
     weakLeads,
     coverage,
+    evidence: evidenceComparison,
     notes
   };
 }

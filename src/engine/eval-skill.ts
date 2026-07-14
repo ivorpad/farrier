@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { access, cp, lstat, mkdir, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { access, lstat, readlink, realpath } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import {
+  backendEnvironmentOverrides,
+  backendEnvironmentPassthrough,
   defaultBackendRunner,
   invokeBackend,
   type AgentBackend,
@@ -22,8 +24,11 @@ import {
   type LabelAssignment
 } from "./eval-judge";
 import { writeEvalReports, type EvalReportPaths } from "./eval-report";
-import { maxSkillNameLength, skillNamePattern } from "./skill-validate";
+import { maxSkillNameLength, readSkillBehaviorEvidence, skillNamePattern } from "./skill-validate";
 import type { CommandRunner, ResolveSkillsCommandDeps } from "./skills";
+import { applyMutationPlan, inspectMutationPlan, type MutationOperation } from "./mutation-transaction";
+import { withIsolatedExecution } from "./execution-isolation";
+import { canonicalEvidence, compareEvidence, createEvidenceSet, type EvidenceComparison } from "./behavior-evidence";
 
 export type SkillEvalWinner = CreateAgent | "tie";
 
@@ -45,6 +50,7 @@ export type SkillEvalVerdict = {
   rationale: string;
   copies: Record<CreateAgent, SkillEvalCopyScore>;
   notes: string[];
+  evidence?: EvidenceComparison & { availability: "available" | "unavailable"; caseCount: number };
   reportPaths?: EvalReportPaths;
 };
 
@@ -217,25 +223,50 @@ export async function evaluatePerAgentSkill(input: {
   skillsRunner?: CommandRunner;
   resolveDeps?: ResolveSkillsCommandDeps;
 }): Promise<SkillEvalVerdict> {
+  if (input.signal?.aborted) throw new Error("Skill evaluation cancelled before start.");
   const names = resolveNames(input, "Cannot evaluate");
   const creatorRoot = await resolvePinnedCreatorRoot(input.targetDir, input.skillsRunner, input.resolveDeps);
   await assertPerAgentSkillPair(input.targetDir, names);
+  const [claudeCases, codexCases] = await Promise.all([
+    readSkillBehaviorEvidence(join(input.targetDir, skillPath("claude", names.claude))),
+    readSkillBehaviorEvidence(join(input.targetDir, skillPath("codex", names.codex)))
+  ]);
+  const declarationKeys = new Set<string>();
+  const caseItems = [...claudeCases.cases, ...codexCases.cases]
+    .filter((item) => {
+      const key = canonicalEvidence(item);
+      if (declarationKeys.has(key)) return false;
+      declarationKeys.add(key);
+      return true;
+    })
+    .sort((left, right) => canonicalEvidence(left).localeCompare(canonicalEvidence(right)));
+  const normalizedClaudeCases = claudeCases.cases.map(canonicalEvidence).sort();
+  const normalizedCodexCases = codexCases.cases.map(canonicalEvidence).sort();
+  const declarationsMatch = canonicalEvidence(normalizedClaudeCases) === canonicalEvidence(normalizedCodexCases);
+  const caseSet = createEvidenceSet({
+    workflow: "skill",
+    items: caseItems.length > 0 ? caseItems : [{ id: "behavior-cases-unavailable", kind: "negative" as const, prompt: "[unavailable]", expectedBehavior: "[unavailable]" }],
+    maxItems: 200,
+    maxItemBytes: 5_000,
+    maxTotalBytes: 1_000_000
+  });
+  const inconclusiveCases = [{ id: "declaration-comparison", outcome: "inconclusive" as const }];
+  const caseComparison = compareEvidence({ beforeSet: caseSet, afterSet: caseSet, before: inconclusiveCases, after: inconclusiveCases });
 
-  // The native paths (.claude/skills vs .agents/skills) reveal the vendor, so
-  // both copies are staged at neutral paths before the blind judge sees them.
-  const stagingRoot = `.farrier-staging/eval-${randomUUID().slice(0, 8)}`;
-  const stagedPaths: Record<CreateAgent, string> = {
-    claude: `${stagingRoot}/candidate-one`,
-    codex: `${stagingRoot}/candidate-two`
-  };
-
-  try {
-    for (const agent of ["claude", "codex"] as const) {
-      await cp(join(input.targetDir, skillPath(agent, names[agent])), join(input.targetDir, stagedPaths[agent]), {
-        recursive: true
-      });
-    }
-
+  const stagedPaths: Record<CreateAgent, string> = { claude: "candidate-one", codex: "candidate-two" };
+  const isolated = await withIsolatedExecution({
+    targetDir: input.targetDir,
+    nativeConfinement: input.backend === "codex",
+    environmentPassthrough: backendEnvironmentPassthrough(input.backend),
+    environmentOverrides: backendEnvironmentOverrides(input.backend),
+    readOnlyWorkspace: true,
+    signal: input.signal,
+    inputs: [
+      { source: join(input.targetDir, skillPath("claude", names.claude)), path: stagedPaths.claude },
+      { source: join(input.targetDir, skillPath("codex", names.codex)), path: stagedPaths.codex },
+      { source: resolve(input.targetDir, creatorRoot), path: "creator" }
+    ],
+    run: async ({ workspace, environment, signal }) => {
     const runPass = async (assignment: LabelAssignment) => {
       const aPath = stagedPaths[assignment.A];
       const bPath = stagedPaths[assignment.B];
@@ -249,11 +280,13 @@ export async function evaluatePerAgentSkill(input: {
           description: input.description,
           aPath,
           bPath,
-          creatorRoot
+          creatorRoot: "creator",
+          behaviorEvidence: { digest: caseSet.digest, cases: caseSet.items }
         }),
-        targetDir: input.targetDir,
+        targetDir: workspace,
         runner: input.runner ?? defaultBackendRunner,
-        signal: input.signal
+        signal,
+        env: environment
       });
 
       return {
@@ -270,24 +303,36 @@ export async function evaluatePerAgentSkill(input: {
     ]);
 
     const merged = mergeJudgePasses(passes);
+    const behaviorAvailable = claudeCases.availability === "available" && codexCases.availability === "available";
+    const recommendedWinner = merged.recommendedWinner;
 
-    const verdict: SkillEvalVerdict = {
+    return {
       skillName: input.skillName,
       backend: input.backend,
-      recommendedWinner: merged.recommendedWinner,
+      recommendedWinner,
       rationale: merged.rationale,
       copies: {
         claude: { path: skillPath("claude", names.claude), ...merged.copies.claude },
         codex: { path: skillPath("codex", names.codex), ...merged.copies.codex }
       },
-      notes: merged.notes
-    };
-
-    verdict.reportPaths = await writeEvalReports(input.targetDir, verdict);
-    return verdict;
-  } finally {
-    await rm(join(input.targetDir, stagingRoot), { recursive: true, force: true }).catch(() => undefined);
-  }
+      notes: [
+        ...merged.notes,
+        ...(behaviorAvailable
+          ? [`Behavior declarations: ${caseItems.length} distinct positive/negative case(s), comparison ${caseComparison.result}, digest ${caseSet.digest}. Declarations were supplied to the blind judge but were not executed.`]
+          : ["Behavior cases unavailable for one or both legacy/third-party copies; static blind evaluation was preserved and behavioral evidence is inconclusive."]),
+        ...(!declarationsMatch ? ["Trust limitation: candidate behavior-case declarations differ; this non-directional mismatch does not establish a regression or veto either candidate."] : []),
+        ...(caseSet.truncated ? [`Behavior declarations were bounded: retained ${caseSet.itemCount}/${caseSet.inputItemCount}; ${caseSet.truncatedItemCount} truncated and ${caseSet.omittedItemCount} omitted.`] : []),
+        input.backend === "codex"
+          ? "Isolation mode: native-confinement (Codex read-only sandbox)."
+          : "Isolation mode: staged-best-effort; target fingerprints were verified and residual OS-user write risk remains."
+      ],
+      evidence: { ...caseComparison, availability: behaviorAvailable ? "available" : "unavailable", caseCount: caseItems.length }
+    } satisfies SkillEvalVerdict;
+    }
+  });
+  const verdict: SkillEvalVerdict = isolated.value;
+  verdict.reportPaths = await writeEvalReports(input.targetDir, verdict);
+  return verdict;
 }
 
 async function assertRealSkillDir(targetDir: string, relPath: string): Promise<void> {
@@ -342,37 +387,26 @@ export async function resolvePerAgentSkillWinner(input: {
   await assertRealSkillDir(input.targetDir, loserPath);
 
   const winnerAbs = join(input.targetDir, winnerPath);
-  const loserAbs = join(input.targetDir, loserPath);
   const linkAbs = join(input.targetDir, linkPath);
 
   if (linkPath !== loserPath && (await lstat(linkAbs).catch(() => undefined))) {
     throw new Error(`Cannot resolve winner: ${linkPath} already exists and would be overwritten by the symlink.`);
   }
 
-  const winnerSkillReal = await realpath(join(winnerAbs, "SKILL.md"));
-  const backupAbs = `${loserAbs}.farrier-delete-${randomUUID().slice(0, 8)}`;
   const linkTarget = relative(dirname(linkAbs), winnerAbs) || ".";
-
-  await rename(loserAbs, backupAbs);
-
+  const operations: MutationOperation[] = [
+    ...(linkPath === loserPath ? [] : [{ kind: "remove-tree", path: loserPath } as const]),
+    { kind: "link", path: linkPath, target: linkTarget }
+  ];
   try {
-    await symlink(linkTarget, linkAbs, "dir");
-    const linkedSkillReal = await realpath(join(linkAbs, "SKILL.md"));
-
-    if (linkedSkillReal !== winnerSkillReal) {
-      throw new Error(`symlink ${linkPath} resolves to ${linkedSkillReal}, not ${winnerSkillReal}`);
-    }
-
-    let backupPath: string | undefined;
-
-    if (input.retainBackupInTrash) {
-      backupPath = `.farrier-staging/trash/${names[loser]}-${randomUUID().slice(0, 8)}`;
-      await mkdir(dirname(join(input.targetDir, backupPath)), { recursive: true });
-      await rename(backupAbs, join(input.targetDir, backupPath));
-    } else {
-      await rm(backupAbs, { recursive: true, force: false });
-    }
-
+    const backupBase = input.retainBackupInTrash
+      ? `.farrier-staging/trash/${names[loser]}-${randomUUID().slice(0, 8)}`
+      : undefined;
+    const transaction = await applyMutationPlan(await inspectMutationPlan(input.targetDir, operations), {
+      backupBase,
+      retainBackupsOnSuccess: input.retainBackupInTrash === true
+    });
+    const backupPath = transaction.backupDir ? `${transaction.backupDir}/${loserPath}` : undefined;
     return {
       skillName: input.skillName,
       winner: input.winner,
@@ -383,12 +417,10 @@ export async function resolvePerAgentSkillWinner(input: {
       backupPath,
       notes: [
         `Deleted ${loserPath} and linked ${linkPath} to ${winnerPath}.`,
-        ...(backupPath ? [`The deleted copy was kept at ${backupPath} in case you change your mind.`] : [])
+        ...(backupPath ? [`The replaced copy was kept at ${backupPath} for recovery in case you change your mind.`] : [])
       ]
     };
   } catch (error) {
-    await rm(linkAbs, { recursive: true, force: true }).catch(() => undefined);
-    await rename(backupAbs, loserAbs).catch(() => undefined);
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to link ${linkPath} to ${winnerPath}: ${message}`);
   }

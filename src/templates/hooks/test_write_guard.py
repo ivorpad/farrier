@@ -67,7 +67,7 @@ def test_denies_nested_git_directory_write() -> None:
 
     assert code == 0
     assert stderr == ""
-    assert_denied(stdout, "git commands")
+    assert_denied(stdout, "out-of-root")
 
 
 def test_denies_skills_lock_write() -> None:

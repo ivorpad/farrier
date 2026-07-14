@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   installSkills,
@@ -225,23 +225,14 @@ describe("skills engine", () => {
     try {
       const results = await installSkills(["wshobson/agents@python-code-style"], dir, runner);
 
-      expect(calls).toEqual([
-        {
-          cmd: ["skills", "add", "wshobson/agents", "-s", "python-code-style", "-a", "claude-code", "codex", "-y"],
-          cwd: dir
-        }
-      ]);
-
-      expect(results).toEqual([
-        {
-          ref: "wshobson/agents@python-code-style",
-          ok: true,
-          stdout: "installed",
-          stderr: "",
-          exitCode: 0,
-          error: undefined
-        }
-      ]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.cmd).toEqual(["skills", "add", "wshobson/agents", "-s", "python-code-style", "-a", "claude-code", "codex", "-y"]);
+      expect(calls[0]?.cwd).not.toBe(dir);
+      expect(calls[0]?.env?.HOME).toStartWith(calls[0]!.cwd);
+      expect(results[0]).toMatchObject({
+        ref: "wshobson/agents@python-code-style", ok: true, stdout: "installed", stderr: "", exitCode: 0,
+        isolation: { mode: "staged-best-effort" }
+      });
     } finally {
       restoreSkillsBinEnv(previousBin);
     }
@@ -265,12 +256,9 @@ describe("skills engine", () => {
     try {
       const results = await installSkills(["owner/repo@one"], dir, runner, undefined, ["codex"]);
 
-      expect(calls).toEqual([
-        {
-          cmd: ["skills", "add", "owner/repo", "-s", "one", "-a", "codex", "-y"],
-          cwd: dir
-        }
-      ]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.cmd).toEqual(["skills", "add", "owner/repo", "-s", "one", "-a", "codex", "-y"]);
+      expect(calls[0]?.cwd).not.toBe(dir);
       expect(results[0]?.ok).toBe(true);
     } finally {
       restoreSkillsBinEnv(previousBin);
@@ -349,7 +337,7 @@ describe("skills engine", () => {
     }
   });
 
-  test("installSkills runs different sources concurrently", async () => {
+  test("installSkills serializes sources that share lock and manifest outputs", async () => {
     const dir = await tempDir();
     const previousBin = process.env.FARRIER_SKILLS_BIN;
     process.env.FARRIER_SKILLS_BIN = "skills";
@@ -372,7 +360,7 @@ describe("skills engine", () => {
     try {
       const results = await installSkills(["alpha/repo@one", "beta/repo@two", "gamma/repo@three"], dir, runner);
 
-      expect(maxInFlight).toBe(3);
+      expect(maxInFlight).toBe(1);
       expect(results.every((result) => result.ok)).toBe(true);
     } finally {
       restoreSkillsBinEnv(previousBin);
@@ -387,10 +375,10 @@ describe("skills engine", () => {
 
     const runner: CommandRunner = async (input) => {
       calls.push(input);
-      const lockPath = join(dir, "skills-lock.json");
+      const lockPath = join(input.cwd, "skills-lock.json");
 
-      // Simulate the CLI's unlocked read-modify-write: both first-pass runs read
-      // an empty lock, and alpha finishes last, clobbering beta's entry.
+      // Simulate each CLI invocation writing only its own lock entry. Farrier
+      // merges staged lock output transactionally instead of accepting drops.
       if (input.cmd.includes("alpha/repo")) {
         await new Promise((resolve) => setTimeout(resolve, 30));
         await Bun.write(lockPath, JSON.stringify({ version: 1, skills: { one: {} } }));
@@ -413,7 +401,6 @@ describe("skills engine", () => {
 
       expect(calls.map((call) => call.cmd)).toEqual([
         ["skills", "add", "alpha/repo", "-s", "one", "-a", "claude-code", "codex", "-y"],
-        ["skills", "add", "beta/repo", "-s", "two", "-a", "claude-code", "codex", "-y"],
         ["skills", "add", "beta/repo", "-s", "two", "-a", "claude-code", "codex", "-y"]
       ]);
 
@@ -440,18 +427,48 @@ describe("skills engine", () => {
     try {
       const results = await installSkills(["wshobson/agents@python-code-style"], dir, runner);
 
-      expect(results).toEqual([
-        {
-          ref: "wshobson/agents@python-code-style",
-          ok: false,
-          stdout: "",
-          stderr: "boom",
-          exitCode: 7,
-          error: "skills add exited with code 7. Try installing the skills CLI or set FARRIER_SKILLS_BIN."
-        }
-      ]);
+      expect(results[0]).toMatchObject({
+        ref: "wshobson/agents@python-code-style", ok: false, stdout: "", stderr: "boom", exitCode: 7,
+        error: "skills add exited with code 7. Try installing the skills CLI or set FARRIER_SKILLS_BIN.",
+        isolation: { mode: "staged-best-effort" }
+      });
     } finally {
       restoreSkillsBinEnv(previousBin);
+    }
+  });
+
+  test("installSkills rejects unexpected staged output and exposes no ambient secret", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env.FARRIER_SKILLS_BIN;
+    const previousSecret = process.env.FARRIER_TEST_SECRET;
+    const previousToken = process.env.GITHUB_TOKEN;
+    const previousGitConfig = process.env.GIT_CONFIG_GLOBAL;
+    delete process.env.GIT_CONFIG_GLOBAL;
+    process.env.FARRIER_SKILLS_BIN = "skills";
+    process.env.FARRIER_TEST_SECRET = "do-not-forward";
+    process.env.GITHUB_TOKEN = "required-provider-auth";
+    const runner: CommandRunner = async (input) => {
+      expect(input.cwd).not.toBe(dir);
+      expect(input.env?.FARRIER_TEST_SECRET).toBeUndefined();
+      expect(input.env?.GITHUB_TOKEN).toBe("required-provider-auth");
+      expect(input.env?.GIT_CONFIG_GLOBAL).toBe(join(homedir(), ".gitconfig"));
+      expect(input.env?.HOME).not.toBe(process.env.HOME);
+      await Bun.write(join(input.cwd, "unexpected.txt"), "not allowed");
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    try {
+      const result = await installSkills(["owner/repo@one"], dir, runner);
+      expect(result[0]?.ok).toBe(false);
+      expect(result[0]?.error).toContain("unexpected output");
+      expect(await Bun.file(join(dir, "unexpected.txt")).exists()).toBe(false);
+    } finally {
+      restoreSkillsBinEnv(previousBin);
+      if (previousSecret === undefined) delete process.env.FARRIER_TEST_SECRET;
+      else process.env.FARRIER_TEST_SECRET = previousSecret;
+      if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousToken;
+      if (previousGitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = previousGitConfig;
     }
   });
 

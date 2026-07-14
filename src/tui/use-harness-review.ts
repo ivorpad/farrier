@@ -6,7 +6,7 @@ import type { PackHookRef, ResolvedPack, SkillRef } from "../packs/types";
 import type { PackCatalog } from "../registry/catalog";
 import type { ReviewFile } from "./ReviewStep";
 
-type HarnessReviewInput = {
+export type HarnessReviewInput = {
   active: boolean;
   targetDir: string;
   catalog: PackCatalog;
@@ -19,7 +19,7 @@ type HarnessReviewInput = {
   ruleCount: number;
 };
 
-type HarnessReview = {
+export type HarnessReview = {
   plan: RenderPlan | null;
   files: ReviewFile[];
   existingHarness: boolean;
@@ -27,13 +27,38 @@ type HarnessReview = {
   error?: string;
 };
 
+export type StoredHarnessReview = HarnessReview & { input?: HarnessReviewInput };
+
+function isCurrentReview(stored: StoredHarnessReview, input: HarnessReviewInput): boolean {
+  const reviewed = stored.input;
+  return Boolean(
+    input.active &&
+      reviewed &&
+      reviewed.targetDir === input.targetDir &&
+      reviewed.catalog === input.catalog &&
+      reviewed.pack === input.pack &&
+      reviewed.packId === input.packId &&
+      reviewed.selectedSkills === input.selectedSkills &&
+      reviewed.selectedHooks === input.selectedHooks &&
+      reviewed.agents === input.agents &&
+      reviewed.learnEnabled === input.learnEnabled &&
+      reviewed.ruleCount === input.ruleCount
+  );
+}
+
+export function currentHarnessReview(stored: StoredHarnessReview, input: HarnessReviewInput): HarnessReview {
+  return isCurrentReview(stored, input)
+    ? stored
+    : { plan: null, files: [], existingHarness: false, blockerCount: 0 };
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 /** Builds the same filesystem-aware plan that headless dry-run and apply use. */
 export function useHarnessReview(input: HarnessReviewInput): HarnessReview {
-  const [review, setReview] = useState<HarnessReview>({
+  const [review, setReview] = useState<StoredHarnessReview>({
     plan: null,
     files: [],
     existingHarness: false,
@@ -44,7 +69,7 @@ export function useHarnessReview(input: HarnessReviewInput): HarnessReview {
     if (!input.active) return;
 
     let cancelled = false;
-    setReview({ plan: null, files: [], existingHarness: false, blockerCount: 0 });
+    setReview({ plan: null, files: [], existingHarness: false, blockerCount: 0, input });
 
     createRenderPlan({
       targetDir: input.targetDir,
@@ -75,6 +100,7 @@ export function useHarnessReview(input: HarnessReviewInput): HarnessReview {
             files,
             existingHarness: changePlan.existingHarness,
             blockerCount: changePlan.blockers.length,
+            input,
           });
         }
       })
@@ -86,6 +112,7 @@ export function useHarnessReview(input: HarnessReviewInput): HarnessReview {
             existingHarness: false,
             blockerCount: 0,
             error: errorMessage(error),
+            input,
           });
         }
       });
@@ -95,5 +122,5 @@ export function useHarnessReview(input: HarnessReviewInput): HarnessReview {
     };
   }, [input.active, input.agents, input.catalog, input.learnEnabled, input.pack, input.packId, input.ruleCount, input.selectedHooks, input.selectedSkills, input.targetDir]);
 
-  return review;
+  return currentHarnessReview(review, input);
 }

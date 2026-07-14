@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -266,6 +266,37 @@ describe("doctor engine", () => {
     });
   });
 
+  test("statically flags missing hook test artifacts and aggregate coverage", async () => {
+    const dir = await tempDir();
+    await renderPack(dir);
+    await unlink(join(dir, ".claude", "hooks", "test_tool_policy.py"));
+    const justfile = join(dir, "justfile");
+    await writeFile(justfile, (await readFile(justfile, "utf8")).replace(" && uv run --with pytest pytest .claude/hooks", ""), "utf8");
+
+    const report = await createDoctorReport({ targetDir: dir });
+    expectProblem(report, "inventory", {
+      path: ".claude/hooks/test_tool_policy.py",
+      message: "Expected generated harness file is missing"
+    });
+    expectProblem(report, "hooks", {
+      path: "justfile",
+      message: "The generated check aggregate does not invoke the generated hook test suite"
+    });
+    expect(report.notes).toContainEqual(expect.stringContaining("Doctor is static"));
+  });
+
+  test("statically flags missing bundled skill cases", async () => {
+    const dir = await tempDir();
+    await renderPack(dir);
+    await unlink(join(dir, ".agents", "skills", "farrier-project-advisor", "evals", "cases.json"));
+
+    const report = await createDoctorReport({ targetDir: dir });
+    expectProblem(report, "skills", {
+      path: ".agents/skills/farrier-project-advisor/evals/cases.json",
+      message: "Bundled Farrier skill behavior cases are missing or invalid"
+    });
+  });
+
   test("flags non-executable hook script", async () => {
     const dir = await tempDir();
     await renderPack(dir);
@@ -425,6 +456,35 @@ describe("doctor engine", () => {
       message: "quality.maxFileLines must be a positive number"
     });
   });
+
+
+  test("statically rejects unsafe judge prompts and stop bounds without running checks", async () => {
+    const dir = await tempDir();
+    await renderPack(dir);
+    const outside = join(await tempDir(), "outside.txt");
+    await writeFile(outside, "prompt\n", "utf8");
+    const promptPath = join(dir, ".claude", "hooks", "prompts", "quality-judge-v1.txt");
+    await unlink(promptPath);
+    await symlink(outside, promptPath);
+    const manifestPath = join(dir, ".farrier.json");
+    const manifest = await readJson(manifestPath);
+    (manifest.judge as { stop: { maxDiffBytes: number } }).stop.maxDiffBytes = 120001;
+    await writeJson(manifestPath, manifest);
+
+    const report = await createDoctorReport({ targetDir: dir });
+
+    expect(report.healthy).toBe(false);
+    expectProblem(report, "judge", {
+      path: ".claude/hooks/prompts/quality-judge-v1.txt",
+      message: expect.stringContaining("regular non-symlink")
+    });
+    expectProblem(report, "judge", {
+      path: ".farrier.json",
+      message: expect.stringContaining("maxDiffBytes exceeds")
+    });
+    expect(report.notes).toContainEqual(expect.stringContaining("Doctor is static"));
+  });
+
 
   test("flags malformed konpy json when expected", async () => {
     const dir = await tempDir();

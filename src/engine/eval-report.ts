@@ -1,6 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { SkillEvalVerdict } from "./eval-skill";
+import { applyMutationPlan, inspectMutationPlan } from "./mutation-transaction";
 
 export type EvalReportPaths = {
   claude: string;
@@ -32,6 +31,7 @@ ${copy.weaknesses.map((item) => `- ${item}`).join("\n") || "- none noted"}
 ## Overall recommendation
 
 ${verdict.recommendedWinner} — ${verdict.rationale}
+${verdict.evidence ? `\n## Behavior evidence\n\n- Availability: ${verdict.evidence.availability}\n- Cases: ${verdict.evidence.caseCount}\n- Comparison: ${verdict.evidence.result}\n- Input digest: ${verdict.evidence.inputDigest}\n` : ""}
 ${verdict.notes.map((note) => `\n> ${note}`).join("")}
 `;
 }
@@ -44,17 +44,17 @@ ${verdict.notes.map((note) => `\n> ${note}`).join("")}
  */
 export async function writeEvalReports(targetDir: string, verdict: SkillEvalVerdict): Promise<EvalReportPaths> {
   const dir = `.farrier-staging/eval/${verdict.skillName}`;
-  await mkdir(join(targetDir, dir), { recursive: true });
-
   const paths: EvalReportPaths = {
     claude: `${dir}/claude.md`,
     codex: `${dir}/codex.md`,
     verdict: `${dir}/verdict.json`
   };
 
-  await writeFile(join(targetDir, paths.claude), copyReport(verdict, "claude"), "utf8");
-  await writeFile(join(targetDir, paths.codex), copyReport(verdict, "codex"), "utf8");
-  await writeFile(join(targetDir, paths.verdict), `${JSON.stringify(verdict, null, 2)}\n`, "utf8");
+  await applyMutationPlan(await inspectMutationPlan(targetDir, [
+    { kind: "write-file", path: paths.claude, content: copyReport(verdict, "claude") },
+    { kind: "write-file", path: paths.codex, content: copyReport(verdict, "codex") },
+    { kind: "write-file", path: paths.verdict, content: `${JSON.stringify(verdict, null, 2)}\n` }
+  ]));
 
   return paths;
 }

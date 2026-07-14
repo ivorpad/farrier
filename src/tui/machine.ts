@@ -23,6 +23,9 @@ export type WizardWriteStatus = {
   ok: boolean;
   message: string;
   partial?: boolean;
+  mutationState?: "not-started" | "rolled-back" | "rollback-incomplete";
+  recoveryPath?: string | null;
+  remediation?: string;
 };
 
 export type WizardState = {
@@ -87,7 +90,16 @@ export type WizardEvent =
       installResults: InstallSkillResult[];
       createOutcomes?: SkillCreationOutcome[];
     }
-  | { type: "WRITE_FAILED"; message: string; applyResult?: ApplyHarnessChangePlanResult; installResults?: InstallSkillResult[]; createOutcomes?: SkillCreationOutcome[] };
+  | {
+      type: "WRITE_FAILED";
+      message: string;
+      mutationState?: WizardWriteStatus["mutationState"];
+      recoveryPath?: string | null;
+      remediation?: string;
+      applyResult?: ApplyHarnessChangePlanResult;
+      installResults?: InstallSkillResult[];
+      createOutcomes?: SkillCreationOutcome[];
+    };
 
 export type CreateInitialWizardStateInput = {
   availablePackIds: string[];
@@ -414,6 +426,9 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         writeStatus: {
           ok: false,
           message: event.message,
+          mutationState: event.mutationState,
+          recoveryPath: event.recoveryPath,
+          remediation: event.remediation,
         },
         applyResult: event.applyResult,
         installResults: [...(event.installResults ?? [])],

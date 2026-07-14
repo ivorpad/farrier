@@ -7,10 +7,10 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
-from pathlib import Path
 from typing import Any
+
+from _hook_runtime import file_fingerprint, open_project_regular, read_project_text, run_bounded_process
 
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
@@ -21,6 +21,29 @@ PATCH_HEADER = re.compile(
 DEFAULT_MAX_FILE_LINES = 500
 DEFAULT_TIMEOUT_MS = 15000
 MAX_EMBEDDED_CONTENT_BYTES = 30 * 1024
+MAX_PAYLOAD_BYTES = 256 * 1024
+MAX_CONTEXT_BYTES = 16 * 1024
+MAX_BACKEND_OUTPUT_BYTES = 64 * 1024
+MAX_TIMEOUT_MS = 120000
+MAX_COMBINED_PROMPT_BYTES = 64 * 1024
+MAX_MANIFEST_BYTES = 256 * 1024
+MAX_FILE_LINES = 100000
+MAX_EDIT_SCAN_BYTES = 1024 * 1024
+
+REDACTION_PATTERNS = (
+    (re.compile(r"-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"), "[REDACTED_TOKEN]"),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{8,}={0,2}"), "Bearer [REDACTED_TOKEN]"),
+    (re.compile(r"(?i)\b([A-Z0-9._%+-]+)@([A-Z0-9.-]+\.[A-Z]{2,})\b"), "[REDACTED_EMAIL]"),
+    (re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+"), r"\1=[REDACTED]"),
+)
+
+
+def redact_text(text: str) -> str:
+    redacted = text
+    for pattern, replacement in REDACTION_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
 
 FALLBACK_PROMPT = """You are Farrier's per-edit semantic quality judge.
 
@@ -44,25 +67,34 @@ change is likely to cause real maintenance or correctness harm.
 
 
 def read_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
+    raw = sys.stdin.read(MAX_PAYLOAD_BYTES + 1)
+    if len(raw.encode("utf-8")) > MAX_PAYLOAD_BYTES:
+        emit_posttool_context("quality hook input exceeded 256 KiB; deterministic feedback was skipped. Split the edit and run just check.")
+        sys.exit(0)
     if not raw.strip():
-        return {}
+        emit_posttool_context("quality hook received malformed empty input; run just check.")
+        sys.exit(0)
 
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        emit_posttool_context("quality hook received malformed JSON; run just check.")
+        sys.exit(0)
+    if not isinstance(payload, dict):
+        emit_posttool_context("quality hook JSON root must be an object; run just check.")
+        sys.exit(0)
+    return payload
 
-    return payload if isinstance(payload, dict) else {}
 
-
-def load_manifest(cwd: str) -> dict[str, Any]:
+def load_manifest(cwd: str) -> tuple[dict[str, Any], str | None]:
+    text, error = read_project_text(cwd, ".farrier.json", MAX_MANIFEST_BYTES)
+    if error is not None or text is None:
+        return {}, error
     try:
-        data = json.loads((Path(cwd) / ".farrier.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-    return data if isinstance(data, dict) else {}
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return {}, "contains invalid JSON"
+    return (data, None) if isinstance(data, dict) else ({}, "root must be an object")
 
 
 def int_from(value: Any, default: int) -> int:
@@ -130,28 +162,28 @@ def unique_paths(paths: list[str]) -> list[str]:
     return result
 
 
-def read_text(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-
-
 def capped_text(text: str, limit: int = MAX_EMBEDDED_CONTENT_BYTES) -> str:
-    encoded = text.encode("utf-8")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        raise ValueError("text limit must be a positive integer")
+    redacted = redact_text(text)
+    encoded = redacted.encode("utf-8")
     if len(encoded) <= limit:
-        return text
-
-    head = encoded[:limit].decode("utf-8", errors="ignore")
+        return redacted
+    marker = b"\n[truncated]"
+    if limit <= len(marker):
+        return encoded[:limit].decode("utf-8", errors="ignore")
+    head = encoded[: limit - len(marker)].decode("utf-8", errors="ignore")
     return f"{head}\n[truncated]"
 
 
-def max_file_lines(manifest: dict[str, Any]) -> int:
+def max_file_lines(manifest: dict[str, Any]) -> tuple[int | None, str | None]:
     quality = manifest.get("quality")
     if not isinstance(quality, dict):
-        return DEFAULT_MAX_FILE_LINES
-
-    return int_from(quality.get("maxFileLines"), DEFAULT_MAX_FILE_LINES)
+        return DEFAULT_MAX_FILE_LINES, None
+    value = quality.get("maxFileLines", DEFAULT_MAX_FILE_LINES)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > MAX_FILE_LINES:
+        return None, f"quality.maxFileLines must be an integer from 1 through {MAX_FILE_LINES}"
+    return value, None
 
 
 def per_edit_config(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -163,20 +195,94 @@ def per_edit_config(manifest: dict[str, Any]) -> dict[str, Any]:
     return per_edit if isinstance(per_edit, dict) else {}
 
 
-def prompt_text(cwd: str, config: dict[str, Any]) -> str:
+def validate_per_edit_config(config: dict[str, Any]) -> str | None:
+    if config.get("enabled") is not True:
+        return "judge.perEdit.enabled must be true or false"
+    backend = config.get("backend")
+    if backend is not None and backend not in {"claude", "codex"}:
+        return 'judge.perEdit.backend must be "claude" or "codex"'
+    model = config.get("model")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        return "judge.perEdit.model must be a non-empty string"
+    timeout = config.get("timeoutMs")
+    if timeout is not None and (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or timeout <= 0
+        or timeout > MAX_TIMEOUT_MS
+    ):
+        return f"judge.perEdit.timeoutMs must be greater than zero and at most {MAX_TIMEOUT_MS}"
+    prompt = config.get("prompt")
+    if prompt is not None and (not isinstance(prompt, str) or not prompt.strip()):
+        return "judge.perEdit.prompt must be a non-empty project-relative path"
+    return None
+
+
+def prompt_text(cwd: str, config: dict[str, Any]) -> tuple[str | None, str | None]:
     configured = config.get("prompt")
-    if isinstance(configured, str) and configured.strip():
-        text = read_text(Path(cwd) / configured)
-        if text is not None and text.strip():
-            return text
+    if configured is None:
+        return capped_text(FALLBACK_PROMPT), None
+    assert isinstance(configured, str)
+    text, error = read_project_text(cwd, configured, MAX_EMBEDDED_CONTENT_BYTES)
+    if error is not None or text is None:
+        if error == "is missing":
+            error = "is missing or unreadable"
+        return None, f"judge.perEdit.prompt {error}"
+    if not text.strip():
+        return None, "judge.perEdit.prompt must not be empty"
+    return capped_text(text), None
 
-    return FALLBACK_PROMPT
+
+def inspect_edited_file(cwd: str, path: str, max_lines: int) -> dict[str, Any]:
+    descriptor, error = open_project_regular(cwd, path)
+    if descriptor is None:
+        if error == "is missing":
+            return {"path": path, "missing": True}
+        return {"path": path, "lineCount": 0, "content": "", "warning": error}
+    prefix = bytearray()
+    line_count = 0
+    scanned = 0
+    eof = False
+    last_byte: int | None = None
+    try:
+        before = os.fstat(descriptor)
+        initial_size = before.st_size
+        while scanned < MAX_EDIT_SCAN_BYTES and line_count <= max_lines:
+            chunk = os.read(descriptor, min(8192, MAX_EDIT_SCAN_BYTES - scanned))
+            if not chunk:
+                eof = True
+                break
+            scanned += len(chunk)
+            last_byte = chunk[-1]
+            line_count += chunk.count(b"\n")
+            if len(prefix) < MAX_EMBEDDED_CONTENT_BYTES:
+                prefix.extend(chunk[: MAX_EMBEDDED_CONTENT_BYTES - len(prefix)])
+        after = os.fstat(descriptor)
+        if file_fingerprint(before) != file_fingerprint(after):
+            return {"path": path, "lineCount": 0, "content": "", "warning": "changed identity or contents while being read"}
+    except OSError:
+        return {"path": path, "lineCount": 0, "content": "", "warning": "could not be read safely"}
+    finally:
+        os.close(descriptor)
+    if eof and scanned > 0 and last_byte != ord("\n"):
+        line_count += 1
+    content = prefix.decode("utf-8", errors="replace")
+    if initial_size > len(prefix):
+        content += "\n[truncated]"
+    result: dict[str, Any] = {
+        "path": capped_text(path, 1024),
+        "lineCount": line_count,
+        "content": capped_text(content),
+    }
+    if not eof and line_count <= max_lines:
+        result["warning"] = f"file inspection stopped after {MAX_EDIT_SCAN_BYTES} bytes; line count is incomplete"
+    return result
 
 
-def edited_files(cwd: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+def edited_files(cwd: str, payload: dict[str, Any], max_lines: int) -> tuple[list[dict[str, Any]], str | None]:
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
-        return []
+        return [], "recognized edit tool_input must be an object"
 
     files: list[dict[str, Any]] = []
     paths = (
@@ -184,29 +290,28 @@ def edited_files(cwd: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
         if payload.get("tool_name") == "apply_patch"
         else iter_path_values(tool_input)
     )
-    for path in unique_paths(paths):
+    normalized_paths = unique_paths(paths)
+    if not normalized_paths:
+        return [], "recognized edit payload did not contain an unambiguous file path"
+    for path in normalized_paths:
         if is_hook_path(path):
             continue
 
-        text = read_text(Path(cwd) / path)
-        if text is None:
-            continue
+        inspected = inspect_edited_file(cwd, path, max_lines)
+        if not inspected.get("missing"):
+            files.append(inspected)
 
-        files.append(
-            {
-                "path": path,
-                "lineCount": len(text.splitlines()),
-                "content": capped_text(text),
-            }
-        )
-
-    return files
+    return files, None
 
 
 def deterministic_findings(files: list[dict[str, Any]], max_lines: int) -> list[str]:
     findings: list[str] = []
 
     for file in files:
+        warning = file.get("warning")
+        if isinstance(warning, str):
+            findings.append(f"{file.get('path')}: {warning}; verify the mutation target manually.")
+            continue
         line_count = file.get("lineCount")
         path = file.get("path")
 
@@ -229,7 +334,8 @@ def build_combined_prompt(base_prompt: str, files: list[dict[str, Any]]) -> str:
         "files": files,
     }
 
-    return f"{base_prompt.strip()}\n\nInput JSON:\n{json.dumps(payload, indent=2)}\n"
+    combined = f"{capped_text(base_prompt).strip()}\n\nInput JSON:\n{json.dumps(payload, indent=2)}\n"
+    return capped_text(combined, MAX_COMBINED_PROMPT_BYTES)
 
 
 def backend_command(
@@ -250,43 +356,40 @@ def backend_command(
 
 def run_backend(
     config: dict[str, Any], combined_prompt: str, cwd: str
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, str | None]:
     if config.get("enabled") is not True:
         return None
 
     backend = str_from(config.get("backend"), "claude")
     model = str_from(config.get("model"), "haiku")
-    timeout_ms = int_from(config.get("timeoutMs"), DEFAULT_TIMEOUT_MS)
+    timeout_ms = min(int_from(config.get("timeoutMs"), DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS)
 
     command = backend_command(backend, model, combined_prompt)
     if command is None:
-        return None
+        return None, "semantic quality backend is unavailable"
 
     args, stdin_text = command
 
-    try:
-        proc = subprocess.run(
-            args,
-            input=stdin_text,
-            cwd=cwd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout_ms / 1000,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-
-    if proc.returncode != 0:
-        return None
+    returncode, output, status = run_bounded_process(
+        args,
+        cwd=cwd,
+        timeout_seconds=timeout_ms / 1000,
+        max_output_bytes=MAX_BACKEND_OUTPUT_BYTES,
+        stdin_text=stdin_text,
+    )
+    if status == "overflow":
+        return None, f"semantic quality backend output exceeded {MAX_BACKEND_OUTPUT_BYTES} bytes and was terminated"
+    if status == "timeout":
+        return None, "semantic quality backend timed out and was terminated"
+    if status != "ok" or returncode != 0:
+        return None, None
 
     try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return None
+        data = json.loads(output)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return None, None
 
-    return data if isinstance(data, dict) else None
+    return (data, None) if isinstance(data, dict) else (None, None)
 
 
 def valid_judgement(data: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -339,6 +442,7 @@ def judgement_context(judgement: dict[str, Any]) -> str | None:
 
 
 def emit_posttool_context(context: str) -> None:
+    context = redact_text(context).encode("utf-8")[:MAX_CONTEXT_BYTES].decode("utf-8", errors="ignore")
     print(
         json.dumps(
             {
@@ -361,20 +465,37 @@ def main() -> int:
         return 0
 
     cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else os.getcwd()
-    manifest = load_manifest(cwd)
-    files = edited_files(cwd, payload)
+    manifest, manifest_error = load_manifest(cwd)
+    if not manifest or not isinstance(manifest.get("judge"), dict) or not isinstance(manifest.get("judge", {}).get("perEdit"), dict):
+        detail = f": {manifest_error}" if manifest_error else ""
+        emit_posttool_context(f"quality hook configuration is missing or malformed{detail}; run farrier doctor and just check.")
+        return 0
+    max_lines, max_lines_error = max_file_lines(manifest)
+    if max_lines_error is not None or max_lines is None:
+        emit_posttool_context(f"quality hook configuration is malformed: {max_lines_error}. Run farrier doctor and farrier update --yes.")
+        return 0
+    files, input_error = edited_files(cwd, payload, max_lines)
+    if input_error is not None:
+        emit_posttool_context(f"quality hook received malformed or ambiguous input: {input_error}. Run just check manually.")
+        return 0
 
-    contexts = deterministic_findings(files, max_file_lines(manifest))
+    contexts = deterministic_findings(files, max_lines)
 
     config = per_edit_config(manifest)
-    if files and config.get("enabled") is True:
-        base_prompt = prompt_text(cwd, config)
-        judgement = valid_judgement(
-            run_backend(config, build_combined_prompt(base_prompt, files), cwd)
-        )
-        context = judgement_context(judgement) if judgement is not None else None
-        if context is not None:
-            contexts.append(context)
+    if config.get("enabled") is not False:
+        config_error = validate_per_edit_config(config)
+        base_prompt, prompt_error = prompt_text(cwd, config) if config_error is None else (None, None)
+        error = config_error or prompt_error
+        if error is not None:
+            contexts.append(f"quality hook configuration is malformed: {error}. Run farrier doctor and farrier update --yes.")
+        elif files and base_prompt is not None:
+            backend_result, backend_error = run_backend(config, build_combined_prompt(base_prompt, files), cwd)
+            if backend_error is not None:
+                contexts.append(f"{backend_error}. Run the generated check manually or disable judge.perEdit explicitly.")
+            judgement = valid_judgement(backend_result)
+            context = judgement_context(judgement) if judgement is not None else None
+            if context is not None:
+                contexts.append(context)
 
     if contexts:
         emit_posttool_context("\n\n".join(contexts))

@@ -21,7 +21,7 @@ export type AdviseCliOptions = {
   model?: string;
   sessions: "auto" | "none";
   since: AdviceSessionLookback;
-  targets: AdviceVendor[];
+  targets?: AdviceVendor[];
   only?: AdviceCategory[];
   legacySkills: boolean;
   json: boolean;
@@ -32,7 +32,7 @@ function adviseUsage(): string {
   return `farrier advise — inspect a project and recommend agent configuration improvements
 
 Usage:
-  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude,codex]
+  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude|codex]
                  [--only guidance,hooks,skills,subagents,plugins,mcp]
                  [--backend claude|codex] [--model <name>] [--json]
   farrier advise skills [--dir <target>] [--context <path|text>] [--backend claude|codex] [--json]
@@ -41,7 +41,7 @@ Options:
   --dir <path>          Project directory. Defaults to the current working directory.
   --sessions <mode>     Include exact-project Claude/Codex sessions (auto) or use code only (none).
   --since <window>      Session lookback: 7d (default), 14d, or all.
-  --targets <vendors>   Comma-separated recommendation targets: claude,codex. Defaults to both.
+  --targets <vendor>    Recommendation target; must match --backend. Defaults to the selected backend.
   --only <categories>   Limit the report to selected categories. --only skills preserves skill-only advice.
   --context <path|text> Optional context for the legacy skill-only advisor.
   --backend <name>      Reasoning backend: claude or codex. Defaults to Claude when both are found.
@@ -64,9 +64,8 @@ function commaValues(value: string, flag: string): string[] {
 }
 
 function parseTargets(value: string): AdviceVendor[] {
-  const values = commaValues(value, "--targets");
-  if (values.some((item) => item !== "claude" && item !== "codex")) throw new Error("--targets must contain only claude,codex");
-  return values as AdviceVendor[];
+  if (value !== "claude" && value !== "codex") throw new Error("--targets must be exactly one provider: claude or codex");
+  return [value];
 }
 
 function parseOnly(value: string): AdviceCategory[] {
@@ -86,7 +85,6 @@ export function parseAdviseArgs(args: string[]): AdviseCliOptions {
     dir: process.cwd(),
     sessions: "auto",
     since: "7d",
-    targets: ["claude", "codex"],
     legacySkills: args[0] === "skills",
     json: false,
     help: false
@@ -151,6 +149,7 @@ export function formatAdviceReport(report: AdviceReport): string {
     `Backend: ${report.backend}${report.model ? ` (${report.model})` : ""}`,
     `Sessions: ${report.sessions.included ? "included" : "not included"} (${adviceSessionLookbackLabel(report.sessions.lookback)}; ${formatSources(report)})`,
     `Evidence funnel: ${sessionCount} sessions → ${funnel.visibleEvents} visible events → ${funnel.recurringPatterns} recurring patterns → ${report.recommendations.length} supported recommendations`,
+    ...(report.evidence ? [`Comparable evidence: ${report.evidence.result} (digest ${report.evidence.inputDigest})`] : []),
     "",
     "Codebase profile",
     `  Stacks: ${report.profile.stacks.join(", ") || "generic"}`,

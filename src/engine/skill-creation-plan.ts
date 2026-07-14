@@ -1,6 +1,5 @@
-import { existsSync } from "node:fs";
-import { readFile, rm, rmdir } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { stageSkill, type CreateAgent, type CreateSkillDeps, type SkillCreationRequest } from "./create-skill";
 import type { RenderedFile } from "./render";
 
@@ -9,22 +8,6 @@ export type SkillCreationFilePlan = {
   files: RenderedFile[];
   notes: string[];
 };
-
-const planningStaging = new Map<string, { users: number; existed: boolean }>();
-
-function acquirePlanningStaging(targetDir: string): () => Promise<void> {
-  const current = planningStaging.get(targetDir);
-  if (current) current.users += 1;
-  else planningStaging.set(targetDir, { users: 1, existed: existsSync(join(targetDir, ".farrier-staging")) });
-  return async () => {
-    const entry = planningStaging.get(targetDir);
-    if (!entry) return;
-    entry.users -= 1;
-    if (entry.users > 0) return;
-    planningStaging.delete(targetDir);
-    if (!entry.existed) await rmdir(join(targetDir, ".farrier-staging")).catch(() => undefined);
-  };
-}
 
 /**
  * Uses the normal skill-creator authoring and validation pipeline, but turns
@@ -43,7 +26,6 @@ export async function authorSkillCreationPlan(input: {
     throw new Error("Advice batch skill output root must stay inside the target directory.");
   }
   const agent: CreateAgent = input.request.mode === "author-claude" ? "claude" : "codex";
-  const releaseStaging = acquirePlanningStaging(input.targetDir);
   let staged: Awaited<ReturnType<typeof stageSkill>> | undefined;
   try {
     staged = await stageSkill({
@@ -56,10 +38,10 @@ export async function authorSkillCreationPlan(input: {
       creatorReady: input.creatorReady,
       cleanupOnFailure: true
     });
-    const sourcePrefix = `${staged.stagingRoot}/${staged.validated.name}/`;
+    const sourcePrefix = `.farrier-output/${staged.validated.name}/`;
     const destinationPrefix = `${input.outputRoot}/${staged.validated.name}/`;
     const files = await Promise.all(staged.validated.files.map(async (path): Promise<RenderedFile> => {
-      const bytes = await readFile(join(input.targetDir, path));
+      const bytes = await readFile(join(dirname(staged!.stagingRoot), path));
       const content = bytes.toString("utf8");
       if (!Buffer.from(content, "utf8").equals(bytes)) {
         throw new Error(`Advice batch review does not support binary skill asset '${path}'.`);
@@ -68,7 +50,6 @@ export async function authorSkillCreationPlan(input: {
     }));
     return { name: staged.validated.name, files, notes: staged.validated.notes };
   } finally {
-    if (staged) await rm(join(input.targetDir, staged.stagingRoot), { recursive: true, force: true });
-    await releaseStaging();
+    if (staged) await rm(dirname(staged.stagingRoot), { recursive: true, force: true });
   }
 }

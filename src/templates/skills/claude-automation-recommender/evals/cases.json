@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "cases": [
+    {"id":"recommend-automation","kind":"positive","prompt":"Review repeated Claude Code work and recommend an appropriate existing automation mechanism.","expectedBehavior":"Select among supported Claude automation mechanisms using bounded evidence and state limitations."},
+    {"id":"unrelated-debugging","kind":"negative","prompt":"Debug this arithmetic expression.","expectedBehavior":"Do not invoke the automation recommender workflow."}
+  ]
+}

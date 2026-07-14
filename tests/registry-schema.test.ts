@@ -261,6 +261,49 @@ describe("registry schema validation", () => {
     ).toThrow("hook.entry: must match a files[].path value");
   });
 
+
+  test("rejects duplicate index entries, version drift, and duplicate executable metadata", () => {
+    expect(() =>
+      validateRegistryIndex(
+        {
+          schemaVersion: 1,
+          name: "@acme",
+          items: [indexItem, indexItem]
+        },
+        "@acme"
+      )
+    ).toThrow("duplicates an earlier registry item");
+
+    expect(() => validateRegistryItem({ ...packItem(), version: "2.0.0" }, indexItem)).toThrow(
+      "item.version: must equal index version 1.0.0"
+    );
+
+    const hookIndexItem = { name: "guard", type: "hook" as const, version: "1.0.0" };
+    expect(() =>
+      validateRegistryItem(
+        {
+          schemaVersion: 1,
+          type: "hook",
+          name: "guard",
+          version: "1.0.0",
+          hook: {
+            hookVersion: 1,
+            events: [
+              { event: "PreToolUse", matcher: "Bash" },
+              { event: "PreToolUse", matcher: "Bash" }
+            ],
+            entry: "guard.py",
+            files: [
+              { path: "guard.py", content: "one" },
+              { path: "guard.py", content: "two" }
+            ]
+          }
+        },
+        hookIndexItem
+      )
+    ).toThrow(/duplicates an earlier (event binding|hook file)/);
+  });
+
   test("accepts skill items as refs only", () => {
     const skill = validateRegistryItem(
       {

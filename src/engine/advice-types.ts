@@ -1,3 +1,5 @@
+import type { EvidenceComparison } from "./behavior-evidence";
+
 export const adviceCategories = ["guidance", "hooks", "skills", "subagents", "plugins", "mcp"] as const;
 export const adviceSessionLookbacks = ["7d", "14d", "all"] as const;
 
@@ -20,6 +22,7 @@ export type AdviceEvidence = {
   allowedCategories?: AdviceCategory[];
   targetVendors?: AdviceVendor[];
   implementationRoutes?: string[];
+  selectedProvider?: AdviceVendor;
 };
 
 export type ProjectProfile = {
@@ -147,6 +150,7 @@ export type AdviceReport = {
   recommendations: AdviceRecommendation[];
   weakLeads?: AdviceRecommendation[];
   coverage: AdviceCoverage[];
+  evidence?: EvidenceComparison;
   notes: string[];
 };
 

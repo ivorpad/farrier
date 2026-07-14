@@ -1,7 +1,7 @@
 import { lstat } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { RenderedFile, RenderPlan } from "./render";
+import type { ExecutableProvenance, RenderedFile, RenderPlan } from "./render";
 import { snapshotRegularFile, type FileFingerprint, type FileSnapshot } from "./create-plan-fs";
 
 export const harnessChangeActions = ["create", "unchanged", "merge", "update", "replace", "blocked"] as const;
@@ -25,7 +25,10 @@ export type HarnessFileChange = {
   reason: string;
   requiresForce: boolean;
   exists: boolean;
+  reviewedContent?: string;
+  previousContent?: string;
   inspection?: FileFingerprint;
+  executableProvenance?: ExecutableProvenance;
 };
 
 export type HarnessChangeBlocker = { path: string; reason: string };
@@ -176,7 +179,15 @@ async function parentBlocker(targetRoot: string, absolutePath: string): Promise<
   return undefined;
 }
 
-function describedChange(file: RenderedFile, action: HarnessChangeAction, purpose: string, reason: string, exists = false, inspection?: FileFingerprint): HarnessFileChange {
+function describedChange(
+  file: RenderedFile,
+  action: HarnessChangeAction,
+  purpose: string,
+  reason: string,
+  exists = false,
+  inspection?: FileFingerprint,
+  previousContent?: string
+): HarnessFileChange {
   return {
     path: file.path,
     action,
@@ -184,7 +195,10 @@ function describedChange(file: RenderedFile, action: HarnessChangeAction, purpos
     reason,
     requiresForce: action === "replace",
     exists,
+    reviewedContent: file.content,
     inspection,
+    ...(previousContent !== undefined ? { previousContent } : {}),
+    ...(file.executableProvenance ? { executableProvenance: file.executableProvenance } : {})
   };
 }
 
@@ -223,16 +237,16 @@ async function inspectFile(targetRoot: string, file: RenderedFile, purpose: stri
 
   if (current === file.content) {
     if (file.mode !== undefined && (file.mode & 0o7777) !== snapshot.fingerprint.mode) {
-      return describedChange(file, "update", purpose, `Content matches, but permissions must be normalized to ${file.mode.toString(8)}.`, true, snapshot.fingerprint);
+      return describedChange(file, "update", purpose, `Content matches, but permissions must be normalized to ${file.mode.toString(8)}.`, true, snapshot.fingerprint, current);
     }
-    return describedChange(file, "unchanged", purpose, "Existing content and permissions already match.", true, snapshot.fingerprint);
+    return describedChange(file, "unchanged", purpose, "Existing content and permissions already match.", true, snapshot.fingerprint, current);
   }
 
   if (file.path === ".gitignore" && file.content.startsWith(current)) {
-    return describedChange(file, "merge", purpose, "Planned content only appends missing Farrier ignore entries.", true, snapshot.fingerprint);
+    return describedChange(file, "merge", purpose, "Planned content only appends missing Farrier ignore entries.", true, snapshot.fingerprint, current);
   }
 
-  return describedChange(file, "replace", purpose, "Existing content differs from the planned content.", true, snapshot.fingerprint);
+  return describedChange(file, "replace", purpose, "Existing content differs from the planned content.", true, snapshot.fingerprint, current);
 }
 
 function targetRootBlocker(info: FileInfo | undefined): string | undefined {

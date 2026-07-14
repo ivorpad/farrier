@@ -5,6 +5,7 @@ import { adviseSkills, detectAgentBackend, resolveContext, type AdviseBackend } 
 import { probeAgents, type AgentAvailability } from "../engine/backend";
 import { detectPacksWithEvidence, type DetectedPackEvidence } from "../engine/detect";
 import { agentsHardRules } from "../engine/render";
+import { HarnessApplyError } from "../engine/create-plan";
 import { searchSkills, type SkillSearchResult } from "../engine/skills";
 import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
 import { builtinCatalog, loadPackCatalog, type PackCatalog } from "../registry/catalog";
@@ -290,9 +291,13 @@ function WizardApp(props: WizardAppProps) {
         createOutcomes: result.createOutcomes,
       });
     } catch (error) {
+      const applyError = error instanceof HarnessApplyError ? error : undefined;
       dispatch({
         type: "WRITE_FAILED",
         message: `Write failed: ${errorMessage(error)}`,
+        mutationState: applyError?.mutationState ?? "not-started",
+        recoveryPath: applyError?.backupDir ?? null,
+        remediation: `Run \`farrier doctor --dir ${props.targetDir}\` before retrying.`,
       });
     } finally {
       createAbortRef.current = null;

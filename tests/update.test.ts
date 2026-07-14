@@ -166,7 +166,7 @@ dependencies = ["fastapi>=0.110"]
     expect(report.hookDrift).toContainEqual({
       hookId: "secret-shield",
       manifestVersion: 0,
-      currentVersion: 2
+      currentVersion: 4
     });
     expect(report.notes).toContain("Manual review required for outdated user-mutable files; update mode will not overwrite them.");
 
@@ -183,7 +183,7 @@ dependencies = ["fastapi>=0.110"]
 
     const repairedManifest = await readJson(manifestPath);
     const repairedVersions = repairedManifest.versions as { hooks: Record<string, number> };
-    expect(repairedVersions.hooks["secret-shield"]).toBe(2);
+    expect(repairedVersions.hooks["secret-shield"]).toBe(4);
     expect(repairedManifest.farrierVersion).toBe("0.3.0");
 
     const after = await createUpdateReport({ targetDir: dir });
@@ -380,5 +380,17 @@ gem "rails"
     expect((manifest.registry as { items: Record<string, { sha256: string }> }).items["@acme/guard"].sha256).toBe(
       "hook-v2".padEnd(64, "0")
     );
+  });
+
+  test("rejects a concurrent edit after review without overwriting it", async () => {
+    const dir = await tempDir();
+    await renderPack(dir, "python-fastapi");
+    const path = join(dir, ".claude", "hooks", "write-guard.py");
+    await writeFile(path, "reviewed drift\n", "utf8");
+
+    await expect(applyUpdate({ targetDir: dir }, {
+      beforeTransaction: () => writeFile(path, "concurrent user edit\n", "utf8")
+    })).rejects.toThrow("changed after review");
+    expect(await readFile(path, "utf8")).toBe("concurrent user edit\n");
   });
 });

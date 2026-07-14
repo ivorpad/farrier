@@ -49,13 +49,13 @@ Use this skill when the user asks about Farrier harness drift, stack changes, ge
 4. Explain that update mode:
    - reports stack drift without switching packs automatically,
    - repairs missing files, including a missing selected Claude/Codex binding,
-   - repairs outdated Farrier-owned hook and harness-advisor files,
+   - applies reviewed Farrier-owned repairs transactionally and reports committed, rolled-back, or incomplete rollback state,
    - reports modified selected binding files and other user-mutable files for manual review,
    - preserves and ignores unselected vendor bindings,
    - acknowledges detected secondary findings,
    - does not install suggested skills automatically.
 
-5. Use `farrier doctor --dir .` for static harness health checks and `farrier learn --dir .` to review transcript-derived tool-policy rule proposals.
+5. Use `farrier doctor --dir .` for static harness health checks and `farrier learn --dir .` to review transcript-derived tool-policy rule proposals. Doctor does not execute hooks or project tests. Run the generated aggregate check separately.
 
 ## Skill recommendations
 

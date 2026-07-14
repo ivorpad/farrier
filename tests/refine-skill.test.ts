@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, stat, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BackendCommandRunner, BackendCommandRunnerInput } from "../src/engine/backend";
 import { applyRefinements, generateNextGrillQuestion, type RefineAnswer } from "../src/engine/refine-skill";
 
@@ -126,6 +129,47 @@ describe("grill engine", () => {
         runner: empty.runner
       })
     ).rejects.toThrow(shapeError);
+  });
+
+  test("passes only the selected backend credential into the isolated runner", async () => {
+    const previousAuth = process.env.ANTHROPIC_API_KEY;
+    const previousSecret = process.env.FARRIER_TEST_SECRET;
+    process.env.ANTHROPIC_API_KEY = "required-auth";
+    process.env.FARRIER_TEST_SECRET = "do-not-forward";
+    try {
+      const runner: BackendCommandRunner = async (input) => {
+        expect(input.env?.ANTHROPIC_API_KEY).toBe("required-auth");
+        expect(input.env?.FARRIER_TEST_SECRET).toBeUndefined();
+        expect(input.env?.CLAUDE_CONFIG_DIR).toBeTruthy();
+        expect(input.env?.HOME).not.toBe(process.env.HOME);
+        return { exitCode: 0, stdout: JSON.stringify({ done: true }), stderr: "" };
+      };
+      const targetDir = await mkdtemp(join(tmpdir(), "farrier-refine-auth-"));
+      await generateNextGrillQuestion({
+        description: "x", backend: "claude", targetDir, priorAnswers: [], questionNumber: 1, runner
+      });
+    } finally {
+      if (previousAuth === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousAuth;
+      if (previousSecret === undefined) delete process.env.FARRIER_TEST_SECRET;
+      else process.env.FARRIER_TEST_SECRET = previousSecret;
+    }
+  });
+
+  test("detects a same-size target edit even when its mtime is restored", async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), "farrier-refine-digest-"));
+    const target = join(targetDir, "value.txt");
+    await writeFile(target, "safe");
+    const before = await stat(target);
+    const runner: BackendCommandRunner = async () => {
+      await writeFile(target, "evil");
+      await utimes(target, before.atime, before.mtime);
+      return { exitCode: 0, stdout: JSON.stringify({ done: true }), stderr: "" };
+    };
+
+    await expect(generateNextGrillQuestion({
+      description: "x", backend: "claude", targetDir, priorAnswers: [], questionNumber: 1, runner
+    })).rejects.toThrow("changed the target project");
   });
 
   test("applyRefinements appends decisions and is a no-op without answers", () => {

@@ -1,9 +1,13 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { readManifest } from "./update";
 import type { ToolPolicyRule } from "../packs/types";
 import type { ReasoningEffort } from "../config/farrier-config";
+import { applyMutationPlan, fingerprintPath, inspectMutationPlan } from "./mutation-transaction";
+import { withIsolatedExecution } from "./execution-isolation";
+import { backendEnvironmentOverrides, backendEnvironmentPassthrough } from "./backend";
+import { compareEvidence, createEvidenceSet, type EvidenceComparison } from "./behavior-evidence";
 
 export type CandidateEvent = {
   command: string;
@@ -17,6 +21,8 @@ export type LearnCommandRunnerInput = {
   cmd: string[];
   cwd: string;
   stdin?: string;
+  signal?: AbortSignal;
+  env?: Record<string, string>;
 };
 
 export type LearnCommandRunnerOutput = {
@@ -52,6 +58,7 @@ export type LearnReport = {
   candidateEvents: CandidateEvent[];
   proposedRules: ToolPolicyRule[];
   droppedProposals: DroppedProposal[];
+  evidence?: EvidenceComparison;
   notes: string[];
   errors: string[];
 };
@@ -819,6 +826,7 @@ function proposalArrayFromBackendOutput(stdout: string): unknown[] {
 function buildProposalPrompt(input: {
   events: CandidateEvent[];
   existingIds: string[];
+  evidenceDigest: string;
 }): string {
   return `You are Farrier's self-learning tool-policy proposal generator.
 
@@ -845,6 +853,9 @@ Rules:
 - Prefer narrowly-scoped command-prefix patterns.
 - Do not reuse existing rule ids.
 
+Evidence digest (the same bounded set is used for validation):
+${input.evidenceDigest}
+
 Existing rule ids:
 ${JSON.stringify(input.existingIds, null, 2)}
 
@@ -859,7 +870,8 @@ async function defaultRunner(input: LearnCommandRunnerInput): Promise<LearnComma
     cwd: input.cwd,
     stdin: input.stdin !== undefined ? "pipe" : "ignore",
     stdout: "pipe",
-    stderr: "pipe"
+    stderr: "pipe",
+    env: input.env
   });
 
   if (input.stdin !== undefined) {
@@ -891,28 +903,40 @@ async function llmRuleProposals(input: {
   runner: LearnCommandRunner;
 }): Promise<unknown[]> {
   const model = input.model ?? (input.backend === "claude" ? "haiku" : "gpt-5.5");
+  const evidence = createEvidenceSet({ workflow: "learn", items: input.events });
   const prompt = buildProposalPrompt({
-    events: input.events,
-    existingIds: Array.from(input.existingIds).sort()
+    events: evidence.items,
+    existingIds: Array.from(input.existingIds).sort(),
+    evidenceDigest: evidence.digest
   });
 
   const effortArgs = input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : [];
   const command =
     input.backend === "claude"
       ? {
-          cmd: ["claude", "-p", "--model", model],
+          cmd: ["claude", "-p", "--model", model, "--permission-mode", "plan"],
           stdin: prompt
         }
       : {
-          cmd: ["codex", "exec", "--model", model, ...effortArgs, prompt],
+          cmd: ["codex", "exec", "-s", "read-only", "--model", model, ...effortArgs, prompt],
           stdin: undefined
         };
 
-  const output = await input.runner({
-    cmd: command.cmd,
-    cwd: input.targetDir,
-    stdin: command.stdin
+  const isolated = await withIsolatedExecution({
+    targetDir: input.targetDir,
+    nativeConfinement: input.backend === "codex",
+    environmentPassthrough: backendEnvironmentPassthrough(input.backend),
+    environmentOverrides: backendEnvironmentOverrides(input.backend),
+    readOnlyWorkspace: true,
+    run: ({ workspace, environment, signal }) => input.runner({
+      cmd: command.cmd,
+      cwd: workspace,
+      stdin: command.stdin,
+      signal,
+      env: environment
+    })
   });
+  const output = isolated.value;
 
   if (output.exitCode !== 0) {
     const stderr = output.stderr.trim();
@@ -976,8 +1000,24 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
 
   notes.push(...candidateResult.notes);
   errors.push(...existingRules.errors);
+  const reportEvidenceSet = createEvidenceSet({
+    workflow: "learn",
+    items: candidateResult.events,
+    maxItems: 200,
+    maxItemBytes: 8_000,
+    maxTotalBytes: 1_600_000
+  });
+  const candidateEvents = reportEvidenceSet.items;
+  const evidenceSet = createEvidenceSet({ workflow: "learn", items: candidateEvents });
+  const backendCandidateEvents = evidenceSet.items;
+  if (reportEvidenceSet.truncated) {
+    notes.push(`Learn report evidence was bounded: retained ${reportEvidenceSet.itemCount}/${reportEvidenceSet.inputItemCount} candidates; ${reportEvidenceSet.truncatedItemCount} truncated and ${reportEvidenceSet.omittedItemCount} omitted.`);
+  }
+  if (evidenceSet.truncated) {
+    notes.push(`Backend evidence was bounded to ${evidenceSet.itemCount}/${evidenceSet.inputItemCount} candidates (${evidenceSet.byteCount} bytes); deterministic analysis and the report retain the larger redacted inventory.`);
+  }
 
-  if (candidateResult.events.length === 0) {
+  if (candidateEvents.length === 0) {
     notes.push("No transcript candidates found.");
   }
 
@@ -988,9 +1028,15 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
       manifestPath,
       learnEnabled: manifest.learn.enabled,
       transcriptsDir,
-      candidateEvents: candidateResult.events,
+      candidateEvents,
       proposedRules: [],
       droppedProposals: [],
+      evidence: compareEvidence({
+        beforeSet: evidenceSet,
+        afterSet: evidenceSet,
+        before: backendCandidateEvents.map((_, index) => ({ id: `candidate-${index}`, outcome: "inconclusive" as const })),
+        after: backendCandidateEvents.map((_, index) => ({ id: `candidate-${index}`, outcome: "inconclusive" as const }))
+      }),
       notes,
       errors
     };
@@ -998,9 +1044,9 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
 
   let rawProposals: unknown[] = [];
 
-  if (candidateResult.events.length > 0) {
+  if (candidateEvents.length > 0) {
     if (options.noLlm) {
-      rawProposals = deterministicRuleProposals(candidateResult.events);
+      rawProposals = deterministicRuleProposals(candidateEvents);
       notes.push("Using deterministic --no-llm proposal mode.");
     } else {
       const backend = options.backend ?? "claude";
@@ -1008,17 +1054,20 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
       try {
         rawProposals = await llmRuleProposals({
           targetDir,
-          events: candidateResult.events,
+          events: backendCandidateEvents,
           existingIds: existingRules.existingIds,
           backend,
           model: options.model,
           reasoningEffort: options.reasoningEffort,
           runner: options.runner ?? defaultRunner
         });
-        notes.push(`Used ${backend} backend to propose rule data.`);
+        notes.push(`Used ${backend} backend to propose rule data from an isolated staging workspace.`);
+        notes.push(backend === "codex"
+          ? "Isolation mode: native-confinement (Codex read-only sandbox)."
+          : "Isolation mode: staged-best-effort; Claude has no supported native write-root confinement, so target fingerprints were verified and residual OS-user write risk remains.");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        rawProposals = deterministicRuleProposals(candidateResult.events);
+        rawProposals = deterministicRuleProposals(candidateEvents);
         notes.push(`LLM proposal backend failed (${message}); fell back to deterministic proposals.`);
       }
     }
@@ -1027,17 +1076,24 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
   const validation = validateProposals({
     proposals: rawProposals,
     existingIds: existingRules.existingIds,
-    candidateCommands: candidateResult.events.map((event) => event.command)
+    candidateCommands: candidateEvents.map((event) => event.command)
   });
+  const before = backendCandidateEvents.map((_, index) => ({ id: `candidate-${index}`, outcome: "fail" as const }));
+  const after = backendCandidateEvents.map((event, index) => ({
+    id: `candidate-${index}`,
+    outcome: validation.accepted.some((rule) => ruleMatchesAnyCandidate(rule, [event.command])) ? "pass" as const : "fail" as const
+  }));
+  const evidence = compareEvidence({ beforeSet: evidenceSet, afterSet: evidenceSet, before, after });
 
   return {
     targetDir,
     manifestPath,
     learnEnabled: manifest.learn.enabled,
     transcriptsDir,
-    candidateEvents: candidateResult.events,
+    candidateEvents,
     proposedRules: validation.accepted,
     droppedProposals: validation.dropped,
+    evidence,
     notes,
     errors
   };
@@ -1045,6 +1101,7 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
 
 export async function applyLearn(options: LearnOptions): Promise<LearnApplyResult> {
   const targetDir = resolve(options.targetDir);
+  const reviewedRulesFingerprint = await fingerprintPath(join(targetDir, rulesRelativePath));
   const report = await createLearnReport({
     ...options,
     targetDir
@@ -1081,19 +1138,17 @@ export async function applyLearn(options: LearnOptions): Promise<LearnApplyResul
   }
 
   if (appendedRules.length > 0 || existingRules.missing) {
-    await mkdir(dirname(rulesPath), { recursive: true });
-    await writeFile(
-      rulesPath,
-      `${JSON.stringify(
-        {
-          version: 1,
-          rules: [...existingRules.document.rules, ...appendedRules]
-        },
-        null,
-        2
-      )}\n`,
-      "utf8"
-    );
+    const relativeRulesPath = relative(targetDir, rulesPath);
+    const content = `${JSON.stringify(
+      { version: 1, rules: [...existingRules.document.rules, ...appendedRules] },
+      null,
+      2
+    )}\n`;
+    const plan = await inspectMutationPlan(targetDir, [
+      { kind: "write-file", path: relativeRulesPath, content }
+    ]);
+    plan.operations[0]!.expected = reviewedRulesFingerprint;
+    await applyMutationPlan(plan);
   }
 
   return {
@@ -1140,6 +1195,10 @@ export function formatLearnReport(report: LearnReport): string {
       "none"
     )
   ];
+
+  if (report.evidence) {
+    lines.push("", `Behavior evidence: ${report.evidence.result} (digest ${report.evidence.inputDigest}; before ${report.evidence.before.passed} pass/${report.evidence.before.failed} fail, after ${report.evidence.after.passed} pass/${report.evidence.after.failed} fail).`);
+  }
 
   if (report.errors.length > 0) {
     lines.push("", "Errors:", ...renderList(report.errors, "none"));

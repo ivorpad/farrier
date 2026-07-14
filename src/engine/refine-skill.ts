@@ -1,10 +1,14 @@
 import {
+  backendEnvironmentOverrides,
+  backendEnvironmentPassthrough,
   defaultBackendRunner,
   invokeBackend,
   type AgentBackend,
   type BackendCommandRunner
 } from "./backend";
 import type { ReasoningEffort } from "../config/farrier-config";
+import { withIsolatedExecution } from "./execution-isolation";
+import { createEvidenceSet } from "./behavior-evidence";
 
 /**
  * Before delegating to a vendor skill-creator, farrier grills the requester
@@ -29,24 +33,9 @@ export const maxGrillQuestions = 6;
 const maxOptions = 5;
 const requestCharLimit = 16_000;
 
-function renderTranscript(priorAnswers: RefineAnswer[]): string {
-  if (priorAnswers.length === 0) {
-    return "";
-  }
-
-  const lines = priorAnswers
-    .map((entry) => {
-      const answer = entry.answer.trim().length > 0 ? entry.answer.trim() : "(skipped — you decide; do not re-ask)";
-      return `Q: ${entry.question}\nA: ${answer}`;
-    })
-    .join("\n");
-
-  return `\nDecisions so far (never re-ask these):\n${lines}\n`;
-}
-
 function buildGrillPrompt(input: {
-  description: string;
-  priorAnswers: RefineAnswer[];
+  evidenceDigest: string;
+  evidenceItems: unknown[];
   questionNumber: number;
   packId?: string;
 }): string {
@@ -64,9 +53,8 @@ Rules:
 - This is question ${input.questionNumber} of at most ${maxGrillQuestions} — spend it on the most consequential open fork.
 - Return {"done": true} when the remaining open decisions would not change what a competent skill-creator builds.
 - No prose, no markdown.
-${input.packId ? `Project stack: ${input.packId}\n` : ""}Skill request:
-${input.description.slice(0, requestCharLimit)}
-${renderTranscript(input.priorAnswers)}`;
+${input.packId ? `Project stack: ${input.packId}\n` : ""}Bounded redacted skill-request evidence (digest ${input.evidenceDigest}):
+${JSON.stringify(input.evidenceItems)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -115,22 +103,47 @@ export async function generateNextGrillQuestion(input: {
     return null;
   }
 
-  const parsed = await invokeBackend({
-    backend: input.backend,
-    model: input.model,
-    reasoningEffort: input.reasoningEffort,
-    prompt: buildGrillPrompt({
+  const evidence = createEvidenceSet({
+    workflow: "skill",
+    items: [{
       description: input.description,
-      priorAnswers: input.priorAnswers,
-      questionNumber: input.questionNumber,
-      packId: input.packId
-    }),
+      ...(input.priorAnswers.length > 0
+        ? {
+            "Decisions so far": input.priorAnswers.map((entry) => ({
+              question: entry.question,
+              answer: entry.answer.trim().length > 0 ? entry.answer.trim() : "(skipped — you decide; do not re-ask)"
+            }))
+          }
+        : {})
+    }],
+    maxItemBytes: requestCharLimit,
+    maxTotalBytes: requestCharLimit
+  });
+  const isolated = await withIsolatedExecution({
     targetDir: input.targetDir,
-    runner: input.runner ?? defaultBackendRunner,
-    signal: input.signal
+    nativeConfinement: input.backend === "codex",
+    environmentPassthrough: backendEnvironmentPassthrough(input.backend),
+    environmentOverrides: backendEnvironmentOverrides(input.backend),
+    readOnlyWorkspace: true,
+    signal: input.signal,
+    run: ({ workspace, environment, signal }) => invokeBackend({
+      backend: input.backend,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      prompt: buildGrillPrompt({
+        evidenceDigest: evidence.digest,
+        evidenceItems: evidence.items,
+        questionNumber: input.questionNumber,
+        packId: input.packId
+      }),
+      targetDir: workspace,
+      runner: input.runner ?? defaultBackendRunner,
+      signal,
+      env: environment
+    })
   });
 
-  return validateGrillStep(parsed, input.backend);
+  return validateGrillStep(isolated.value, input.backend);
 }
 
 /** Folds answered questions into the brief the skill-creator will receive. */

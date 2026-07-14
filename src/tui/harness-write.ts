@@ -14,7 +14,7 @@ export type HarnessWriteResult = {
 };
 
 export type HarnessWriteDeps = {
-  writeRenderPlan?: (plan: RenderPlan) => Promise<ApplyHarnessChangePlanResult | void>;
+  writeRenderPlan?: (plan: RenderPlan) => Promise<ApplyHarnessChangePlanResult>;
   installSkills?: typeof installSkills;
   createSkills?: typeof createSkills;
 };
@@ -36,14 +36,10 @@ export async function runHarnessWrite(
   const install = deps.installSkills ?? installSkills;
   const create = deps.createSkills ?? createSkills;
 
-  const applied = await writePlan(input.reviewPlan);
-  const applyResult: ApplyHarnessChangePlanResult = applied ?? {
-    written: [],
-    unchanged: [],
-    writtenFiles: [],
-    unchangedFiles: [],
-    backupDir: null,
-  };
+  const applyResult = await writePlan(input.reviewPlan);
+  if (!applyResult) {
+    throw new Error("Harness apply completed without a transaction result; no success was recorded. Run `farrier doctor --dir <target>` before retrying.");
+  }
 
   const installResults = await install(input.selectedSkills, input.targetDir);
   const failedInstalls = installResults.filter((result) => !result.ok).length;

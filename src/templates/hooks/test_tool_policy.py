@@ -83,18 +83,25 @@ def assert_denied(stdout: str, rule_id: str) -> None:
     assert "Redirect:" in output["permissionDecisionReason"]
 
 
+def assert_blocked(stdout: str, expected: str) -> None:
+    output = parse_stdout(stdout)["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert expected in output["permissionDecisionReason"]
+
+
 def assert_allowed(stdout: str, stderr: str) -> None:
     assert stdout == ""
     assert stderr == ""
 
 
-def test_missing_rules_file_passes_silently(tmp_path: Path) -> None:
+def test_missing_rules_file_fails_closed(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(
         pretool_payload(tmp_path, "Bash", {"command": "pip install requests"})
     )
 
     assert code == 0
-    assert_allowed(stdout, stderr)
+    assert stderr == ""
+    assert_blocked(stdout, "missing, unreadable, or invalid JSON")
 
 
 def test_denies_pip_install(tmp_path: Path) -> None:
@@ -188,7 +195,7 @@ def test_ignores_non_bash_tool(tmp_path: Path) -> None:
     assert_allowed(stdout, stderr)
 
 
-def test_malformed_rules_file_passes_silently(tmp_path: Path) -> None:
+def test_malformed_rules_file_fails_closed(tmp_path: Path) -> None:
     rules_dir = tmp_path / ".claude" / "hooks"
     rules_dir.mkdir(parents=True)
     (rules_dir / "tool-policy-rules.json").write_text("{not json", encoding="utf-8")
@@ -198,10 +205,50 @@ def test_malformed_rules_file_passes_silently(tmp_path: Path) -> None:
     )
 
     assert code == 0
-    assert_allowed(stdout, stderr)
+    assert stderr == ""
+    assert_blocked(stdout, "missing, unreadable, or invalid JSON")
 
 
-def test_invalid_regex_rule_is_skipped(tmp_path: Path) -> None:
+
+def test_every_malformed_selected_rule_shape_fails_closed(tmp_path: Path) -> None:
+    valid = python_rules()[0]
+    malformed_documents: list[tuple[str, object]] = [
+        ("missing-version", {"rules": [valid]}),
+        ("wrong-version", {"version": 2, "rules": [valid]}),
+        ("root-array", []),
+        ("rules-object", {"version": 1, "rules": {}}),
+        ("rule-scalar", {"version": 1, "rules": ["bad"]}),
+        ("wrong-tool", {"version": 1, "rules": [{**valid, "tool": "Read"}]}),
+        ("invalid-id", {"version": 1, "rules": [{**valid, "id": "Not_Kebab"}]}),
+        ("empty-flags", {"version": 1, "rules": [{**valid, "flags": ""}]}),
+        ("invalid-flags", {"version": 1, "rules": [{**valid, "flags": "x"}]}),
+        ("duplicate-flags", {"version": 1, "rules": [{**valid, "flags": "ii"}]}),
+        ("non-string-flags", {"version": 1, "rules": [{**valid, "flags": 1}]}),
+        ("duplicate-id", {"version": 1, "rules": [valid, dict(valid)]}),
+        ("invalid-regex", {"version": 1, "rules": [{**valid, "commandPattern": "["}]}),
+    ]
+    for field in ("id", "description", "tool", "commandPattern", "message", "redirect"):
+        malformed_documents.append(
+            (f"missing-{field}", {"version": 1, "rules": [{key: value for key, value in valid.items() if key != field}]})
+        )
+        malformed_documents.append(
+            (f"empty-{field}", {"version": 1, "rules": [{**valid, field: ""}]})
+        )
+
+    for name, document in malformed_documents:
+        case_dir = tmp_path / name
+        rules_dir = case_dir / ".claude" / "hooks"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "tool-policy-rules.json").write_text(json.dumps(document), encoding="utf-8")
+        code, stdout, stderr = run_hook(
+            pretool_payload(case_dir, "Bash", {"command": "echo safe"})
+        )
+        assert code == 0
+        assert stderr == ""
+        assert_blocked(stdout, ".claude/hooks/tool-policy-rules.json")
+
+
+def test_invalid_regex_rule_fails_closed(tmp_path: Path) -> None:
     write_rules(
         tmp_path,
         [
@@ -221,4 +268,24 @@ def test_invalid_regex_rule_is_skipped(tmp_path: Path) -> None:
     )
 
     assert code == 0
-    assert_allowed(stdout, stderr)
+    assert stderr == ""
+    assert_blocked(stdout, "commandPattern is invalid")
+
+
+def test_matching_rule_deny_reason_is_redacted_and_bounded(tmp_path: Path) -> None:
+    rule = python_rules()[1]
+    rule["message"] = "token=seeded-secret dev@example.com"
+    rule["redirect"] = "Bearer abcdefghijklmnop"
+    write_rules(tmp_path, [rule])
+
+    code, stdout, stderr = run_hook(
+        pretool_payload(tmp_path, "Bash", {"command": "pip install requests"})
+    )
+
+    assert code == 0
+    assert stderr == ""
+    assert_blocked(stdout, "[REDACTED]")
+    assert "seeded-secret" not in stdout
+    assert "dev@example.com" not in stdout
+    assert "abcdefghijklmnop" not in stdout
+    assert len(stdout.encode("utf-8")) < 2500
