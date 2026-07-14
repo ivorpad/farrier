@@ -224,7 +224,7 @@ describe("farrier skill new e2e (scaffold paths)", () => {
     const parsed = JSON.parse(result.stdout) as { name: string; mode: string; files: string[]; installed: boolean };
     expect(parsed.name).toBe("my-skill");
     expect(parsed.mode).toBe("scaffold");
-    expect(parsed.files).toEqual(["skills/my-skill/SKILL.md"]);
+    expect(parsed.files).toEqual(["skills/my-skill/SKILL.md", "skills/my-skill/evals/cases.json"]);
     expect(parsed.installed).toBe(false);
   });
 
@@ -277,12 +277,16 @@ describe("farrier skill new model config wiring", () => {
       calls.push(input);
       const match = `${input.stdin ?? ""} ${input.cmd.join(" ")}`.match(/under (\S+)\/ only/);
       const root = match![1]!;
-      await mkdir(join(dir, root, "config-skill"), { recursive: true });
+      await mkdir(join(input.cwd, root, "config-skill", "evals"), { recursive: true });
       await writeFile(
-        join(dir, root, "config-skill", "SKILL.md"),
+        join(input.cwd, root, "config-skill", "SKILL.md"),
         "---\nname: config-skill\ndescription: Does a thing. Use when testing.\n---\n\nBody.\n",
         "utf8"
       );
+      await writeFile(join(input.cwd, root, "config-skill", "evals", "cases.json"), JSON.stringify({ version: 1, cases: [
+        { id: "expected", kind: "positive", prompt: "Use it", expectedBehavior: "Use it" },
+        { id: "unrelated", kind: "negative", prompt: "Do something else", expectedBehavior: "Do not use it" }
+      ] }));
       return { exitCode: 0, stdout: "", stderr: "" };
     };
 

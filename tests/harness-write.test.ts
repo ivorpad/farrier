@@ -86,6 +86,28 @@ test("harness write reports exact written and unchanged counts", async () => {
   }
 });
 
+test("does not fabricate success when an apply dependency returns no transaction result", async () => {
+  const targetDir = await mkdtemp(join(tmpdir(), "farrier-harness-write-"));
+  try {
+    await expect(runHarnessWrite(
+      {
+        reviewPlan: { targetDir, files: [] },
+        selectedSkills: [],
+        createRequests: [],
+        targetDir,
+        signal: new AbortController().signal,
+      },
+      {
+        writeRenderPlan: (async () => undefined) as never,
+        installSkills: async () => [],
+        createSkills: async () => [],
+      },
+    )).rejects.toThrow("without a transaction result");
+  } finally {
+    await rm(targetDir, { recursive: true, force: true });
+  }
+});
+
 test("skill install failures are explicit partial results with bounded retry commands", async () => {
   const targetDir = await mkdtemp(join(tmpdir(), "farrier-harness-write-"));
   const failed = {

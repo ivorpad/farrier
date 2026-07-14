@@ -27,6 +27,7 @@ For a focused report, pass `--only guidance`, `--only hooks`, `--only subagents`
 
 - The workflow is report-only and must not mutate project configuration.
 - Farrier reads Codex sessions through App Server `thread/list` and read-only `thread/read`, filtered to the exact resolved `cwd`.
-- Farrier normalizes and redacts evidence locally and never consumes hidden reasoning records.
+- Codex selection consumes and targets Codex evidence only. Claude evidence and Claude-only artifact routes are rejected; compatible shared routes remain.
+- Farrier normalizes, bounds, and redacts evidence locally and never consumes hidden reasoning records.
 - Never turn a hook recommendation into executable code unless the user separately asks to implement it.
 - Treat Codex hooks as partial enforcement: simple Bash, `apply_patch`, and Stop mappings do not cover every `unified_exec`, native read/search, or WebSearch path, and PostToolUse cannot undo completed effects.

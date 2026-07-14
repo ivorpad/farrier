@@ -49,7 +49,7 @@ describe("project advice", () => {
     const hook = (id: string, reason: string) => ({
       id: `hooks:${id}`,
       category: "hooks",
-      targetVendors: ["claude", "codex"],
+      targetVendors: ["claude"],
       reason,
       benefit: "Makes verification consistent while removing a repeated manual step.",
       evidence: ["project:package-scripts"],
@@ -98,7 +98,7 @@ describe("project advice", () => {
     expect(report.coverage.find((item) => item.category === "guidance")?.reason).toContain("already covers");
     expect(report.notes.some((note) => note.includes("beyond the 2 hooks limit"))).toBe(true);
     expect(report.notes.some((note) => note.includes("executable hook content"))).toBe(true);
-    expect(report.notes.some((note) => note.includes("mcp@invented") && note.includes("unsupported"))).toBe(true);
+    expect(report.notes.some((note) => note.includes("mcp:unknown") && note.includes("invalid target vendors"))).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.signal).toBe(controller.signal);
     expect(calls[0]?.cmd).toContain("--no-session-persistence");
@@ -169,12 +169,95 @@ describe("project advice", () => {
     expect(report.notes).toContain("No matching project sessions were found; recommendations use codebase evidence only.");
   });
 
+  test("isolates mixed session evidence, targets, artifacts, and funnel counts to the selected provider", async () => {
+    for (const provider of ["claude", "codex"] as const) {
+      const opposite = provider === "claude" ? "codex" : "claude";
+      const root = await projectFixture();
+      const selectedId = `session:${provider}:verification:selected`;
+      const oppositeId = `session:${opposite}:verification:dominant`;
+      const incompatibleId = `session:${provider}:verification:incompatible-target`;
+      const { runner, calls } = queuedRunner({ recommendations: [
+        {
+          id: `guidance:shared-${provider}`,
+          category: "guidance",
+          targetVendors: [provider],
+          reason: `Repeated ${provider} verification should be documented.`,
+          benefit: "Keeps the shared workflow visible to the selected provider.",
+          evidence: [selectedId],
+          confidence: "high",
+          routeId: "guidance:agents-md"
+        },
+        {
+          id: "hooks:opposite-provider",
+          category: "hooks",
+          targetVendors: [opposite],
+          reason: `Create an opposite-provider hook.`,
+          benefit: "Invalid cross-provider candidate.",
+          evidence: [oppositeId],
+          confidence: "high",
+          routeId: provider === "claude" ? "hooks:codex-hooks-json" : "hooks:claude-settings"
+        }
+      ], coverage: [] });
+      const funnelSource = (source: "claude" | "codex", count: number, visibleEvents: number) => ({
+        source, discovered: count, eligible: count, read: count, parsed: count, visibleEvents,
+        discarded: { filtering: 0, redaction: 0, deduplication: 0, malformed: 0, limits: 0 }, retainedPatterns: 1
+      });
+      const report = await adviseProject({
+        targetDir: root,
+        backend: provider,
+        runner,
+        search: async () => [],
+        sessionEvidence: {
+          sources: [{ source: provider, count: 5 }, { source: opposite, count: 41 }],
+          signals: [
+            { id: selectedId, source: provider, kind: "verification", summary: `${provider}-selected-check`, occurrences: 5, distinctSessions: 5, allowedCategories: ["guidance", "hooks"] },
+            { id: incompatibleId, source: provider, kind: "verification", summary: `${provider}-source-${opposite}-only-target`, occurrences: 9, distinctSessions: 9, allowedCategories: ["hooks"], targetVendors: [opposite] },
+            { id: oppositeId, source: opposite, kind: "verification", summary: `${opposite}-dominant-check`, occurrences: 41, distinctSessions: 41, allowedCategories: ["guidance", "hooks"] }
+          ],
+          notes: [],
+          funnel: {
+            sources: [funnelSource(provider, 5, 5), funnelSource(opposite, 41, 41)],
+            visibleEvents: 46,
+            recurringPatterns: 2
+          }
+        }
+      });
+
+      expect(report.targets).toEqual([provider]);
+      expect(report.sessions.requestedSources).toEqual([provider]);
+      expect(report.sessions.sources).toEqual([{ source: provider, count: 5 }]);
+      expect(report.sessions.evidence.every((item) => item.source === provider)).toBe(true);
+      expect(report.sessions.funnel?.visibleEvents).toBe(5);
+      expect(report.sessions.funnel?.recommendation?.patternsSent).toBe(1);
+      expect(report.recommendations.map((item) => item.id)).toEqual([`guidance:shared-${provider}`]);
+      expect(report.recommendations[0]?.targetVendors).toEqual([provider]);
+      expect(report.recommendations[0]?.creates).toEqual([{ vendor: "shared", path: "AGENTS.md", kind: "guidance" }]);
+      const prompt = calls[0]?.stdin ?? calls[0]?.cmd.at(-1) ?? "";
+      expect(prompt).toContain(`${provider}-selected-check`);
+      expect(prompt).toContain(`"targetVendors":["${provider}"]`);
+      expect(prompt).not.toContain(`"targetVendors":["${opposite}"]`);
+      expect(prompt).not.toContain(`${opposite}-dominant-check`);
+      expect(prompt).not.toContain(oppositeId);
+      expect(prompt).not.toContain(incompatibleId);
+      expect(prompt).not.toContain(`.${opposite}/hooks`);
+      expect(prompt).not.toContain(`.${opposite}/agents`);
+      expect(JSON.stringify(report.recommendations)).not.toContain(`.${opposite}/`);
+    }
+  });
+
+  test("rejects explicitly incompatible advice targets and session sources", async () => {
+    const root = await projectFixture();
+    const { runner } = queuedRunner({ recommendations: [] });
+    await expect(adviseProject({ targetDir: root, backend: "claude", targets: ["codex"], runner })).rejects.toThrow("targets must equal the selected backend (claude)");
+    await expect(adviseProject({ targetDir: root, backend: "codex", sessionSources: ["claude"], runner })).rejects.toThrow("session sources must equal the selected backend (codex)");
+  });
+
   test("allows up to five recommendations for a focused non-legacy category", async () => {
     const root = await projectFixture();
     const recommendations = Array.from({ length: 6 }, (_, index) => ({
       id: `guidance:route-${index}`,
       category: "guidance",
-      targetVendors: ["claude", "codex"],
+      targetVendors: ["claude"],
       reason: `Project guidance improvement ${index}.`,
       evidence: ["project:root"],
       confidence: "medium",
@@ -198,13 +281,13 @@ describe("project advice", () => {
       { id: "p:release", kind: "manual-workflow", allowedCategories: ["skills", "subagents", "hooks"] },
       { id: "p:config", kind: "guidance-edit", allowedCategories: ["guidance", "skills"] }
     ].map((item, index) => ({
-      ...item, source: index % 2 === 0 ? "claude" as const : "codex" as const,
+      ...item, source: "claude" as const,
       allowedCategories: item.allowedCategories as AdviceCategory[],
       summary: `Recurring actionable pattern ${index}`, occurrences: 6, distinctSessions: 5,
-      targetVendors: ["claude" as const, "codex" as const]
+      targetVendors: ["claude" as const]
     }));
     const recommendation = (category: string, evidence: string, routeId: string) => ({
-      id: `${category}:fixture`, category, targetVendors: ["claude", "codex"],
+      id: `${category}:fixture`, category, targetVendors: ["claude"],
       reason: `Recurring ${category} evidence supports a bounded improvement.`,
       benefit: `Makes the repeated ${category} workflow more reliable.`, evidence: [evidence], confidence: "high", routeId
     });
@@ -231,7 +314,7 @@ describe("project advice", () => {
     expect(report.recommendations).toHaveLength(5);
     expect(new Set(report.recommendations.map((item) => item.category)).size).toBe(5);
     expect(report.sessions.funnel?.recommendation?.recoveryCalls).toBe(1);
-    expect(formatAdviceReport(report)).toContain("34 sessions → 187 visible events → 6 recurring patterns → 5 supported recommendations");
+    expect(formatAdviceReport(report)).toContain("20 sessions → 36 visible events → 6 recurring patterns → 5 supported recommendations");
   });
 
   test("stays sparse without recurring actionable evidence and does not call recovery", async () => {
@@ -255,7 +338,7 @@ describe("project advice", () => {
   test("moves low-confidence candidates into weak leads with strengthening guidance", async () => {
     const root = await projectFixture();
     const { runner } = queuedRunner({ recommendations: [{
-      id: "skills:possible-review", category: "skills", targetVendors: ["claude", "codex"],
+      id: "skills:possible-review", category: "skills", targetVendors: ["claude"],
       reason: "One session requested a review workflow.", benefit: "Could make reviews repeatable.",
       evidence: ["project:root"], confidence: "low", routeId: "skills:agents-shared"
     }], coverage: [] });
@@ -279,5 +362,6 @@ describe("project advice", () => {
     expect(parseAdviseArgs(["skills"]).legacySkills).toBe(true);
     expect(parseAdviseArgs(["--only", "skills"]).legacySkills).toBe(true);
     expect(() => parseAdviseArgs(["--since", "30d"])).toThrow("--since must be 7d, 14d, or all");
+    expect(() => parseAdviseArgs(["--targets", "claude,codex"])).toThrow("--targets must be exactly one provider");
   });
 });

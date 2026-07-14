@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from pathlib import PurePosixPath
+from pathlib import Path
 from typing import Any
 
 
@@ -30,9 +31,11 @@ LOCKFILE_BASENAMES = {
     "Gemfile.lock",
     "go.sum",
 }
+MAX_PAYLOAD_BYTES = 256 * 1024
 
 
 def emit_deny(reason: str) -> None:
+    reason = reason.encode("utf-8")[:2000].decode("utf-8", errors="ignore")
     print(
         json.dumps(
             {
@@ -47,16 +50,23 @@ def emit_deny(reason: str) -> None:
 
 
 def read_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
+    raw = sys.stdin.read(MAX_PAYLOAD_BYTES + 1)
+    if len(raw.encode("utf-8")) > MAX_PAYLOAD_BYTES:
+        emit_deny("Blocked malformed PreToolUse input: payload exceeds 256 KiB. Split the edit and retry.")
+        sys.exit(0)
     if not raw.strip():
-        return {}
+        emit_deny("Blocked malformed PreToolUse input: expected one JSON object.")
+        sys.exit(0)
 
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-
-    return payload if isinstance(payload, dict) else {}
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        emit_deny("Blocked malformed PreToolUse input: invalid JSON.")
+        sys.exit(0)
+    if not isinstance(payload, dict):
+        emit_deny("Blocked malformed PreToolUse input: JSON root must be an object.")
+        sys.exit(0)
+    return payload
 
 
 def iter_path_values(value: Any) -> list[str]:
@@ -117,14 +127,28 @@ def protected_reason(path: str) -> str | None:
     return None
 
 
+def outside_root(path: str, cwd: str) -> bool:
+    try:
+        root = Path(cwd).resolve(strict=False)
+        candidate = Path(path)
+        resolved = candidate.resolve(strict=False) if candidate.is_absolute() else (root / candidate).resolve(strict=False)
+        return resolved != root and root not in resolved.parents
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
 def main() -> int:
     payload = read_payload()
 
     if payload.get("tool_name") not in EDIT_TOOLS:
         return 0
+    if payload.get("hook_event_name") != "PreToolUse":
+        emit_deny("Blocked recognized mutation because the hook event contract is invalid. Retry the edit.")
+        return 0
 
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
+        emit_deny("Blocked ambiguous recognized mutation: tool_input must be an object.")
         return 0
 
     paths = (
@@ -132,7 +156,14 @@ def main() -> int:
         if payload.get("tool_name") == "apply_patch"
         else iter_path_values(tool_input)
     )
+    if not paths:
+        emit_deny("Blocked ambiguous recognized mutation: no target path could be determined. Use a supported path field or a complete apply_patch header.")
+        return 0
+    cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else os.getcwd()
     for path in paths:
+        if outside_root(path, cwd):
+            emit_deny(f"Blocked out-of-root mutation to `{normalize_path(path)}`. Keep edits inside the project root.")
+            return 0
         reason = protected_reason(path)
         if reason is not None:
             emit_deny(reason)

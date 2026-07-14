@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "cases": [
+    {"id":"assess-harness","kind":"positive","prompt":"Assess this repository's coding-agent harness and identify evidence-backed gaps.","expectedBehavior":"Inspect the existing harness and report bounded, actionable findings without mutating files."},
+    {"id":"unrelated-copywriting","kind":"negative","prompt":"Write marketing copy for a bicycle.","expectedBehavior":"Do not invoke the harness advisor workflow."}
+  ]
+}

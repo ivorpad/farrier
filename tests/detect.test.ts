@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { detectPacks, detectPacksWithEvidence, detectSecondary } from "../src/engine/detect";
-import { resolvePack } from "../src/packs/index";
+import { builtinDetectionOrder, hookCapabilities, packCapabilityProjection, resolvePack } from "../src/packs/index";
 import type { Pack, PackDetect } from "../src/packs/types";
 import type { PackCatalog } from "../src/registry/catalog";
 
@@ -33,6 +33,22 @@ function catalogForDetect(detect: PackDetect): PackCatalog {
     getPack: (id: string) => (id === pack.id ? pack : undefined),
   } as PackCatalog;
 }
+
+describe("capability projection", () => {
+  test("owns detection order, explicit-only behavior, agents, and actual hook mappings", () => {
+    const generic = packCapabilityProjection(resolvePack("generic"));
+    expect(generic.detection).toEqual({ order: null, explicitOnly: true });
+    expect(generic.supportedAgents).toEqual(["claude", "codex"]);
+
+    const fastapi = packCapabilityProjection(resolvePack("python-fastapi"));
+    expect(fastapi.detection.order).toBe(builtinDetectionOrder().indexOf("python-fastapi"));
+    expect(fastapi.detection.explicitOnly).toBe(false);
+    expect(hookCapabilities["write-guard"].agents.claude?.[0]?.matcher).toBe(
+      "Edit|Write|MultiEdit|NotebookEdit"
+    );
+    expect(hookCapabilities["write-guard"].agents.codex?.[0]?.matcher).toBe("^apply_patch$");
+  });
+});
 
 describe("detectPacks", () => {
   test("returns no packs for unknown projects and never auto-detects generic", async () => {

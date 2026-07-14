@@ -1,10 +1,11 @@
-import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { createRenderPlan, type FarrierManifestInput, type RenderedFile } from "./render";
 import { inventoryOwnership, readManifest } from "./update";
 import { validateToolPolicyRuleProposal } from "./learn";
 import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 import { normalizeAgents } from "./agent-selection";
+import { readSkillBehaviorEvidence } from "./skill-validate";
 
 export type DoctorGroup =
   | "manifest"
@@ -16,7 +17,8 @@ export type DoctorGroup =
   | "konsistent"
   | "learn"
   | "judge"
-  | "quality";
+  | "quality"
+  | "skills";
 
 export type DoctorSeverity = "error" | "warning";
 
@@ -48,7 +50,8 @@ const allGroups: DoctorGroup[] = [
   "konsistent",
   "learn",
   "judge",
-  "quality"
+  "quality",
+  "skills"
 ];
 
 const rulesRelativePath = ".claude/hooks/tool-policy-rules.json";
@@ -337,6 +340,15 @@ function validateJudgeTier(
       remediation: `Set judge.${tier}.timeoutMs to a positive millisecond timeout.`
     });
   }
+  if (isPositiveNumber(value.timeoutMs) && value.timeoutMs > 120_000) {
+    problems.push({
+      group: "judge",
+      severity: "error",
+      path: ".farrier.json",
+      message: `judge.${tier}.timeoutMs exceeds the 120000 ms runtime bound`,
+      remediation: `Set judge.${tier}.timeoutMs to 120000 or less.`
+    });
+  }
 
   if (value.prompt !== undefined) {
     if (!isNonEmptyString(value.prompt)) {
@@ -361,6 +373,16 @@ function validateJudgeTier(
       });
     }
 
+    if (isPositiveNumber(value.maxDiffBytes) && value.maxDiffBytes > 120_000) {
+      problems.push({
+        group: "judge",
+        severity: "error",
+        path: ".farrier.json",
+        message: "judge.stop.maxDiffBytes exceeds the 120000-byte runtime bound",
+        remediation: "Set judge.stop.maxDiffBytes to 120000 or less."
+      });
+    }
+
     if (value.maxUntrackedFiles !== undefined && !isPositiveNumber(value.maxUntrackedFiles)) {
       problems.push({
         group: "judge",
@@ -368,6 +390,15 @@ function validateJudgeTier(
         path: ".farrier.json",
         message: "judge.stop.maxUntrackedFiles must be a positive number",
         remediation: "Set judge.stop.maxUntrackedFiles to a positive file count."
+      });
+    }
+    if (isPositiveNumber(value.maxUntrackedFiles) && value.maxUntrackedFiles > 1_000) {
+      problems.push({
+        group: "judge",
+        severity: "error",
+        path: ".farrier.json",
+        message: "judge.stop.maxUntrackedFiles exceeds the 1000-file runtime bound",
+        remediation: "Set judge.stop.maxUntrackedFiles to 1000 or less."
       });
     }
   }
@@ -403,12 +434,19 @@ async function addJudgePromptProblems(
     }
 
     const promptPath = absoluteProjectPath(targetDir, tierConfig.prompt);
-    if (!(await fileExists(promptPath))) {
+    try {
+      if (isAbsolute(tierConfig.prompt)) throw new Error("absolute");
+      const [info, actual, root] = await Promise.all([lstat(promptPath), realpath(promptPath), realpath(targetDir)]);
+      const rel = relative(root, actual);
+      if (!info.isFile() || info.isSymbolicLink() || rel.startsWith("..") || isAbsolute(rel)) throw new Error("unsafe");
+      if (info.size > 30 * 1024) throw new Error("oversized");
+      await readFile(promptPath, "utf8");
+    } catch {
       problems.push({
         group: "judge",
         severity: "error",
         path: tierConfig.prompt,
-        message: `judge.${tier}.prompt points to a missing file`,
+        message: `judge.${tier}.prompt must be a readable in-root regular non-symlink file no larger than 30720 bytes`,
         remediation: "Restore the generated prompt file or update the manifest prompt path."
       });
     }
@@ -905,6 +943,57 @@ async function addKonsistentProblems(
   }
 }
 
+async function addGeneratedRecipeProblems(targetDir: string, expectedJustfile: RenderedFile | undefined, problems: DoctorProblem[]): Promise<void> {
+  if (!expectedJustfile) return;
+  let actual: string;
+  try {
+    actual = await readFile(join(targetDir, "justfile"), "utf8");
+  } catch {
+    return;
+  }
+  const expectedRecipes = Array.from(expectedJustfile.content.matchAll(/^([a-z][a-z0-9_-]*):/gm), (match) => match[1]!);
+  for (const recipe of expectedRecipes) {
+    if (!new RegExp(`^${recipe.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}:`, "m").test(actual)) {
+      problems.push({
+        group: "inventory",
+        severity: "error",
+        path: "justfile",
+        message: `Required generated recipe '${recipe}' is missing`,
+        remediation: "Run farrier update --yes to restore the generated aggregate and local/CI check definitions."
+      });
+    }
+  }
+  if (expectedJustfile.content.includes("pytest .claude/hooks") && !/^[ \t]+.*pytest \.claude\/hooks/m.test(actual)) {
+    problems.push({
+      group: "hooks",
+      severity: "error",
+      path: "justfile",
+      message: "The generated check aggregate does not invoke the generated hook test suite",
+      remediation: "Run farrier update --yes, then run just check."
+    });
+  }
+}
+
+async function addBundledSkillCaseProblems(targetDir: string, problems: DoctorProblem[]): Promise<void> {
+  const paths = [
+    ".claude/skills/harness-advisor",
+    ".claude/skills/claude-automation-recommender",
+    ".agents/skills/farrier-project-advisor"
+  ];
+  for (const path of paths) {
+    const evidence = await readSkillBehaviorEvidence(join(targetDir, path));
+    if (evidence.availability === "unavailable") {
+      problems.push({
+        group: "skills",
+        severity: "error",
+        path: `${path}/evals/cases.json`,
+        message: "Bundled Farrier skill behavior cases are missing or invalid",
+        remediation: "Run farrier update --yes to restore positive and negative skill cases."
+      });
+    }
+  }
+}
+
 export async function createDoctorReport(input: { targetDir: string; catalog?: PackCatalog }): Promise<DoctorReport> {
   const targetDir = resolve(input.targetDir);
   const catalog = input.catalog ?? builtinCatalog();
@@ -968,6 +1057,8 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
   });
 
   await addInventoryProblems(targetDir, expectedPlan.files, problems);
+  await addGeneratedRecipeProblems(targetDir, expectedPlan.files.find((file) => file.path === "justfile"), problems);
+  await addBundledSkillCaseProblems(targetDir, problems);
   await addHookModeProblems(targetDir, expectedPlan.files, problems);
 
   if (manifest.agents.includes("claude")) {

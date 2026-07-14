@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { getPack } from "../packs/index";
+import { builtinDetectionOrder, getPack } from "../packs/index";
 import type { PackDetect, ResolvedPack, SecondaryDetectionFinding } from "../packs/types";
 import type { PackCatalog } from "../registry/catalog";
 
@@ -29,8 +29,6 @@ type DetectRequirements = {
   needsPackageJson: boolean;
   needsGemfile: boolean;
 };
-
-const autoDetectOrder = ["python-lambda-powertools", "python-fastapi", "python-uv", "ts-nextjs", "ts-react-vite", "ts-lambda", "ts-base", "rails"];
 
 const ignoredWalkDirectories = new Set([".git", ".venv", "node_modules", "vendor"]);
 const maxGlobEvidencePaths = 20;
@@ -376,7 +374,7 @@ function matchesDetect(signals: ProjectSignals, detect: PackDetect): boolean {
 }
 
 export async function detectPacksWithEvidence(dir: string, catalog?: PackCatalog): Promise<DetectedPackEvidence[]> {
-  const packIds = catalog ? catalog.detectablePackIds() : autoDetectOrder;
+  const packIds = catalog ? catalog.detectablePackIds() : builtinDetectionOrder();
   const packs = packIds.map((id) => (catalog ? catalog.getPack(id) : getPack(id))).filter((pack): pack is NonNullable<typeof pack> => pack !== undefined);
 
   const signals = await scanProject(

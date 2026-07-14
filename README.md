@@ -163,7 +163,7 @@ Binding files are selected independently: Claude uses `.claude/settings.json`, C
 }
 ```
 
-Any judge infrastructure failure (missing CLI, timeout, bad JSON) passes silently — the judges can slow an agent down, but they can never break it.
+Judge failures follow the selected hook event. PostToolUse quality feedback is non-destructive. A selected Stop judge fails closed on malformed input, invalid configuration, timeout, or internal failure and reports how to retry or disable the judge through Farrier's managed configuration.
 
 ### Codex enforcement coverage
 
@@ -252,7 +252,7 @@ farrier doctor --dir .          # exit 1 if problems
 farrier doctor --dir . --json
 ```
 
-Static checks: manifest and its non-empty agent selection parse, all selected inventory files exist, hooks are executable, selected Claude/Codex bindings contain their required Farrier entries and reference executable scripts, every tool-policy regex compiles, and judge/quality config is shape-valid. Unrelated user-authored Codex hooks are allowed. Runtime Codex trust/approval remains a `/hooks` check. Good in CI: `farrier doctor --dir . || exit 1`.
+Static checks: manifest and its non-empty agent selection parse, all selected inventory files exist, executable digests and permissions match, generated hook tests are present, selected Claude/Codex bindings contain their required Farrier entries, every tool-policy regex compiles, skill provenance/cases are reported, and judge/quality config is shape-valid. Doctor does not run hooks or project tests. Unrelated user-authored Codex hooks are allowed. Runtime Codex trust/approval remains a `/hooks` check. Good in CI: `farrier doctor --dir . || exit 1`.
 
 ### `farrier advise` — evidence-backed project advice
 
@@ -272,7 +272,7 @@ With `--sessions auto` (the default), Farrier includes only the past 7 days of e
 
 Session count measures input volume; it does not measure recommendation strength. Recurring actionable patterns across distinct sessions determine strength. Reports expose the full funnel by source—sessions discovered, eligible, read, and parsed; visible events; filtering, redaction, deduplication, malformed-record, and limit drops; recurring patterns; and backend acceptance or rejection. A compact summary such as `34 sessions → 187 visible events → 12 recurring patterns → 5 supported recommendations` makes low-output runs explainable.
 
-The interactive advice workflow starts with a visible **Reasoning backend** picker and shows Claude/Codex counts for **past 7 days**, **past 14 days**, and **all history**. When both backends are available, Claude is initially selected for compatibility and Left/Right switches to Codex; when only one is available, Farrier selects it and labels the other unavailable. This choice controls only the process that analyzes evidence—it does not determine recommendation target vendors, session evidence sources, session lookback, or recommendation scope. Move to a visible setup control with Up/Down or Tab, then use Left/Right to change that control's value. In the report, Up/Down selects a recommendation and immediately shows the observed problem, expected value, strongest evidence, and exact artifact Farrier would create. PageUp/PageDown scrolls the full report. The visible action row contains **Create selected** and **Create all (N)**; Left/Right focuses an action and Enter activates it, so individual creation remains the default.
+The interactive advice workflow starts with a visible **Reasoning backend** picker and shows Claude/Codex counts for **past 7 days**, **past 14 days**, and **all history**. When both backends are available, Claude is initially selected for compatibility and Left/Right switches to Codex; when only one is available, Farrier selects it and labels the other unavailable. Claude selection consumes Claude sessions and targets Claude artifacts; Codex selection consumes Codex sessions and targets Codex artifacts. Compatible shared routes remain available. Move to a visible setup control with Up/Down or Tab, then use Left/Right to change that control's value. In the report, Up/Down selects a recommendation and immediately shows the observed problem, expected value, strongest evidence, and exact artifact Farrier would create. PageUp/PageDown scrolls the full report. The visible action row contains **Create selected** and **Create all (N)**; Left/Right focuses an action and Enter activates it, so individual creation remains the default.
 
 **Create all** coordinates every supported recommendation in the report. Farrier plans file recommendations and authors skill recommendations concurrently, with at most three backend jobs running at once. The backend recorded in `report.backend` authors every job, including skills; target vendors and session sources never select the authoring backend. Model and reasoning settings for that backend are reloaded when the batch starts, and a backend failure is reported without falling back to the other agent. Unsupported/manual routes such as unverified plugin installation are retained in the result as **skipped** with an explanation. Each recommendation shows queued/running progress followed by **planned**, **created**, **skipped**, **failed**, or **cancelled**; retry runs only failed/cancelled work and preserves successful work.
 

@@ -33,8 +33,14 @@ export type FarrierConfig = {
   models: ModelsConfig;
 };
 
+export type RegistryConfigSource = {
+  scope: "user" | "project";
+  sourcePath: string;
+};
+
 export type LoadedFarrierConfig = {
   config: FarrierConfig;
+  registrySources: Record<string, RegistryConfigSource>;
   userConfigPath: string;
   projectConfigPath: string;
   loadedPaths: string[];
@@ -331,8 +337,19 @@ export async function loadFarrierConfig(input: {
   const userConfig = await readConfig(userConfigPath);
   const projectConfig = await readConfig(projectConfigPath);
 
+  const config = mergeConfig(userConfig, projectConfig);
+  const registrySources = Object.fromEntries(
+    Object.keys(config.registries).map((namespace) => [
+      namespace,
+      projectConfig?.registries[namespace] !== undefined
+        ? { scope: "project" as const, sourcePath: projectConfigPath }
+        : { scope: "user" as const, sourcePath: userConfigPath }
+    ])
+  );
+
   return {
-    config: mergeConfig(userConfig, projectConfig),
+    config,
+    registrySources,
     userConfigPath,
     projectConfigPath,
     loadedPaths: [userConfig ? userConfigPath : undefined, projectConfig ? projectConfigPath : undefined].filter(

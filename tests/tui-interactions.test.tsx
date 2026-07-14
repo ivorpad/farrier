@@ -5,7 +5,7 @@ import { act } from "react";
 import { CreateStep } from "../src/tui/CreateStep";
 import { HooksStep } from "../src/tui/HooksStep";
 import { RefineFreeTextInput } from "../src/tui/RefineScreen";
-import { ReviewStep } from "../src/tui/ReviewStep";
+import { DoneStep, ReviewStep } from "../src/tui/ReviewStep";
 import { EvalConfirmScreen, EvalVerdictScreen } from "../src/tui/create-eval";
 import { CreateDoneScreen, CreateProgressScreen } from "../src/tui/create-progress";
 import { LauncherApp } from "../src/tui/launcher";
@@ -477,6 +477,81 @@ describe("TUI keyboard interactions", () => {
 
       expect(toggled).toEqual(["claude", "codex"]);
       expect(continued).toBe(1);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+
+  test("review exposes remote executable provenance and exact payload", async () => {
+    const review = await testRender(
+      <ReviewStep
+        agents={["claude"]}
+        createRequests={[]}
+        files={[
+          {
+            path: ".claude/hooks/@acme/guard/guard.sh",
+            content: "echo reviewed-payload  \n\n",
+            action: "create",
+            purpose: "Executable hook supplied by a configured registry.",
+            requiresForce: false,
+            executableProvenance: {
+              registryRef: "@acme/guard",
+              version: "1.2.3",
+              sourceIdentity: "source-identity",
+              itemSha256: "a".repeat(64),
+              contentSha256: "b".repeat(64)
+            }
+          }
+        ]}
+        existingHarness={false}
+        blockerCount={0}
+        loading={false}
+        canConfirm
+        onConfirm={() => undefined}
+        onBack={() => undefined}
+        onQuit={() => undefined}
+      />,
+      renderOptions
+    );
+    try {
+      const first = await review.waitForFrame((value) => value.includes("registry @acme/guard v1.2.3"));
+      expect(first).toContain("source source-identity");
+      await interact(review, () => review.mockInput.pressKey("\x1B[6~"));
+      const second = await review.waitForFrame((value) => value.includes("content sha256"));
+      expect(second).toContain('1: "echo reviewed-payload  "');
+      await interact(review, () => review.mockInput.pressKey("\x1B[6~"));
+      const third = await review.waitForFrame((value) => value.includes('2: ""'));
+      expect(third).toContain('3: ""');
+    } finally {
+      await interact(review, () => review.renderer.destroy());
+    }
+  });
+
+  test("write failure visibly renders rollback state, recovery path, and remediation", async () => {
+    const view = await testRender(
+      <DoneStep
+        writeStatus={{
+          ok: false,
+          message: "rollback conflicted",
+          mutationState: "rollback-incomplete",
+          recoveryPath: ".farrier-staging/backups/recovery",
+          remediation: "Run `farrier doctor --dir /tmp/project` before retrying."
+        }}
+        installResults={[]}
+        createOutcomes={[]}
+        agents={["claude"]}
+        hookCount={0}
+        skillCount={0}
+        ruleCount={0}
+        onExit={() => undefined}
+      />,
+      renderOptions
+    );
+    try {
+      const frame = await view.waitForFrame((value) => value.includes("Transaction: rollback-incomplete"));
+      expect(frame).toContain("Recovery material: .farrier-staging/backups/recovery");
+      expect(frame).toContain("Run `farrier doctor --dir /tmp/project` before retrying.");
     } finally {
       await interact(view, () => view.renderer.destroy());
     }

@@ -5,7 +5,11 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import _hook_runtime
+from _hook_runtime import run_bounded_process
 
 
 HOOK = Path(__file__).with_name("verb-runner.py")
@@ -108,6 +112,24 @@ def test_posttool_emits_context_when_check_fails(tmp_path: Path) -> None:
     assert "ruff failed" in output["additionalContext"]
 
 
+
+def test_command_output_overflow_terminates_process_and_emits_bounded_redacted_feedback(
+    tmp_path: Path,
+) -> None:
+    code, stdout, stderr = run_hook(
+        post_payload(tmp_path),
+        tmp_path,
+        "head -c 20000 /dev/zero | tr '\\0' x\necho token=raw-tail-secret\nexit 1",
+    )
+
+    assert code == 0
+    assert stderr == ""
+    data = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "output exceeded" in data
+    assert "raw-tail-secret" not in data
+    assert len(data.encode("utf-8")) <= 16 * 1024 + 64
+
+
 def test_stop_runs_konsistent_and_blocks_on_failure(tmp_path: Path) -> None:
     write_justfile(
         tmp_path,
@@ -158,7 +180,7 @@ konpy:
     assert "drift found" in data["reason"]
 
 
-def test_stop_is_silent_when_konsistent_recipe_is_missing(tmp_path: Path) -> None:
+def test_stop_blocks_when_generated_structure_recipe_is_missing(tmp_path: Path) -> None:
     write_justfile(
         tmp_path,
         """check:
@@ -179,8 +201,10 @@ fmt:
     )
 
     assert code == 0
-    assert stdout == ""
     assert stderr == ""
+    data = json.loads(stdout)
+    assert data["decision"] == "block"
+    assert "Required generated structure recipe is missing" in data["reason"]
 
 
 def test_stop_hook_active_prevents_recursive_block(tmp_path: Path) -> None:
@@ -228,3 +252,56 @@ def test_skips_edits_inside_claude_hooks_to_avoid_recursion(tmp_path: Path) -> N
     assert code == 0
     assert stdout == ""
     assert stderr == ""
+
+
+def test_backend_stdin_delivery_is_covered_by_timeout(tmp_path: Path) -> None:
+    started = time.monotonic()
+    returncode, output, status = run_bounded_process(
+        [sys.executable, "-c", "import time; time.sleep(5)"],
+        cwd=str(tmp_path),
+        timeout_seconds=0.05,
+        max_output_bytes=1024,
+        stdin_text="x" * (64 * 1024),
+    )
+
+    assert status == "timeout"
+    assert returncode is not None
+    assert output == ""
+    assert time.monotonic() - started < 1
+
+
+def test_safe_text_read_rejects_changed_fingerprint(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "stable.txt").write_text("stable", encoding="utf-8")
+    original = _hook_runtime.file_fingerprint
+    calls = 0
+
+    def changed(stats):
+        nonlocal calls
+        calls += 1
+        fingerprint = original(stats)
+        return fingerprint if calls == 1 else (*fingerprint[:-1], fingerprint[-1] + 1)
+
+    monkeypatch.setattr(_hook_runtime, "file_fingerprint", changed)
+    text, error = _hook_runtime.read_project_text(tmp_path, "stable.txt", 1024)
+
+    assert text is None
+    assert error == "changed identity or contents while being read"
+
+
+def test_oversized_and_symlink_justfiles_block_recipe_discovery(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.write_text("konsistent:\n  echo unsafe\n", encoding="utf-8")
+    for name in ("oversized", "symlink"):
+        case_dir = tmp_path / name
+        case_dir.mkdir()
+        justfile = case_dir / "justfile"
+        if name == "oversized":
+            justfile.write_text("x" * (257 * 1024), encoding="utf-8")
+        else:
+            justfile.symlink_to(outside)
+        code, stdout, stderr = run_hook(stop_payload(case_dir), case_dir, "exit 9")
+        assert code == 0
+        assert stderr == ""
+        data = json.loads(stdout)
+        assert data["decision"] == "block"
+        assert "safely discover" in data["reason"]

@@ -165,7 +165,7 @@ test("advice wizard actions resolve fresh analysis settings for the selected bac
     { backend: "claude", model: "claude-advise", reasoningEffort: undefined },
     { backend: "codex", model: "codex-advise", reasoningEffort: "high" }
   ]);
-  expect(calls[0]?.targets).toEqual(["claude", "codex"]);
+  expect(calls[0]?.targets).toEqual(["codex"]);
   expect(calls[0]?.only).toEqual(["hooks"]);
   expect(calls[1]?.sessions).toBe("none");
 });

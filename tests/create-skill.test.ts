@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultBackendRunner, probeAgents, type BackendCommandRunner, type BackendCommandRunnerInput } from "../src/engine/backend";
@@ -53,7 +53,11 @@ function writingBackendRunner(
 }
 
 async function writeSkill(dir: string, root: string, name: string, frontmatterName = name, description = "Does a thing. Use when testing."): Promise<void> {
-  await mkdir(join(dir, root, name), { recursive: true });
+  await mkdir(join(dir, root, name, "evals"), { recursive: true });
+  await writeFile(join(dir, root, name, "evals", "cases.json"), JSON.stringify({ version: 1, cases: [
+    { id: "expected-use", kind: "positive", prompt: "Use the skill", expectedBehavior: "Use it" },
+    { id: "unrelated", kind: "negative", prompt: "Unrelated request", expectedBehavior: "Do not use it" }
+  ] }), "utf8");
   await writeFile(
     join(dir, root, name, "SKILL.md"),
     `---\nname: ${frontmatterName}\ndescription: ${description}\n---\n\nBody.\n`,
@@ -99,10 +103,10 @@ describe("create-skill engine", () => {
     expect(await probeAgents(failing)).toEqual({ claude: false, codex: false });
   });
 
-  test("scaffoldSkillDraft derives the name, honors overrides, and emits one SKILL.md", () => {
+  test("scaffoldSkillDraft derives the name, honors overrides, and emits SKILL.md with cases", () => {
     const draft = scaffoldSkillDraft({ description: "Summarize PR diffs before review" });
     expect(draft.name).toBe("summarize-pr-diffs-before-review");
-    expect(draft.files).toHaveLength(1);
+    expect(draft.files).toHaveLength(2);
     expect(draft.files[0]?.path).toBe("skills/summarize-pr-diffs-before-review/SKILL.md");
     expect(draft.files[0]?.content).toStartWith("---\nname: summarize-pr-diffs-before-review\n");
     expect(draft.files[0]?.content).toContain("Summarize PR diffs before review");
@@ -142,12 +146,10 @@ describe("create-skill engine", () => {
       const { runner, calls } = recordingSkillsRunner();
       const result = await ensureCreatorInstalled("claude", dir, runner, missingGlobally);
 
-      expect(calls).toEqual([
-        {
-          cmd: ["skills", "add", "anthropics/skills", "-s", "skill-creator", "-a", "claude-code", "-g", "-y"],
-          cwd: dir
-        }
-      ]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.cmd).toEqual(["skills", "add", "anthropics/skills", "-s", "skill-creator", "-a", "claude-code", "-g", "-y"]);
+      expect(calls[0]?.cwd).not.toBe(dir);
+      expect(calls[0]?.env?.HOME).toStartWith(calls[0]!.cwd);
       expect(result?.ok).toBe(true);
 
       const global = recordingSkillsRunner();
@@ -188,7 +190,7 @@ describe("create-skill engine", () => {
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "iban-extractor");
+      await writeSkill(input.cwd, rootFromPrompt(input), "iban-extractor");
       expect(input.cmd[0]).toBe("claude");
       expect(input.cmd).toContain("--permission-mode");
       expect(input.stdin).toContain("Extract IBAN numbers");
@@ -207,13 +209,10 @@ describe("create-skill engine", () => {
       expect(outcome.error).toBeUndefined();
       expect(outcome.name).toBe("iban-extractor");
       expect(outcome.installed).toBe(true);
-      expect(outcome.files).toEqual(["skills/iban-extractor/SKILL.md"]);
-      expect(skills.calls).toEqual([
-        {
-          cmd: ["skills", "add", "./skills", "-s", "iban-extractor", "-a", "claude-code", "codex", "-y"],
-          cwd: dir
-        }
-      ]);
+        expect(outcome.files.sort()).toEqual(["skills/iban-extractor/SKILL.md", "skills/iban-extractor/evals/cases.json"].sort());
+      expect(skills.calls).toHaveLength(1);
+      expect(skills.calls[0]?.cmd).toEqual(["skills", "add", "./skills", "-s", "iban-extractor", "-a", "claude-code", "codex", "-y"]);
+      expect(skills.calls[0]?.cwd).not.toBe(dir);
 
       const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8")) as { skills: string[]; farrierVersion: string };
       expect(manifest.skills).toEqual(["./skills@iban-extractor"]);
@@ -229,7 +228,7 @@ describe("create-skill engine", () => {
     process.env[skillsBin] = "skills";
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "table-to-markdown");
+      await writeSkill(input.cwd, rootFromPrompt(input), "table-to-markdown");
       expect(input.cmd[0]).toBe("codex");
       expect(input.cmd).toContain("workspace-write");
       expect(input.cmd).not.toContain("--model");
@@ -245,9 +244,9 @@ describe("create-skill engine", () => {
 
       expect(outcome.error).toBeUndefined();
       expect(outcome.installed).toBe(true);
-      expect(skills.calls).toEqual([
-        { cmd: ["skills", "add", "./skills", "-s", "table-to-markdown", "-a", "codex", "-y"], cwd: dir }
-      ]);
+      expect(skills.calls).toHaveLength(1);
+      expect(skills.calls[0]?.cmd).toEqual(["skills", "add", "./skills", "-s", "table-to-markdown", "-a", "codex", "-y"]);
+      expect(skills.calls[0]?.cwd).not.toBe(dir);
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
@@ -260,7 +259,7 @@ describe("create-skill engine", () => {
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "opus-skill");
+      await writeSkill(input.cwd, rootFromPrompt(input), "opus-skill");
       const modelIndex = input.cmd.indexOf("--model");
       expect(modelIndex).toBeGreaterThanOrEqual(0);
       expect(input.cmd[modelIndex + 1]).toBe("opus");
@@ -284,7 +283,7 @@ describe("create-skill engine", () => {
     process.env[skillsBin] = "skills";
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "codex-effort");
+      await writeSkill(input.cwd, rootFromPrompt(input), "codex-effort");
       expect(input.cmd.join(" ")).toContain("model_reasoning_effort=high");
       expect(input.cmd).not.toContain("--model");
     });
@@ -308,7 +307,7 @@ describe("create-skill engine", () => {
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "configured-skill");
+      await writeSkill(input.cwd, rootFromPrompt(input), "configured-skill");
       const modelIndex = input.cmd.indexOf("--model");
       expect(input.cmd[modelIndex + 1]).toBe("sonnet");
     });
@@ -336,7 +335,7 @@ describe("create-skill engine", () => {
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "explicit-skill");
+      await writeSkill(input.cwd, rootFromPrompt(input), "explicit-skill");
       const modelIndex = input.cmd.indexOf("--model");
       expect(input.cmd[modelIndex + 1]).toBe("haiku");
     });
@@ -364,7 +363,7 @@ describe("create-skill engine", () => {
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "split-skill");
+      await writeSkill(input.cwd, rootFromPrompt(input), "split-skill");
 
       if (input.cmd[0] === "claude") {
         const modelIndex = input.cmd.indexOf("--model");
@@ -404,7 +403,7 @@ describe("create-skill engine", () => {
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "pii-masker");
+      await writeSkill(input.cwd, rootFromPrompt(input), "pii-masker");
     });
     const skills = recordingSkillsRunner();
 
@@ -417,7 +416,10 @@ describe("create-skill engine", () => {
 
       expect(outcome.error).toBeUndefined();
       expect(outcome.installed).toBe(false);
-      expect(outcome.files.sort()).toEqual([".agents/skills/pii-masker/SKILL.md", ".claude/skills/pii-masker/SKILL.md"]);
+        expect(outcome.files.sort()).toEqual([
+          ".agents/skills/pii-masker/SKILL.md", ".agents/skills/pii-masker/evals/cases.json",
+          ".claude/skills/pii-masker/SKILL.md", ".claude/skills/pii-masker/evals/cases.json"
+        ].sort());
       expect(backend.calls).toHaveLength(2);
       expect(skills.calls).toEqual([]);
       expect(outcome.notes.join(" ")).toContain("may diverge");
@@ -441,7 +443,7 @@ describe("create-skill engine", () => {
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((resolve) => setTimeout(resolve, 20));
-      await writeSkill(dir, rootFromPrompt(input), "pii-masker");
+      await writeSkill(input.cwd, rootFromPrompt(input), "pii-masker");
       inFlight -= 1;
       return { exitCode: 0, stdout: "", stderr: "" };
     };
@@ -456,7 +458,7 @@ describe("create-skill engine", () => {
       expect(maxInFlight).toBe(2);
       expect(outcome.error).toContain("claude: .claude/skills/pii-masker already exists");
       expect(outcome.error).toContain("(codex copy succeeded)");
-      expect(outcome.files).toEqual([".agents/skills/pii-masker/SKILL.md"]);
+        expect(outcome.files.sort()).toEqual([".agents/skills/pii-masker/SKILL.md", ".agents/skills/pii-masker/evals/cases.json"].sort());
       expect(await readFile(join(dir, ".agents/skills", "pii-masker", "SKILL.md"), "utf8")).toContain("pii-masker");
     } finally {
       restoreEnv(skillsBin, previousBin);
@@ -489,8 +491,8 @@ describe("create-skill engine", () => {
 
       const wroteTwo = writingBackendRunner(async (input) => {
         const root = rootFromPrompt(input);
-        await writeSkill(dir, root, "one-skill");
-        await writeSkill(dir, root, "two-skill");
+        await writeSkill(input.cwd, root, "one-skill");
+        await writeSkill(input.cwd, root, "two-skill");
       });
       const twoOutcome = await createSkill(
         { description: "x", agents: ["claude"], mode: "author-claude" },
@@ -502,8 +504,8 @@ describe("create-skill engine", () => {
 
       const wroteStray = writingBackendRunner(async (input) => {
         const root = rootFromPrompt(input);
-        await writeFile(join(dir, root, "README.md"), "stray", "utf8");
-        await writeSkill(dir, root, "three-skill");
+        await writeSkill(input.cwd, root, "three-skill");
+        await writeFile(join(input.cwd, root, "README.md"), "stray", "utf8");
       });
       const strayOutcome = await createSkill(
         { description: "x", agents: ["claude"], mode: "author-claude" },
@@ -519,6 +521,30 @@ describe("create-skill engine", () => {
     }
   });
 
+  test("authoring rejects linked staged files without accepting project mutation", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env[skillsBin];
+    process.env[skillsBin] = "skills";
+    await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
+    const backend = writingBackendRunner(async (input) => {
+      const root = rootFromPrompt(input);
+      await mkdir(join(input.cwd, root, "linked-skill"), { recursive: true });
+      await writeFile(join(input.cwd, "outside.md"), "---\nname: linked-skill\ndescription: unsafe link\n---\n");
+      await symlink(join(input.cwd, "outside.md"), join(input.cwd, root, "linked-skill", "SKILL.md"));
+    });
+    try {
+      const outcome = await createSkill(
+        { description: "linked output", agents: ["claude"], mode: "author-claude" },
+        dir,
+        { backendRunner: backend.runner, skillsRunner: recordingSkillsRunner().runner }
+      );
+      expect(outcome.error).toContain("unsupported symbolic link");
+      expect(await Bun.file(join(dir, "skills", "linked-skill", "SKILL.md")).exists()).toBe(false);
+    } finally {
+      restoreEnv(skillsBin, previousBin);
+    }
+  });
+
   test("createSkill repairs frontmatter name mismatches and truncates oversize descriptions", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];
@@ -526,7 +552,7 @@ describe("create-skill engine", () => {
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "query-router", "Wrong Name", `long. ${"x".repeat(600)}`);
+      await writeSkill(input.cwd, rootFromPrompt(input), "query-router", "Wrong Name", `long. ${"x".repeat(600)}`);
     });
     const skills = recordingSkillsRunner();
 
@@ -557,8 +583,8 @@ describe("create-skill engine", () => {
 
     let stagingRoot = "";
     const backend = writingBackendRunner(async (input) => {
-      stagingRoot = rootFromPrompt(input);
-      await writeSkill(dir, stagingRoot, "freestyle-name");
+      stagingRoot = join(input.cwd, rootFromPrompt(input));
+      await writeSkill(input.cwd, rootFromPrompt(input), "freestyle-name");
     });
 
     try {
@@ -570,7 +596,7 @@ describe("create-skill engine", () => {
 
       expect(outcome.error).toContain("requested name was 'requested-name'");
       // Failed validation leaves the staged files in place for inspection.
-      expect(await readFile(join(dir, stagingRoot, "freestyle-name", "SKILL.md"), "utf8")).toContain("freestyle-name");
+      expect(await readFile(join(stagingRoot, "freestyle-name", "SKILL.md"), "utf8")).toContain("freestyle-name");
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
@@ -585,8 +611,8 @@ describe("create-skill engine", () => {
 
     let stagingRoot = "";
     const backend = writingBackendRunner(async (input) => {
-      stagingRoot = rootFromPrompt(input);
-      await writeSkill(dir, stagingRoot, "taken-name");
+      stagingRoot = join(input.cwd, rootFromPrompt(input));
+      await writeSkill(input.cwd, rootFromPrompt(input), "taken-name");
     });
 
     try {
@@ -597,7 +623,7 @@ describe("create-skill engine", () => {
       );
 
       expect(outcome.error).toContain("skills/taken-name already exists");
-      expect(await readFile(join(dir, stagingRoot, "taken-name", "SKILL.md"), "utf8")).toContain("taken-name");
+      expect(await readFile(join(stagingRoot, "taken-name", "SKILL.md"), "utf8")).toContain("taken-name");
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
@@ -611,7 +637,7 @@ describe("create-skill engine", () => {
     await writeSkill(dir, "skills", "taken-name", "taken-name", "the OLD copy");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "taken-name", "taken-name", "the NEW copy");
+      await writeSkill(input.cwd, rootFromPrompt(input), "taken-name", "taken-name", "the NEW copy");
     });
     const collisions: string[] = [];
 
@@ -645,7 +671,7 @@ describe("create-skill engine", () => {
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
 
     const backend = writingBackendRunner(async (input) => {
-      await writeSkill(dir, rootFromPrompt(input), "latency-timer");
+      await writeSkill(input.cwd, rootFromPrompt(input), "latency-timer");
     });
     const skills = recordingSkillsRunner(3);
 
@@ -679,7 +705,7 @@ describe("create-skill engine", () => {
       maxInFlightAuthoring = Math.max(maxInFlightAuthoring, inFlightAuthoring);
       await new Promise((resolve) => setTimeout(resolve, 20));
       const name = `${input.stdin ?? ""}`.match(/Name the skill exactly '([^']+)'/)![1]!;
-      await writeSkill(dir, rootFromPrompt(input), name);
+      await writeSkill(input.cwd, rootFromPrompt(input), name);
       inFlightAuthoring -= 1;
       return { exitCode: 0, stdout: "", stderr: "" };
     };
@@ -734,7 +760,7 @@ describe("create-skill engine", () => {
         })
       );
       input.onStdoutLine?.(JSON.stringify({ type: "system", subtype: "thinking_tokens" }));
-      await writeSkill(dir, rootFromPrompt(input), "iban-extractor");
+      await writeSkill(input.cwd, rootFromPrompt(input), "iban-extractor");
     });
 
     const activities: Array<[string, string | undefined, string | undefined]> = [];
@@ -816,7 +842,9 @@ describe("create-skill engine", () => {
 
     try {
       const result = await installLocalSkill("my-skill", dir, ["claude"], runner);
-      expect(calls).toEqual([{ cmd: ["skills", "add", "./skills", "-s", "my-skill", "-a", "claude-code", "-y"], cwd: dir }]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.cmd).toEqual(["skills", "add", "./skills", "-s", "my-skill", "-a", "claude-code", "-y"]);
+      expect(calls[0]?.cwd).not.toBe(dir);
       expect(result.ok).toBe(true);
     } finally {
       restoreEnv(skillsBin, previousBin);

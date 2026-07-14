@@ -76,7 +76,7 @@ export function createAdviceWizardActions(
         reasoningEffort: settings.reasoningEffort,
         sessions: includeSessions ? "auto" : "none",
         lookback,
-        targets: ["claude", "codex"],
+        targets: [backend],
         only: scope === "all" ? undefined : [scope as AdviceCategory],
         signal: input.signal,
         onProgress

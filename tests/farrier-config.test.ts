@@ -29,6 +29,7 @@ describe("loadFarrierConfig", () => {
       models: {}
     });
     expect(loaded.loadedPaths).toEqual([]);
+    expect(loaded.registrySources).toEqual({});
     expect(loaded.userConfigPath).toBe(join(home, ".config", "farrier", "config.json"));
     expect(loaded.projectConfigPath).toBe(join(dir, "farrier.config.json"));
   });
@@ -71,6 +72,10 @@ describe("loadFarrierConfig", () => {
       models: {}
     });
     expect(loaded.loadedPaths).toEqual([userPath, projectPath]);
+    expect(loaded.registrySources).toEqual({
+      "@acme": { scope: "project", sourcePath: projectPath },
+      "@shared": { scope: "user", sourcePath: userPath }
+    });
   });
 
   test("FARRIER_CONFIG overrides the user config path and project wins useDefaultPacks", async () => {

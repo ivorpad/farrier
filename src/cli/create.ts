@@ -269,6 +269,9 @@ function creationReport(input: { options: CreateCliOptions; resolved: ResolvedRe
       purpose: file.purpose,
       reason: file.reason ?? null,
       requiresForce: file.requiresForce,
+      content: file.reviewedContent ?? "",
+      previousContent: file.previousContent ?? null,
+      executableProvenance: file.executableProvenance ?? null,
     })),
     summary: input.plan.counts,
     applicable: !input.plan.existingHarness && input.plan.blockers.length === 0 && (input.plan.replacements.length === 0 || input.options.force),
@@ -329,6 +332,29 @@ function printCreationPlan(input: { options: CreateCliOptions; resolved: Resolve
   for (const file of input.plan.files) {
     const reason = file.reason ? `; ${file.reason}` : "";
     console.log(`  ${actionMarker(file.action)} ${file.path} — ${file.purpose}${reason}`);
+  }
+
+  const executables = input.plan.files.filter((file) => file.executableProvenance);
+  if (executables.length > 0) {
+    console.log("");
+    console.log("Registry executable review (exact bytes):");
+    for (const file of executables) {
+      const provenance = file.executableProvenance!;
+      console.log(`--- ${file.path}`);
+      console.log(`registry: ${provenance.registryRef} v${provenance.version}`);
+      console.log(`source: ${provenance.sourceIdentity ?? "legacy-unbound"}`);
+      console.log(`item sha256: ${provenance.itemSha256}`);
+      console.log(`content sha256: ${provenance.contentSha256}`);
+      if (file.previousContent !== undefined && file.previousContent !== file.reviewedContent) {
+        console.log("previous bytes:");
+        process.stdout.write(file.previousContent);
+        if (!file.previousContent.endsWith("\n")) console.log("");
+        console.log("reviewed bytes:");
+      }
+      process.stdout.write(file.reviewedContent ?? "");
+      if (!(file.reviewedContent ?? "").endsWith("\n")) console.log("");
+      console.log(`--- end ${file.path}`);
+    }
   }
 
   if (input.plan.existingHarness) {

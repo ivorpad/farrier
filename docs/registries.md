@@ -32,7 +32,7 @@ Farrier reads two config files and merges them:
 
 Namespace keys must match `^@[a-z0-9][a-z0-9-]*$`. `useDefaultPacks` defaults to `true`; when set to `false`, built-in packs are hidden from listing and detection, but they can still be resolved explicitly and used by remote packs via `extends`.
 
-Header values may contain `${ENV_VAR}` placeholders. Expansion happens only at fetch time. Missing variables in explicit headers are hard errors that name the variable, not the value.
+Header values in user configuration may contain `${ENV_VAR}` placeholders. Expansion happens only at fetch time. Missing variables are hard errors that name the variable, not the value. Project-configured registries cannot attach ambient provider credentials or credential-bearing headers; move a private registry and its headers to user configuration.
 
 The same `farrier.config.json` / user config also holds a `models` key for per-backend, per-role model and reasoning-effort selection — see the [Model configuration](../README.md#model-configuration) section of the README.
 
@@ -165,7 +165,7 @@ Registry hook event declarations currently describe the Claude hook payload cont
 
 `runner` defaults to `python3` and may be `python3`, `bash`, or `bun`. `entry` must match one file path. File paths must be relative and cannot contain `..`, start with `/`, or start with `\`. The entry file is always rendered executable; other files follow their `executable` flag.
 
-The TUI Review step identifies registry hooks as executable files supplied by the configured registry and previews their opening content. CLI `--dry-run` shows the same path, its purpose, and whether it will be created, left unchanged, safely merged, replaced after force, or blocked before anything is written. Full payload/diff review is still a trust-model follow-up; the current CLI plan does not print entire executable files.
+The TUI Review step and CLI `--dry-run` expose each executable's registry ref, version, source identity, item digest, content digest, previous bytes when they differ, and complete reviewed bytes. JSON carries the same provenance and untruncated content. Apply recomputes the reviewed plan digest and refuses changed bytes.
 
 ## Skill item schema
 
@@ -191,13 +191,13 @@ When a pack includes `@acme/platform-skills` in its `skills`, Farrier expands th
 
 ## Cache and pins
 
-Farrier fetches registries network-first and writes a disk cache to:
+Farrier fetches registries network-first with bounded time and redirects, validates every redirect hop, and writes source-bound cache entries atomically to:
 
 ```text
 ${FARRIER_CACHE_DIR:-~/.cache/farrier}/registries/<namespace>/<name>.json
 ```
 
-If a registry is unreachable, cached index and item files are used when present and warnings are marked as cached. This is what lets `farrier update` work offline for projects that already rendered a private registry pack.
+If a registry is unreachable, a cache entry is used only when its normalized source identity and payload digest validate. Corrupt or cross-source cache data is rejected. Warnings state when validated cached data was used.
 
 Rendered projects record registry item pins in `.farrier.json`:
 
@@ -220,7 +220,7 @@ Rendered projects record registry item pins in `.farrier.json`:
 }
 ```
 
-Pins are drift detection, not an install lock. `farrier update` compares fresh registry versions and sha256 values to the recorded pins and reports drift. `farrier update --yes` repairs rendered files and updates the pins.
+Pins bind rendered registry items to version, digest, and source identity. Exact offline resolution uses those validated pinned bytes; catalog listing may still report a newer version as drift. Legacy source-unbound pins remain readable with an explicit migration warning and are never silently rebound.
 
 ## Trust model
 
@@ -232,7 +232,7 @@ Farrier enforces these boundaries:
 - Header values are never logged or stored in manifests.
 - Remote items cannot claim built-in ids.
 - Hook file paths cannot escape their namespaced hook directory.
-- Hook payload paths, purposes, and actions are visible before writing; the TUI also previews opening content. Full executable payload/diff review remains a V1 limitation.
+- Hook payload paths, purposes, actions, provenance, digests, previous bytes, and complete reviewed bytes are visible before writing in human, JSON, and TUI review.
 - Existing differing files require reviewed `--force` replacement and receive recoverable backups; path blockers remain unforceable.
 - Existing Farrier manifests route to `farrier update` rather than being reset by creation.
 - Existing all-built-in `.farrier.json` manifests stay version 1 and parse unchanged.
@@ -242,5 +242,4 @@ V1 exclusions:
 - Skill items cannot embed skill contents.
 - Registry pins are not enforced by the skills install lock.
 - Pack generator commands are declared and reported, not executed by harness creation.
-- CLI dry-run does not yet print full registry hook payloads or diffs.
 - Provider shorthands target public hosted GitHub, GitLab, and Bitbucket only; self-hosted services use full URL templates.

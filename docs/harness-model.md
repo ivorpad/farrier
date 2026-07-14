@@ -1,6 +1,6 @@
 # Farrier harness model — product vocabulary, gap analysis, next iteration
 
-> Status: proposal / working note. Written 2026-07-03. Phase 4 later implemented the native Codex hook-binding portion; the broader HarnessSpec proposal remains future work.
+> Status: historical proposal / working note. Written 2026-07-03. Native Codex binding, provider-isolated advice, transactional lifecycle writes, provenance, and behavioral evidence were later implemented. The broader HarnessSpec proposal remains future work.
 > Source inputs: `README.md`, `docs/PLAN.md`, `src/packs/types.ts`, `src/engine/render.ts`,
 > `src/engine/backend.ts`, `.farrier.json`, and the research brief
 > `~/Downloads/harness-farrier-whatever-cloud.md`.
@@ -97,11 +97,7 @@ Ranked by how much they undercut "the harness works."
    nothing tells Codex that it must be asked explicitly. The harness is silent on one of the
    biggest reliability levers.
 
-7. **Codex/multi-agent enforcement was prose-only (partially resolved in Phase 4).** `render.ts`
-   now emits a selected `.codex/hooks.json` binding to the shared tested scripts for released
-   Bash, `apply_patch`, and Stop events. Codex `unified_exec`, native reads/search, and WebSearch
-   still have interception gaps, and no CI is generated, so AGENTS.md + just checks remain part
-   of the required enforcement story.
+7. **Codex enforcement is bounded, not universal.** `render.ts` emits `.codex/hooks.json` only when Codex is selected and `.claude/settings.json` only when Claude is selected. Shared compatible scripts remain canonical. Released Codex interception still has gaps for `unified_exec`, native reads/search, and WebSearch, so AGENTS.md and the generated check recipe remain mandatory.
 
 8. **Skills story is thin for a "skills product."** The dogfood pins three generic
    `wshobson/agents@python-*` skills; there is no curated catalog of **harness-component skills**
@@ -209,18 +205,16 @@ Each step is independently shippable and green-testable with `bun run check`.
 
 ## 7. Verification path for THIS repo (important)
 
-`AGENTS.md` (auto-generated, mis-targeted — see §3.1) says `just check`. **Ignore it for
-Farrier's own source.** Use:
+`AGENTS.md` is mandatory even while the protected dogfood manifest remains mis-targeted. Run its required gates and the repository's Bun gates:
 
 ```bash
-bun test            # engine + CLI + TUI-reducer (236 tests green as of 2026-07-03)
-bun run typecheck   # tsc --noEmit (clean)
-bun run check       # the above + uvx pytest src/templates/hooks (needs uv + network)
+just check
+just konsistent
+bun test
+bunx tsc --noEmit
 ```
 
-The `src/templates/hooks/*.py` **hook templates** are the only Python that legitimately runs here,
-via `uvx pytest src/templates/hooks` — the `uv run pytest` in the justfile is the wrong invocation
-for them too.
+The `src/templates/hooks/*.py` files are generated hook templates and their colocated tests. Farrier's package check runs them with `uvx pytest src/templates/hooks`. The root `just check` remains required by AGENTS.md; the protected manifest cannot be retargeted by hand.
 
 ## 8. Open product questions (need Ivor's call before large build)
 

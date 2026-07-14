@@ -150,6 +150,67 @@ describe("learn deterministic proposals", () => {
 });
 
 describe("learn LLM proposal validation", () => {
+  test("redacts and bounds candidate evidence before backend invocation and JSON reporting", async () => {
+    const project = await tempDir();
+    const transcripts = await tempDir("farrier-learn-transcripts-");
+    await renderPack(project, "python-fastapi");
+    const seeded = "seeded-secret-value";
+    await writeTranscript(transcripts, [
+      bashUse("secret-1", `echo token=${seeded} dev@example.com sk-abcdefghijklmnop`),
+      toolResult("secret-1", `failed with ${seeded}`)
+    ]);
+    let backendInput = "";
+    const runner: LearnCommandRunner = async (input) => {
+      backendInput = `${input.stdin ?? ""} ${input.cmd.join(" ")}`;
+      return { exitCode: 0, stdout: JSON.stringify({ rules: [] }), stderr: "" };
+    };
+
+    const report = await createLearnReport({ targetDir: project, transcriptsDir: transcripts, backend: "claude", runner });
+    const json = JSON.stringify(report);
+    for (const raw of [seeded, "dev@example.com", "sk-abcdefghijklmnop"]) {
+      expect(backendInput).not.toContain(raw);
+      expect(json).not.toContain(raw);
+    }
+    expect(report.evidence?.inputDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(report.evidence?.result).toBe("inconclusive");
+  });
+
+
+  test("retains the full 200-event report inventory while bounding the backend subset explicitly", async () => {
+    const project = await tempDir();
+    const transcripts = await tempDir("farrier-learn-transcripts-");
+    await renderPack(project, "python-fastapi");
+    const events = Array.from({ length: 60 }, (_, index) => [
+      bashUse(`use-${index}`, `custom-command-${index} arg`),
+      toolResult(`use-${index}`, "failed with exit code 1")
+    ]).flat();
+    await writeTranscript(transcripts, events);
+    let backendInput = "";
+    const runner: LearnCommandRunner = async (input) => {
+      backendInput = `${input.stdin ?? ""} ${input.cmd.join(" ")}`;
+      return { exitCode: 0, stdout: JSON.stringify({ rules: [] }), stderr: "" };
+    };
+
+    const report = await createLearnReport({
+      targetDir: project,
+      transcriptsDir: transcripts,
+      backend: "claude",
+      runner
+    });
+
+    expect(report.candidateEvents).toHaveLength(60);
+    expect(report.evidence?.input).toMatchObject({
+      inputItems: 60,
+      retainedItems: 40,
+      omittedItems: 20,
+      truncated: true
+    });
+    expect(report.notes).toContainEqual(expect.stringContaining("Backend evidence was bounded to 40/60"));
+    expect(backendInput).toContain("custom-command-39");
+    expect(backendInput).not.toContain("custom-command-59");
+  });
+
+
   test("fake backend proposals keep valid matching ToolPolicyRules and drop duplicate, existing, bad regex, and missing-field rules", async () => {
     const project = await tempDir();
     const transcripts = await tempDir("farrier-learn-transcripts-");
@@ -223,8 +284,8 @@ describe("learn LLM proposal validation", () => {
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.cmd).toEqual(["claude", "-p", "--model", "haiku"]);
-    expect(calls[0]!.cwd).toBe(project);
+    expect(calls[0]!.cmd).toEqual(["claude", "-p", "--model", "haiku", "--permission-mode", "plan"]);
+    expect(calls[0]!.cwd).not.toBe(project);
     expect(calls[0]!.stdin).toContain("Candidate events");
 
     expect(report.errors).toEqual([]);
@@ -302,6 +363,36 @@ describe("learn LLM proposal validation", () => {
 });
 
 describe("learn append behavior", () => {
+  test("rejects a read/modify/write race and preserves the concurrent rule", async () => {
+    const project = await tempDir();
+    const transcripts = await tempDir("farrier-learn-transcripts-");
+    await renderPack(project, "python-fastapi");
+    await writeTranscript(transcripts, [
+      bashUse("brew-1", "brew install wget"),
+      toolResult("brew-1", "exited with code 1"),
+      bashUse("brew-2", "brew install jq"),
+      toolResult("brew-2", "failed with exit code 1")
+    ]);
+    const concurrent: ToolPolicyRule = {
+      id: "concurrent-user-rule",
+      description: "Concurrent user change.",
+      tool: "Bash",
+      commandPattern: "^never$",
+      flags: "",
+      message: "never",
+      redirect: "never"
+    };
+    const runner: LearnCommandRunner = async () => {
+      const document = await readRules(project);
+      document.rules.push(concurrent);
+      await writeFile(join(project, ".claude", "hooks", "tool-policy-rules.json"), `${JSON.stringify(document, null, 2)}\n`);
+      return { exitCode: 0, stdout: JSON.stringify({ rules: [] }), stderr: "" };
+    };
+
+    await expect(applyLearn({ targetDir: project, transcriptsDir: transcripts, yes: true, runner })).rejects.toThrow("changed after review");
+    expect((await readRules(project)).rules.at(-1)).toEqual(concurrent);
+  });
+
   test("--yes appends accepted new rules, preserves existing rules, and does not duplicate on a second run", async () => {
     const project = await tempDir();
     const transcripts = await tempDir("farrier-learn-transcripts-");

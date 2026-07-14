@@ -35,6 +35,7 @@ This is Farrier's read-only Claude wrapper around the pinned Anthropic automatio
 ## Boundaries
 
 - Farrier resolves the project, profiles the codebase, scopes sessions to the exact project directory, redacts locally, and sends only bounded signals to the selected backend.
+- Claude selection consumes and targets Claude evidence only. Codex evidence and Codex-only artifact routes are rejected; compatible shared routes remain.
 - Do not read raw transcripts separately or claim access to hidden reasoning.
 - Treat the output as a report. Do not install or create any recommendation unless the user makes a separate explicit request.
 - Hook recommendations are declarative; the recommendation backend is never allowed to generate executable hook code.

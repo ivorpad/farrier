@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentBackend } from "./backend";
 import type { RenderedFile } from "./render";
@@ -6,6 +6,62 @@ import type { RenderedFile } from "./render";
 export const skillNamePattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const maxSkillNameLength = 64;
 export const maxDescriptionLength = 500;
+export const skillCasesRelativePath = "evals/cases.json";
+export const maxSkillCasesBytes = 256 * 1024;
+export const maxSkillCaseCount = 100;
+
+export type SkillBehaviorCase = {
+  id: string;
+  kind: "positive" | "negative";
+  prompt: string;
+  expectedBehavior: string;
+};
+
+export type SkillBehaviorEvidence = {
+  availability: "available" | "unavailable";
+  cases: SkillBehaviorCase[];
+  warning?: string;
+};
+
+function parseSkillCases(value: unknown): SkillBehaviorCase[] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.version !== 1 || !Array.isArray(record.cases)) return undefined;
+  if (record.cases.length > maxSkillCaseCount) return undefined;
+  const cases: SkillBehaviorCase[] = [];
+  const ids = new Set<string>();
+  for (const item of record.cases) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+    const entry = item as Record<string, unknown>;
+    if (typeof entry.id !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.id)
+      || (entry.kind !== "positive" && entry.kind !== "negative")
+      || typeof entry.prompt !== "string" || !entry.prompt.trim() || entry.prompt.length > 2_000
+      || typeof entry.expectedBehavior !== "string" || !entry.expectedBehavior.trim() || entry.expectedBehavior.length > 2_000) return undefined;
+    if (ids.has(entry.id)) return undefined;
+    ids.add(entry.id);
+    cases.push({ id: entry.id, kind: entry.kind, prompt: entry.prompt.trim(), expectedBehavior: entry.expectedBehavior.trim() });
+  }
+  if (!cases.some((item) => item.kind === "positive") || !cases.some((item) => item.kind === "negative")) return undefined;
+  return cases;
+}
+
+export async function readSkillBehaviorEvidence(skillDir: string): Promise<SkillBehaviorEvidence> {
+  try {
+    const casesPath = join(skillDir, skillCasesRelativePath);
+    const stats = await lstat(casesPath);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size > maxSkillCasesBytes) throw new Error("unsafe or oversized cases file");
+    const parsed = JSON.parse(await readFile(casesPath, "utf8")) as unknown;
+    const cases = parseSkillCases(parsed);
+    if (!cases) throw new Error("invalid schema");
+    return { availability: "available", cases };
+  } catch {
+    return {
+      availability: "unavailable",
+      cases: [],
+      warning: `Behavior cases unavailable: add a regular non-symlink ${skillCasesRelativePath} (version 1, <=${maxSkillCaseCount} unique cases and <=${maxSkillCasesBytes} bytes) with at least one positive and one negative case.`
+    };
+  }
+}
 
 export function slugifySkillName(text: string): string | undefined {
   const slug = text
@@ -73,9 +129,19 @@ TODO: numbered, concrete steps with exact commands.
 TODO: at least one worked example.
 `;
 
+  const casesContent = `${JSON.stringify({
+    version: 1,
+    cases: [
+      { id: "expected-use", kind: "positive", prompt: input.description.trim(), expectedBehavior: "Use this skill and follow its documented steps." },
+      { id: "unrelated-request", kind: "negative", prompt: "Explain an unrelated general concept.", expectedBehavior: "Do not invoke this skill." }
+    ]
+  }, null, 2)}\n`;
   return {
     name,
-    files: [{ path: `skills/${name}/SKILL.md`, content }],
+    files: [
+      { path: `skills/${name}/SKILL.md`, content },
+      { path: `skills/${name}/${skillCasesRelativePath}`, content: casesContent }
+    ],
     notes
   };
 }
@@ -236,6 +302,12 @@ export async function validateCreatedSkill(input: ValidateCreatedSkillInput): Pr
       `${input.root}/${name}/SKILL.md is missing YAML frontmatter with name and description. ` +
         "Fix the file or delete the directory and retry."
     );
+  }
+
+  const skillMdStat = await lstat(skillMdPath);
+  const behavior = await readSkillBehaviorEvidence(skillDir);
+  if (!skillMdStat.isSymbolicLink() && behavior.availability !== "available") {
+    throw new Error(`${input.root}/${name} is missing valid ${skillCasesRelativePath}. Newly authored skills require positive and negative behavioral cases.`);
   }
 
   const notes: string[] = [];

@@ -113,12 +113,17 @@ export function buildLabeledEvalPrompt(input: {
   bPath: string;
   /** Project-relative or absolute root of the pinned Anthropic skill-creator eval tooling. */
   creatorRoot: string;
+  behaviorEvidence?: { digest: string; cases: unknown[] };
 }): string {
   const description = input.description?.trim()
     ? `Original request:\n${input.description.trim()}\n\n`
     : "Original request: not provided; infer intended behavior from both SKILL.md files.\n\n";
 
-  return `You are Farrier's skill evaluator. Return JSON only.
+  const behaviorEvidence = input.behaviorEvidence
+    ? `Bounded redacted behavior cases (digest ${input.behaviorEvidence.digest}):\n${JSON.stringify(input.behaviorEvidence.cases)}\n\nAssess both candidates against every positive and negative case. Any deterministic regression must veto a winner.\n\n`
+    : "Behavior cases unavailable; state this limitation in notes.\n\n";
+
+  return `You are Farrier\'s skill evaluator. Return JSON only.
 
 Use the pinned Anthropic skill-creator eval workflow:
 - Read ${input.creatorRoot}/agents/comparator.md and apply its blind-comparison rubric.
@@ -128,7 +133,7 @@ Use the pinned Anthropic skill-creator eval workflow:
 This is a blind comparison of two anonymous candidate skills. Do NOT try to infer which tool or vendor produced which candidate; judge only the content. This is a read-only static eval; do not edit files, create workspaces, run agents, or delete anything.
 
 Skill name: ${input.skillName}
-${description}Candidate A: ${input.aPath}
+${description}${behaviorEvidence}Candidate A: ${input.aPath}
 Candidate B: ${input.bPath}
 
 Return exactly this JSON shape, with no markdown:

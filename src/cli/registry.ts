@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { loadFarrierConfig } from "../config/farrier-config";
-import { loadPackCatalog, type PackCatalog } from "../registry/catalog";
+import { loadPackCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 import { parseItemRef } from "../registry/ref";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,6 +55,36 @@ export async function registryRefsFromManifest(targetDir: string): Promise<Map<s
   return refs;
 }
 
+async function registryPinsFromManifest(targetDir: string): Promise<Record<string, RegistryPin>> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(join(targetDir, ".farrier.json"), "utf8"));
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return {};
+    throw error;
+  }
+  if (!isRecord(raw) || !isRecord(raw.registry) || !isRecord(raw.registry.items)) return {};
+
+  const pins: Record<string, RegistryPin> = {};
+  for (const [id, value] of Object.entries(raw.registry.items)) {
+    if (
+      isRecord(value) &&
+      (value.type === "pack" || value.type === "hook" || value.type === "skill") &&
+      typeof value.version === "string" &&
+      typeof value.sha256 === "string"
+    ) {
+      pins[id] = {
+        type: value.type,
+        version: value.version,
+        sha256: value.sha256,
+        ...(typeof value.sourceIdentity === "string" ? { sourceIdentity: value.sourceIdentity } : {}),
+        ...(typeof value.ref === "string" ? { ref: value.ref } : {})
+      };
+    }
+  }
+  return pins;
+}
+
 export async function loadConfiguredCatalog(input: {
   targetDir: string;
   requireRefs?: Map<string, string>;
@@ -62,7 +92,9 @@ export async function loadConfiguredCatalog(input: {
   const loaded = await loadFarrierConfig({ projectDir: input.targetDir });
   return loadPackCatalog({
     config: loaded.config,
-    requireNamespaces: input.requireRefs
+    registrySources: loaded.registrySources,
+    requireNamespaces: input.requireRefs,
+    requiredPins: await registryPinsFromManifest(input.targetDir)
   });
 }
 
@@ -110,7 +142,7 @@ export async function runRegistry(args: string[], usageText: () => string): Prom
   }
   const targetDir = resolve(options.dir);
   const loaded = await loadFarrierConfig({ projectDir: targetDir });
-  const catalog = await loadPackCatalog({ config: loaded.config });
+  const catalog = await loadPackCatalog({ config: loaded.config, registrySources: loaded.registrySources });
   const registries = registryRows(Object.keys(loaded.config.registries), catalog);
   if (options.json) {
     console.log(JSON.stringify({ registries, warnings: catalog.warnings }, null, 2));

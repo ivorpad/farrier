@@ -6,6 +6,8 @@ import { builtinCatalog } from "../src/registry/catalog";
 import { createInitialWizardState, wizardReducer } from "../src/tui/machine";
 import { detectedPackPresentations, generatorPresentation, selectedPackForWizard, stackSelectionAssumption } from "../src/tui/pack-presentation";
 import { wizardWriteExitCode } from "../src/tui/wizard-done";
+import { currentHarnessReview, type HarnessReviewInput, type StoredHarnessReview } from "../src/tui/use-harness-review";
+import { reviewPreviewOffset, type ReviewFile } from "../src/tui/ReviewStep";
 
 const detected: DetectedPackEvidence[] = [
   { packId: "python-fastapi", evidence: ["pyproject.toml dependency: fastapi"] },
@@ -95,5 +97,63 @@ describe("TUI write outcomes", () => {
     expect(state.applyResult).toEqual(applyResult);
     expect(state.writeStatus).toEqual({ ok: false, partial: true, message: "Harness files applied; one skill failed." });
     expect(wizardWriteExitCode(state.writeStatus)).toBe(1);
+  });
+});
+
+describe("TUI review acceptance", () => {
+  test("a completed replacement review becomes unconfirmable when any reviewed input changes", () => {
+    const catalog = builtinCatalog();
+    const pack = catalog.resolvePack("python-fastapi");
+    const input: HarnessReviewInput = {
+      active: true,
+      targetDir: "/tmp/project",
+      catalog,
+      pack,
+      packId: pack.id,
+      selectedSkills: pack.skills,
+      selectedHooks: pack.hooks,
+      agents: ["claude"],
+      learnEnabled: false,
+      ruleCount: 3,
+    };
+    const stored: StoredHarnessReview = {
+      input,
+      plan: { targetDir: input.targetDir, files: [{ path: "AGENTS.md", content: "replacement\n" }] },
+      files: [{ path: "AGENTS.md", content: "replacement\n", action: "replace", purpose: "guidance", requiresForce: true }],
+      existingHarness: false,
+      blockerCount: 0,
+    };
+    const changes: HarnessReviewInput[] = [
+      { ...input, active: false },
+      { ...input, targetDir: "/tmp/other" },
+      { ...input, catalog: builtinCatalog() },
+      { ...input, pack: catalog.resolvePack("generic") },
+      { ...input, packId: "generic" },
+      { ...input, selectedSkills: [...input.selectedSkills] },
+      { ...input, selectedHooks: [...input.selectedHooks] },
+      { ...input, agents: [...input.agents] },
+      { ...input, learnEnabled: true },
+      { ...input, ruleCount: 4 },
+    ];
+
+    expect(currentHarnessReview(stored, input).plan).toBe(stored.plan);
+    for (const changed of changes) {
+      expect(currentHarnessReview(stored, changed).plan).toBeNull();
+    }
+  });
+
+  test("review paging clamps at both ends instead of accumulating overshoot", () => {
+    const file: ReviewFile = {
+      path: "hook.py",
+      content: Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n"),
+      action: "create",
+      purpose: "hook",
+      requiresForce: false,
+    };
+    const end = reviewPreviewOffset(file, 0, 10_000);
+
+    expect(end).toBeGreaterThan(0);
+    expect(reviewPreviewOffset(file, end, 10_000)).toBe(end);
+    expect(reviewPreviewOffset(file, end, -10_000)).toBe(0);
   });
 });

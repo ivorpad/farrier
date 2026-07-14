@@ -97,6 +97,10 @@ export type RegistryItem = RegistryPackItem | RegistryHookItem | RegistrySkillIt
 const itemNamePattern = /^[a-z0-9][a-z0-9-]*$/;
 const hookEvents = new Set(["PreToolUse", "PostToolUse", "Stop"]);
 const hookRunners = new Set(["python3", "bash", "bun"]);
+const maxIndexItems = 256;
+const maxHookFiles = 64;
+const maxHookFileBytes = 256_000;
+const maxHookPayloadBytes = 1_000_000;
 
 function fail(path: string, message: string): never {
   throw new Error(`${path}: ${message}`);
@@ -118,6 +122,14 @@ function optionalStringField(value: unknown, path: string): string | undefined {
     return undefined;
   }
   return stringField(value, path);
+}
+
+function boundedString(value: unknown, path: string, maxBytes: number): string {
+  const result = stringField(value, path);
+  if (new TextEncoder().encode(result).byteLength > maxBytes) {
+    fail(path, `must not exceed ${maxBytes} bytes`);
+  }
+  return result;
 }
 
 function booleanField(value: unknown, path: string): boolean {
@@ -381,6 +393,7 @@ function validateHookEvents(value: unknown): RegistryHookEvent[] {
     fail("hook.events", "must be a non-empty array");
   }
 
+  const seen = new Set<string>();
   return value.map((item, index) => {
     const path = `hook.events.${index}`;
     if (!isRecord(item)) {
@@ -389,9 +402,14 @@ function validateHookEvents(value: unknown): RegistryHookEvent[] {
     if (typeof item.event !== "string" || !hookEvents.has(item.event)) {
       fail(`${path}.event`, 'must be "PreToolUse", "PostToolUse", or "Stop"');
     }
+    const matcher = optionalStringField(item.matcher, `${path}.matcher`);
+    if (matcher && new TextEncoder().encode(matcher).byteLength > 512) fail(`${path}.matcher`, "must not exceed 512 bytes");
+    const key = `${item.event}\0${matcher ?? ""}`;
+    if (seen.has(key)) fail(path, "duplicates an earlier event binding");
+    seen.add(key);
     return {
       event: item.event as RegistryHookEventName,
-      matcher: optionalStringField(item.matcher, `${path}.matcher`)
+      matcher
     };
   });
 }
@@ -400,15 +418,24 @@ function validateHookFiles(value: unknown): RegistryHookFile[] {
   if (!Array.isArray(value) || value.length === 0) {
     fail("hook.files", "must be a non-empty array");
   }
+  if (value.length > maxHookFiles) fail("hook.files", `must not contain more than ${maxHookFiles} files`);
 
+  const seen = new Set<string>();
+  let totalBytes = 0;
   return value.map((item, index) => {
     const path = `hook.files.${index}`;
     if (!isRecord(item)) {
       fail(path, "must be an object");
     }
+    const filePath = validateHookPath(item.path, `${path}.path`);
+    if (seen.has(filePath)) fail(`${path}.path`, "duplicates an earlier hook file");
+    seen.add(filePath);
+    const content = boundedString(item.content, `${path}.content`, maxHookFileBytes);
+    totalBytes += new TextEncoder().encode(content).byteLength;
+    if (totalBytes > maxHookPayloadBytes) fail("hook.files", `total content must not exceed ${maxHookPayloadBytes} bytes`);
     return {
-      path: validateHookPath(item.path, `${path}.path`),
-      content: stringField(item.content, `${path}.content`),
+      path: filePath,
+      content,
       ...(item.executable === undefined ? {} : { executable: booleanField(item.executable, `${path}.executable`) })
     };
   });
@@ -476,6 +503,8 @@ export function validateRegistryIndex(value: unknown, namespace: string): Regist
   if (!Array.isArray(value.items)) {
     fail("registry.items", "must be an array");
   }
+  if (value.items.length > maxIndexItems) fail("registry.items", `must not contain more than ${maxIndexItems} items`);
+  const seen = new Set<string>();
 
   return {
     schemaVersion: 1,
@@ -486,8 +515,11 @@ export function validateRegistryIndex(value: unknown, namespace: string): Regist
       if (!isRecord(item)) {
         fail(path, "must be an object");
       }
+      const name = validateItemName(item.name, `${path}.name`);
+      if (seen.has(name)) fail(`${path}.name`, "duplicates an earlier registry item");
+      seen.add(name);
       return {
-        name: validateItemName(item.name, `${path}.name`),
+        name,
         type: validateType(item.type, `${path}.type`),
         description: optionalStringField(item.description, `${path}.description`),
         version: stringField(item.version, `${path}.version`)
@@ -496,7 +528,7 @@ export function validateRegistryIndex(value: unknown, namespace: string): Regist
   };
 }
 
-export function validateRegistryItem(value: unknown, expected: { name: string; type: RegistryItemType }): RegistryItem {
+export function validateRegistryItem(value: unknown, expected: { name: string; type: RegistryItemType; version?: string }): RegistryItem {
   if (!isRecord(value)) {
     fail("item", "must be an object");
   }
@@ -509,6 +541,9 @@ export function validateRegistryItem(value: unknown, expected: { name: string; t
   }
   if (type !== expected.type) {
     fail("item.type", `must equal index type ${expected.type}`);
+  }
+  if (expected.version !== undefined && value.version !== expected.version) {
+    fail("item.version", `must equal index version ${expected.version}`);
   }
 
   const base = {
