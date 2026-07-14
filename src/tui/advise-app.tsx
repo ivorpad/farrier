@@ -265,13 +265,13 @@ export function AdviceApp(props: {
     const creatableCount = state.report.recommendations.filter((recommendation) => adviceCreationSupport(recommendation).kind !== "unsupported").length;
     return (
       <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-        <box style={{ flexDirection: "row", width: "100%" }}>
+        <box style={{ flexDirection: "row", flexShrink: 0, width: "100%" }}>
           <text fg={palette.accent}>✦ Advice report</text>
           <box style={{ flexGrow: 1 }} />
           <text fg={palette.success}>{`${backendName(state.report.backend)} · ${state.report.recommendations.length} validated recommendation(s)`}</text>
         </box>
         {selected && decision ? (
-          <box style={{ flexDirection: "column", gap: 0 }}>
+          <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
             <text bg={palette.selBg}>
               <span fg={palette.accent}>{`▸ ${selectedRecommendationIndex + 1}/${state.report.recommendations.length} `}</span>
               <span fg={palette.text}>{selected.id}</span>
@@ -284,17 +284,17 @@ export function AdviceApp(props: {
             <text><span fg={palette.gold}>Creates: </span><span fg={palette.text}>{decision.creates}</span></text>
           </box>
         ) : null}
-        <box style={{ flexDirection: "row", gap: 2 }}>
+        <box style={{ flexDirection: "row", flexShrink: 0, gap: 2 }}>
           <text bg={reportActionIndex === 0 ? palette.selBg : undefined} fg={palette.text}>{`${reportActionIndex === 0 ? "▸ " : "  "}Create selected`}</text>
           <text bg={reportActionIndex === 1 ? palette.selBg : undefined} fg={palette.text}>{`${reportActionIndex === 1 ? "▸ " : "  "}Create all (${creatableCount})`}</text>
         </box>
-        {actionMessage ? <text fg={palette.warn}>{actionMessage}</text> : null}
-        <box style={{ flexDirection: "column", flexGrow: 1, width: "100%" }}>
-          <text fg={palette.gold}>{`Full report · lines ${safeReportOffset + 1}–${safeReportOffset + visibleReportLines.length} of ${lines.length}`}</text>
-          {visibleReportLines.map((line, index) => <text key={`${safeReportOffset + index}-${line}`} fg={reportLineColor(line)}>{line || " "}</text>)}
+        {actionMessage ? <text style={{ flexShrink: 0 }} fg={palette.warn}>{actionMessage}</text> : null}
+        <box style={{ flexDirection: "column", flexGrow: 1, overflow: "hidden", width: "100%" }}>
+          <text style={{ flexShrink: 0 }} fg={palette.gold}>{`Full report · lines ${safeReportOffset + 1}–${safeReportOffset + visibleReportLines.length} of ${lines.length}`}</text>
+          {visibleReportLines.map((line, index) => <text key={`${safeReportOffset + index}-${line}`} style={{ flexShrink: 0 }} fg={reportLineColor(line)}>{line || " "}</text>)}
         </box>
-        <text fg={palette.muted}>Analysis is read-only. Creation always opens a separate review and confirmation step.</text>
-        <KeyHints hint={bindingsHint(reportBindings)} />
+        <text style={{ flexShrink: 0 }} fg={palette.muted}>Analysis is read-only. Creation always opens a separate review and confirmation step.</text>
+        <box style={{ flexShrink: 0 }}><KeyHints hint={bindingsHint(reportBindings)} /></box>
       </box>
     );
   }
