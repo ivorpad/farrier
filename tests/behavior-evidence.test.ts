@@ -10,6 +10,14 @@ const byteLength = (value: unknown) => new TextEncoder().encode(canonicalEvidenc
 
 describe("behavior evidence contract", () => {
   test("redacts nested object keys, sensitive values, common credentials, and private material", () => {
+    const providerTokens = [
+      ["github", "pat", "fixture", "a".repeat(24)].join("_"),
+      ["ghp", "1".repeat(36)].join("_"),
+      `${["gl", "pat"].join("")}-${"b".repeat(20)}`,
+      ["xoxb", "1".repeat(10), "c".repeat(12)].join("-"),
+      ["AK", "IA", "2".repeat(16)].join(""),
+      ["sk", "d".repeat(16)].join("-")
+    ];
     const source = {
       token: "seeded-secret",
       nested: {
@@ -17,12 +25,7 @@ describe("behavior evidence contract", () => {
         list: [
           "Bearer abcdefghijklmnop",
           "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
-          "github_pat_123456789012345678901234567890",
-          "ghp_123456789012345678901234567890123456",
-          "glpat-12345678901234567890",
-          "xoxb-1234567890-abcdefghijkl",
-          "AKIA1234567890ABCDEF",
-          "sk-abcdefghijklmnop",
+          ...providerTokens,
           "https://user:pass@example.com/path",
           "dev@example.com",
           "-----BEGIN RSA PRIVATE KEY-----\nseeded\n-----END RSA PRIVATE KEY-----"
@@ -36,7 +39,7 @@ describe("behavior evidence contract", () => {
     for (const secret of [
       "seeded-secret", "long secret with spaces", "abcdefghijklmnop",
       "123456789012345678901234567890", "user:pass", "dev@example.com",
-      "key-secret", "\nseeded\n"
+      "key-secret", "\nseeded\n", ...providerTokens
     ]) expect(serialized).not.toContain(secret);
     expect(redacted.prose).toBe("The secret garden uses ordinary prose.");
   });
