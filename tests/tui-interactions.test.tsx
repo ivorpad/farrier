@@ -205,6 +205,35 @@ describe("TUI keyboard interactions", () => {
     }
   });
 
+  test("advice report does not overlap wrapped text in a short terminal", async () => {
+    let finishRun: (() => void) | undefined;
+    const report = detailedAdviceReport();
+    const view = await testRender(
+      <AdviceApp {...adviceAppProps(async () => new Promise<AdviceReport>((resolve) => {
+        finishRun = () => resolve(report);
+      }))} />,
+      { width: 120, height: 29 }
+    );
+    try {
+      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() => finishRun !== undefined);
+      await interact(view, () => finishRun?.());
+      for (let index = 0; index < 5; index += 1) await interact(view, () => view.mockInput.pressKey("\x1B[6~"));
+      await view.waitForVisualIdle();
+      const frame = view.captureCharFrame();
+      const normalized = frame.replace(/│/g, " ").replace(/\s+/g, " ");
+      const recommendation = report.recommendations[0]!;
+
+      expect(normalized).toContain(`Why: ${recommendation.reason}`);
+      expect(normalized).toContain(`Value: ${recommendation.benefit}`);
+      expect(normalized).toContain(`Creates: ${recommendation.implementationRoute.description}`);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
   test("advice report focuses Create selected and Create all, and batch cancellation uses super+z or Ctrl+C", async () => {
     let finishRun: (() => void) | undefined;
     let selectedPlans = 0;
