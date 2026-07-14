@@ -444,6 +444,7 @@ export function inventoryOwnership(path: string): InventoryOwnership {
   if (
     path === ".claude/skills/harness-advisor/SKILL.md" ||
     path.startsWith(".claude/skills/claude-automation-recommender/") ||
+    path.startsWith(".agents/skills/codex-automation-recommender/") ||
     path === ".agents/skills/farrier-project-advisor/SKILL.md"
   ) {
     return "farrier-owned";

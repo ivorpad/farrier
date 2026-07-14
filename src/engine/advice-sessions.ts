@@ -1,28 +1,59 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { defaultTranscriptDir, extractCandidateEvents } from "./learn";
+import { defaultTranscriptDir } from "./learn";
 import { createCodexAppServerClient, type CodexAppServerClient, type CodexAppServerFactory } from "./codex-app-server";
-import { addSessionSignal as addSignal, redactSessionText, selectFairSignals, sourceFunnel } from "./advice-patterns";
+import {
+  annotateEpisodeOccurrences,
+  boundSessionText,
+  episodeEvidence,
+  episodeId,
+  episodePatternKey,
+  extractUserRequest,
+  redactSessionText,
+  requestCategories,
+  selectFairEpisodes
+} from "./advice-patterns";
 import type {
-  AdviceEvidence,
+  AdviceEvidenceFunnel,
+  AdviceSessionAction,
   AdviceSessionCountInventory,
+  AdviceSessionEpisode,
   AdviceSessionEvidence,
   AdviceSessionLookback,
   AdviceSessionSourceSummary,
+  AdviceSourceFunnel,
   AdviceVendor
 } from "./advice-types";
 
 type UnknownRecord = Record<string, unknown>;
 const maxClaudeFiles = 500;
 const maxSessionBytes = 2_000_000;
-const dayMs = 24 * 60 * 60 * 1_000;
+const dayMs = 86_400_000;
 const internalAdvisorMarker = "farrier's read-only project advisor";
 
 type DatedSession = { source: AdviceVendor; id: string; updatedAt: number };
-type ClaudeSession = DatedSession & { file: string; records: UnknownRecord[] };
+type ClaudeSession = DatedSession & { file: string; records: UnknownRecord[]; truncated: boolean };
 
 function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function recordArray(value: unknown): UnknownRecord[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function resultRecord(value: unknown): UnknownRecord {
+  return isRecord(value) ? value : {};
+}
+
+function visibleTextBlocks(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    if ((item.type === "text" || item.type === "input_text") && typeof item.text === "string") return [item.text];
+    return [];
+  });
 }
 
 function timestampMs(value: unknown): number | undefined {
@@ -48,47 +79,49 @@ function withinLookback(updatedAt: number, lookback: AdviceSessionLookback, now:
 
 function countInventory(sessions: DatedSession[], targets: AdviceVendor[], now: number): AdviceSessionCountInventory {
   const counts = (lookback: AdviceSessionLookback): AdviceSessionSourceSummary[] => targets.map((source) => ({
-    source,
-    count: sessions.filter((session) => session.source === source && withinLookback(session.updatedAt, lookback, now)).length
+    source, count: sessions.filter((session) => session.source === source && withinLookback(session.updatedAt, lookback, now)).length
   }));
   return { "7d": counts("7d"), "14d": counts("14d"), all: counts("all") };
 }
 
-export { redactSessionText } from "./advice-patterns";
-
-function visibleTextBlocks(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (!isRecord(item)) return [];
-    if (item.type === "text" && typeof item.text === "string") return [item.text];
-    if (item.type === "input_text" && typeof item.text === "string") return [item.text];
-    return [];
-  });
-}
+export { extractUserRequest, redactSessionText } from "./advice-patterns";
 
 function isInternalAdvisorText(value: unknown): boolean {
   return visibleTextBlocks(value).some((text) => text.toLowerCase().includes(internalAdvisorMarker));
 }
 
 function isCorrection(text: string): boolean {
-  return /\b(?:actually|instead|no[, ]|please (?:do|use|keep|stop)|should (?:be|use)|must (?:not|use)|don['’]t)\b/i.test(text);
-}
-
-function looksLikeManualWorkflow(text: string): boolean {
-  return /\b(?:create|deploy|fix|generate|publish|release|review|run|triage|update|verify)\b/i.test(text);
-}
-
-function looksLikeOutcome(text: string): boolean {
-  return /\b(?:blocked|completed|failed|fixed|implemented|passed|resolved|succeeded|unable|verified)\b/i.test(text);
+  return /\b(?:actually|instead|no|please (?:do|use|keep|stop)|should (?:be|use)|must (?:not|use)|don['’]t|also|one more requirement)\b/i.test(text);
 }
 
 function isVerificationCommand(command: string): boolean {
   return /(?:^|\s)(?:test|pytest|ruff|eslint|tsc|check|lint|spec|just check|cargo test|go test)(?:\s|$)/i.test(command);
 }
 
-function isAgentGuidancePath(path: string): boolean {
-  return /(?:^|\/)(?:AGENTS\.md|CLAUDE\.md|\.farrier\.json|settings\.json|skills-lock\.json)$/i.test(path);
+function action(type: AdviceSessionAction["type"], summary: string, status?: AdviceSessionAction["status"]): AdviceSessionAction | undefined {
+  const bounded = boundSessionText(summary, 600).text;
+  return bounded ? { type, summary: bounded, ...(status ? { status } : {}) } : undefined;
+}
+
+function newEpisode(provider: AdviceVendor, sessionId: string, turnId: string, request: string): AdviceSessionEpisode | undefined {
+  const extracted = extractUserRequest(request);
+  if (!extracted || extracted.toLowerCase().includes(internalAdvisorMarker)) return undefined;
+  const bounded = boundSessionText(extracted, 4_000);
+  return {
+    id: episodeId(provider, sessionId, turnId, bounded.text), provider, sessionId, turnId,
+    request: bounded.text, corrections: [], actions: [], occurrences: 1, distinctSessions: 1,
+    truncated: bounded.truncated, allowedCategories: requestCategories(bounded.text)
+  };
+}
+
+function setOutcome(episode: AdviceSessionEpisode | undefined, text: string): void {
+  if (!episode) return;
+  const bounded = boundSessionText(text, 1_000).text;
+  if (bounded) episode.outcome = bounded;
+}
+
+function addAction(episode: AdviceSessionEpisode | undefined, value: AdviceSessionAction | undefined): void {
+  if (episode && value && episode.actions.length < 12) episode.actions.push(value);
 }
 
 function claudeToolUses(record: UnknownRecord): UnknownRecord[] {
@@ -97,187 +130,133 @@ function claudeToolUses(record: UnknownRecord): UnknownRecord[] {
   return content.filter((item): item is UnknownRecord => isRecord(item) && item.type === "tool_use");
 }
 
-function signalsFromClaudeRecord(record: UnknownRecord, sessionId: string, signals: AdviceEvidence[]): void {
-  if (record.type === "user") {
+function claudeEpisodes(session: ClaudeSession): AdviceSessionEpisode[] {
+  const episodes: AdviceSessionEpisode[] = [];
+  let current: AdviceSessionEpisode | undefined;
+  for (const [index, record] of session.records.entries()) {
     const message = isRecord(record.message) ? record.message : undefined;
-    for (const text of visibleTextBlocks(message?.content ?? record.content)) {
-      if (isCorrection(text)) addSignal(signals, { source: "claude", kind: "correction", summary: text, sessionId });
-      else if (looksLikeManualWorkflow(text)) addSignal(signals, { source: "claude", kind: "manual-workflow", summary: text, sessionId });
+    if (record.type === "user") {
+      for (const raw of visibleTextBlocks(message?.content ?? record.content)) {
+        const request = extractUserRequest(raw);
+        if (!request) continue;
+        if (current && isCorrection(request)) {
+          const correction = boundSessionText(request, 1_500);
+          current.corrections.push(correction.text);
+          current.truncated ||= correction.truncated;
+          current.allowedCategories = Array.from(new Set([...current.allowedCategories, ...requestCategories(request)]));
+        } else {
+          current = newEpisode("claude", session.id, String(record.uuid ?? record.id ?? index), request);
+          if (current) episodes.push(current);
+        }
+      }
+    } else if (record.type === "assistant") {
+      for (const text of visibleTextBlocks(message?.content ?? record.content)) setOutcome(current, text);
     }
-  } else if (record.type === "assistant") {
-    const message = isRecord(record.message) ? record.message : undefined;
-    for (const text of visibleTextBlocks(message?.content ?? record.content)) {
-      if (looksLikeOutcome(text)) addSignal(signals, { source: "claude", kind: "outcome", summary: text, sessionId });
+    for (const use of claudeToolUses(record)) {
+      const name = typeof use.name === "string" ? use.name : "tool";
+      const input = isRecord(use.input) ? use.input : {};
+      if (name === "Bash" && typeof input.command === "string") addAction(current, action(isVerificationCommand(input.command) ? "verification" : "command", input.command));
+      else if ((name === "Edit" || name === "Write" || name === "MultiEdit") && typeof (input.file_path ?? input.path) === "string") addAction(current, action("file-change", String(input.file_path ?? input.path)));
+      else if (name === "WebSearch" || name === "WebFetch") addAction(current, action("web", String(input.query ?? input.url ?? name)));
+      else if (name === "Task" || name === "Agent") addAction(current, action("delegation", String(input.description ?? input.prompt ?? name)));
+      else if (/mcp/i.test(name)) addAction(current, action("mcp", name));
     }
   }
-
-  for (const use of claudeToolUses(record)) {
-    const name = typeof use.name === "string" ? use.name : "";
-    const input = isRecord(use.input) ? use.input : {};
-    if ((name === "WebSearch" || name === "WebFetch") && typeof (input.query ?? input.url) === "string") {
-      addSignal(signals, { source: "claude", kind: "external-lookup", summary: `${name}: ${String(input.query ?? input.url)}`, sessionId });
-    }
-    if ((name === "Task" || name === "Agent") && typeof (input.description ?? input.prompt) === "string") {
-      addSignal(signals, { source: "claude", kind: "delegation", summary: String(input.description ?? input.prompt), sessionId });
-    }
-    if (name === "Bash" && typeof input.command === "string" && isVerificationCommand(input.command)) {
-      addSignal(signals, { source: "claude", kind: "verification", summary: input.command, sessionId });
-    }
-    const path = input.file_path ?? input.path;
-    if ((name === "Edit" || name === "Write" || name === "MultiEdit") && typeof path === "string" && isAgentGuidancePath(path)) {
-      addSignal(signals, { source: "claude", kind: "guidance-edit", summary: `Updated agent guidance/configuration: ${path}`, sessionId });
-    }
-  }
+  return episodes;
 }
 
 async function indexClaudeSessions(targetDir: string, transcriptsDir?: string): Promise<{
-  directory: string;
-  sessions: ClaudeSession[];
-  malformed: number;
-  discovered: number;
+  directory: string; sessions: ClaudeSession[]; malformed: number; discovered: number;
 }> {
   const directory = transcriptsDir ? resolve(transcriptsDir) : defaultTranscriptDir(targetDir);
-  let files: Array<{ name: string; mtimeMs: number }>;
+  let files: Array<{ name: string; mtimeMs: number; size: number }>;
   try {
     const names = (await readdir(directory)).filter((name) => name.endsWith(".jsonl"));
-    files = (await Promise.all(names.map(async (name) => ({ name, mtimeMs: (await stat(join(directory, name))).mtimeMs }))))
-      .sort((left, right) => right.mtimeMs - left.mtimeMs || left.name.localeCompare(right.name))
-      .slice(0, maxClaudeFiles);
-  } catch {
-    return { directory, sessions: [], malformed: 0, discovered: 0 };
-  }
-
+    files = (await Promise.all(names.map(async (name) => {
+      const info = await stat(join(directory, name));
+      return { name, mtimeMs: info.mtimeMs, size: info.size };
+    }))).sort((left, right) => right.mtimeMs - left.mtimeMs || left.name.localeCompare(right.name)).slice(0, maxClaudeFiles);
+  } catch { return { directory, sessions: [], malformed: 0, discovered: 0 }; }
   let malformed = 0;
   const sessions: ClaudeSession[] = [];
   const exactDirectory = resolve(directory) === resolve(defaultTranscriptDir(targetDir));
   for (const file of files) {
-    const sessionId = basename(file.name, ".jsonl");
     const text = (await readFile(join(directory, file.name), "utf8")).slice(0, maxSessionBytes);
     const records: UnknownRecord[] = [];
     for (const line of text.split(/\r?\n/)) {
       if (!line.trim()) continue;
-      try {
-        const parsed = JSON.parse(line);
-        if (isRecord(parsed)) records.push(parsed);
-      } catch {
-        malformed += 1;
-      }
+      try { const parsed = JSON.parse(line); if (isRecord(parsed)) records.push(parsed); } catch { malformed += 1; }
     }
-    const matchingRecords = records.filter((record) =>
-      typeof record.cwd === "string" ? resolve(record.cwd) === targetDir : exactDirectory
-    );
-    if (matchingRecords.length === 0) continue;
-    if (matchingRecords.some((record) => {
-      if (record.type !== "user") return false;
-      const message = isRecord(record.message) ? record.message : undefined;
-      return isInternalAdvisorText(message?.content ?? record.content);
-    })) continue;
-    const timestamps = matchingRecords.map(recordTimestamp).filter((value): value is number => value !== undefined);
+    const matching = records.filter((record) => typeof record.cwd === "string" ? resolve(record.cwd) === targetDir : exactDirectory);
+    if (!matching.length || matching.some((record) => record.type === "user" && isInternalAdvisorText((isRecord(record.message) ? record.message : {}).content ?? record.content))) continue;
+    const timestamps = matching.map(recordTimestamp).filter((value): value is number => value !== undefined);
     sessions.push({
-      source: "claude",
-      id: sessionId,
-      file: file.name,
-      records: matchingRecords,
-      updatedAt: timestamps.length > 0 ? Math.max(...timestamps) : file.mtimeMs
+      source: "claude", id: basename(file.name, ".jsonl"), file: file.name, records: matching,
+      updatedAt: timestamps.length ? Math.max(...timestamps) : file.mtimeMs, truncated: file.size > maxSessionBytes
     });
   }
   return { directory, sessions, malformed, discovered: files.length };
 }
 
-async function collectClaude(
-  targetDir: string,
-  transcriptsDir: string | undefined,
-  lookback: AdviceSessionLookback,
-  now: number
-): Promise<AdviceSessionEvidence> {
-  const indexed = await indexClaudeSessions(targetDir, transcriptsDir);
-  const eligible = indexed.sessions.filter((session) => withinLookback(session.updatedAt, lookback, now));
-  const signals: AdviceEvidence[] = [];
-  for (const session of eligible) {
-    for (const record of session.records) signalsFromClaudeRecord(record, session.id, signals);
-  }
-
-  if (eligible.length > 0) {
-    const exactDirectory = resolve(indexed.directory) === resolve(defaultTranscriptDir(targetDir));
-    const eligibleFiles = new Set(eligible.map((session) => session.file));
-    const failures = await extractCandidateEvents(indexed.directory, {
-      fileFilter: (fileName) => eligibleFiles.has(fileName),
-      recordFilter: (record) => typeof record.cwd === "string" ? resolve(record.cwd) === targetDir : exactDirectory
-    });
-    for (const event of failures.events) {
-      addSignal(signals, {
-        source: "claude",
-        kind: "failed-command",
-        summary: `${event.command}: ${event.reason}`,
-        sessionId: "aggregate",
-        occurrences: event.count
-      });
-    }
-  }
-
-  const notes = indexed.malformed > 0 ? [`Skipped ${indexed.malformed} malformed Claude session record(s).`] : [];
-  const funnel = sourceFunnel("claude", eligible.length, signals, indexed.malformed);
-  const source = funnel.sources[0]!;
-  source.discovered = indexed.discovered;
-  source.eligible = eligible.length;
-  source.read = eligible.length;
-  source.parsed = eligible.length;
-  source.discarded.filtering = Math.max(indexed.discovered - eligible.length, 0);
+function sourceFunnel(source: AdviceVendor, input: {
+  discovered: number; eligible: number; read: number; parsed: number; episodes: AdviceSessionEpisode[];
+  malformed?: number; filtering?: number; truncatedInputs?: number;
+}): AdviceSourceFunnel {
+  const visibleEvents = input.episodes.reduce((sum, item) => sum + 1 + item.corrections.length + item.actions.length + (item.outcome ? 1 : 0), 0);
   return {
-    sources: [{ source: "claude", count: eligible.length }], signals, notes,
-    funnel
+    source, discovered: input.discovered, eligible: input.eligible, read: input.read, parsed: input.parsed, visibleEvents,
+    discarded: { filtering: input.filtering ?? 0, redaction: 0, deduplication: 0, malformed: input.malformed ?? 0, limits: 0 },
+    retainedPatterns: input.episodes.length, retainedEpisodes: input.episodes.length, omittedEpisodes: 0,
+    truncatedEpisodes: input.episodes.filter((item) => item.truncated).length + (input.truncatedInputs ?? 0)
   };
 }
 
-function recordArray(value: unknown): UnknownRecord[] {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
-}
-
-function resultRecord(value: unknown): UnknownRecord {
-  return isRecord(value) ? value : {};
+async function collectClaude(targetDir: string, transcriptsDir: string | undefined, lookback: AdviceSessionLookback, now: number): Promise<AdviceSessionEvidence> {
+  const indexed = await indexClaudeSessions(targetDir, transcriptsDir);
+  const eligible = indexed.sessions.filter((session) => withinLookback(session.updatedAt, lookback, now));
+  const episodes = eligible.flatMap(claudeEpisodes);
+  const funnelSource = sourceFunnel("claude", {
+    discovered: indexed.discovered, eligible: eligible.length, read: eligible.length, parsed: eligible.length, episodes,
+    malformed: indexed.malformed, filtering: Math.max(indexed.discovered - eligible.length, 0), truncatedInputs: eligible.filter((item) => item.truncated).length
+  });
+  return {
+    sources: [{ source: "claude", count: eligible.length }], episodes, signals: episodes.map(episodeEvidence),
+    notes: indexed.malformed ? [`Skipped ${indexed.malformed} malformed Claude session record(s).`] : [],
+    funnel: { sources: [funnelSource], visibleEvents: funnelSource.visibleEvents, recurringPatterns: 0, retainedEpisodes: episodes.length, omittedEpisodes: 0, truncatedEpisodes: funnelSource.truncatedEpisodes }
+  };
 }
 
 function codexThreadTimestamp(summary: UnknownRecord): number {
   return timestampMs(summary.updatedAt) ?? timestampMs(summary.createdAt) ?? 0;
 }
 
-async function listCodexThreadSummaries(
-  client: CodexAppServerClient,
-  targetDir: string,
-  lookback: AdviceSessionLookback,
-  now: number
-): Promise<{ threads: UnknownRecord[]; discovered: number; filtered: number }> {
+async function listCodexThreadSummaries(client: CodexAppServerClient, targetDir: string, lookback: AdviceSessionLookback, now: number): Promise<{ threads: UnknownRecord[]; discovered: number; filtered: number }> {
   const threads: UnknownRecord[] = [];
   let discovered = 0;
   let filtered = 0;
   let cursor: string | undefined;
   let scanned = 0;
-  const seenCursors = new Set<string>();
+  const seen = new Set<string>();
   const cutoff = cutoffMs(lookback, now);
   do {
     const result = resultRecord(await client.request("thread/list", {
-      cwd: targetDir,
-      cursor: cursor ?? null,
-      limit: 100,
-      sortKey: "updated_at",
-      sortDirection: "desc",
+      cwd: targetDir, cursor: cursor ?? null, limit: 100, sortKey: "updated_at", sortDirection: "desc",
       sourceKinds: ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"]
     }));
     const page = recordArray(result.data);
     discovered += page.length;
     scanned += page.length;
     for (const summary of page) {
-      if (typeof summary.id !== "string") { filtered += 1; continue; }
-      if (typeof summary.cwd === "string" && resolve(summary.cwd) !== targetDir) { filtered += 1; continue; }
-      if (typeof summary.preview === "string" && summary.preview.toLowerCase().includes(internalAdvisorMarker)) { filtered += 1; continue; }
-      if (withinLookback(codexThreadTimestamp(summary), lookback, now)) threads.push(summary);
-      else filtered += 1;
+      if (typeof summary.id !== "string" || (typeof summary.cwd === "string" && resolve(summary.cwd) !== targetDir) ||
+        (typeof summary.preview === "string" && summary.preview.toLowerCase().includes(internalAdvisorMarker)) ||
+        !withinLookback(codexThreadTimestamp(summary), lookback, now)) filtered += 1;
+      else threads.push(summary);
     }
-    const oldest = page.length > 0 ? codexThreadTimestamp(page[page.length - 1]!) : undefined;
+    const oldest = page.length ? codexThreadTimestamp(page.at(-1)!) : undefined;
     if (cutoff !== undefined && oldest !== undefined && oldest > 0 && oldest < cutoff) break;
     const next = typeof result.nextCursor === "string" && result.nextCursor ? result.nextCursor : undefined;
-    if (!next || seenCursors.has(next)) break;
-    seenCursors.add(next);
+    if (!next || seen.has(next)) break;
+    seen.add(next);
     cursor = next;
   } while (scanned < 500);
   return { threads, discovered, filtered };
@@ -290,150 +269,139 @@ async function readCodexThreads(client: CodexAppServerClient, summaries: Unknown
     const thread = resultRecord(read.thread);
     const cwd = typeof thread.cwd === "string" ? resolve(thread.cwd) : typeof summary.cwd === "string" ? resolve(summary.cwd) : undefined;
     if (cwd !== targetDir) continue;
-    const internal = recordArray(thread.turns).some((turn) => recordArray(turn.items).some((item) =>
-      item.type === "userMessage" && isInternalAdvisorText(item.content)
-    ));
-    if (internal) continue;
-    exact.push(thread);
+    const internal = recordArray(thread.turns).some((turn) => recordArray(turn.items).some((item) => item.type === "userMessage" && isInternalAdvisorText(item.content)));
+    if (!internal) exact.push(thread);
   }
   return exact;
 }
 
-function signalsFromCodexThread(thread: UnknownRecord, signals: AdviceEvidence[]): void {
+function codexEpisodes(thread: UnknownRecord): AdviceSessionEpisode[] {
   const sessionId = typeof thread.id === "string" ? thread.id : "unknown";
-  for (const turn of recordArray(thread.turns)) {
-    for (const item of recordArray(turn.items)) {
+  const episodes: AdviceSessionEpisode[] = [];
+  let previous: AdviceSessionEpisode | undefined;
+  for (const [turnIndex, turn] of recordArray(thread.turns).entries()) {
+    let current: AdviceSessionEpisode | undefined;
+    for (const [itemIndex, item] of recordArray(turn.items).entries()) {
       const type = typeof item.type === "string" ? item.type : "";
       if (type === "reasoning") continue;
       if (type === "userMessage") {
-        for (const text of visibleTextBlocks(item.content)) {
-          if (isCorrection(text)) addSignal(signals, { source: "codex", kind: "correction", summary: text, sessionId });
-          else if (looksLikeManualWorkflow(text)) addSignal(signals, { source: "codex", kind: "manual-workflow", summary: text, sessionId });
+        for (const raw of visibleTextBlocks(item.content)) {
+          const request = extractUserRequest(raw);
+          if (!request) continue;
+          if ((current || previous) && isCorrection(request)) {
+            current = current ?? previous;
+            const correction = boundSessionText(request, 1_500);
+            current!.corrections.push(correction.text);
+            current!.truncated ||= correction.truncated;
+            current!.allowedCategories = Array.from(new Set([...current!.allowedCategories, ...requestCategories(request)]));
+          }
+          else {
+            current = newEpisode("codex", sessionId, String(turn.id ?? `${turnIndex}:${itemIndex}`), request);
+            if (current) {
+              episodes.push(current);
+              previous = current;
+            }
+          }
         }
-      } else if (type === "agentMessage" && typeof item.text === "string" && looksLikeOutcome(item.text)) {
-        addSignal(signals, { source: "codex", kind: "outcome", summary: item.text, sessionId });
-      } else if (type === "commandExecution" && typeof item.command === "string") {
+      } else if (type === "agentMessage" && typeof item.text === "string") setOutcome(current, item.text);
+      else if (type === "commandExecution" && typeof item.command === "string") {
         const failed = item.status === "failed" || (typeof item.exitCode === "number" && item.exitCode !== 0);
-        if (failed) {
-          addSignal(signals, { source: "codex", kind: "failed-command", summary: `${item.command}: ${String(item.aggregatedOutput ?? item.status ?? "failed")}`, sessionId });
-        } else if (isVerificationCommand(item.command)) {
-          addSignal(signals, { source: "codex", kind: "verification", summary: item.command, sessionId });
-        }
-      } else if (type === "webSearch") {
-        addSignal(signals, { source: "codex", kind: "external-lookup", summary: String(item.query ?? "web search"), sessionId });
-      } else if (type === "mcpToolCall") {
-        addSignal(signals, { source: "codex", kind: "external-lookup", summary: `${String(item.server ?? "MCP")}/${String(item.tool ?? "tool")}`, sessionId });
-      } else if (type === "collabToolCall") {
-        addSignal(signals, { source: "codex", kind: "delegation", summary: String(item.prompt ?? item.tool ?? "specialist delegation"), sessionId });
-      } else if (type === "fileChange") {
-        const paths = recordArray(item.changes).map((change) => String(change.path ?? change.file ?? "")).filter(isAgentGuidancePath);
-        for (const path of paths) addSignal(signals, { source: "codex", kind: "guidance-edit", summary: `Updated agent guidance/configuration: ${path}`, sessionId });
+        addAction(current, action(!failed && isVerificationCommand(item.command) ? "verification" : "command", item.command, failed ? "failed" : item.status === "completed" ? "completed" : "unknown"));
+        if (failed) setOutcome(current, `Command failed: ${item.command}`);
+      } else if (type === "webSearch") addAction(current, action("web", String(item.query ?? "web search")));
+      else if (type === "mcpToolCall") addAction(current, action("mcp", `${String(item.server ?? "MCP")}/${String(item.tool ?? "tool")}`));
+      else if (type === "collabToolCall") addAction(current, action("delegation", String(item.prompt ?? item.tool ?? "specialist delegation")));
+      else if (type === "fileChange") {
+        for (const change of recordArray(item.changes).slice(0, 12)) addAction(current, action("file-change", String(change.path ?? change.file ?? "file change")));
       }
     }
   }
+  return episodes;
 }
 
-async function collectCodex(
-  targetDir: string,
-  clientFactory: CodexAppServerFactory,
-  lookback: AdviceSessionLookback,
-  now: number
-): Promise<AdviceSessionEvidence> {
-  if (!Bun.which("codex") && clientFactory === createCodexAppServerClient) {
-    return { sources: [{ source: "codex", count: 0 }], signals: [], notes: ["Codex is unavailable; Codex sessions were not read."], funnel: sourceFunnel("codex", 0, []) };
-  }
+function emptySource(source: AdviceVendor): AdviceEvidenceFunnel {
+  const item = sourceFunnel(source, { discovered: 0, eligible: 0, read: 0, parsed: 0, episodes: [] });
+  return { sources: [item], visibleEvents: 0, recurringPatterns: 0, retainedEpisodes: 0, omittedEpisodes: 0, truncatedEpisodes: 0 };
+}
+
+async function collectCodex(targetDir: string, clientFactory: CodexAppServerFactory, lookback: AdviceSessionLookback, now: number): Promise<AdviceSessionEvidence> {
+  if (!Bun.which("codex") && clientFactory === createCodexAppServerClient) return {
+    sources: [{ source: "codex", count: 0 }], episodes: [], signals: [], notes: ["Codex is unavailable; Codex sessions were not read."], funnel: emptySource("codex")
+  };
   let client: CodexAppServerClient | undefined;
   try {
     client = await clientFactory();
     const listed = await listCodexThreadSummaries(client, targetDir, lookback, now);
     const threads = await readCodexThreads(client, listed.threads, targetDir);
-    const signals: AdviceEvidence[] = [];
-    for (const thread of threads) signalsFromCodexThread(thread, signals);
-    const funnel = sourceFunnel("codex", threads.length, signals);
-    const source = funnel.sources[0]!;
-    source.discovered = listed.discovered;
-    source.eligible = listed.threads.length;
-    source.read = listed.threads.length;
-    source.parsed = threads.length;
-    source.discarded.filtering = listed.filtered + Math.max(listed.threads.length - threads.length, 0);
-    return { sources: [{ source: "codex", count: threads.length }], signals, notes: [], funnel };
+    const episodes = threads.flatMap(codexEpisodes);
+    const item = sourceFunnel("codex", {
+      discovered: listed.discovered, eligible: listed.threads.length, read: listed.threads.length, parsed: threads.length,
+      episodes, filtering: listed.filtered + Math.max(listed.threads.length - threads.length, 0)
+    });
+    return {
+      sources: [{ source: "codex", count: threads.length }], episodes, signals: episodes.map(episodeEvidence), notes: [],
+      funnel: { sources: [item], visibleEvents: item.visibleEvents, recurringPatterns: 0, retainedEpisodes: episodes.length, omittedEpisodes: 0, truncatedEpisodes: item.truncatedEpisodes }
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { sources: [{ source: "codex", count: 0 }], signals: [], notes: [`Codex sessions unavailable: ${message}`], funnel: sourceFunnel("codex", 0, []) };
-  } finally {
-    await client?.close();
-  }
+    return { sources: [{ source: "codex", count: 0 }], episodes: [], signals: [], notes: [`Codex sessions unavailable: ${message}`], funnel: emptySource("codex") };
+  } finally { await client?.close(); }
 }
 
 export async function discoverProjectSessionCounts(input: {
-  targetDir: string;
-  targets?: AdviceVendor[];
-  codexClientFactory?: CodexAppServerFactory;
-  claudeTranscriptsDir?: string;
-  now?: number;
+  targetDir: string; targets?: AdviceVendor[]; codexClientFactory?: CodexAppServerFactory; claudeTranscriptsDir?: string; now?: number;
 }): Promise<AdviceSessionCountInventory> {
   const targetDir = resolve(input.targetDir);
   const targets = input.targets ?? ["claude", "codex"];
   const now = input.now ?? Date.now();
   const sessions: DatedSession[] = [];
-  if (targets.includes("claude")) {
-    const claude = await indexClaudeSessions(targetDir, input.claudeTranscriptsDir);
-    sessions.push(...claude.sessions);
-  }
+  if (targets.includes("claude")) sessions.push(...(await indexClaudeSessions(targetDir, input.claudeTranscriptsDir)).sessions);
   if (targets.includes("codex")) {
-    const clientFactory = input.codexClientFactory ?? createCodexAppServerClient;
-    if (Bun.which("codex") || clientFactory !== createCodexAppServerClient) {
+    const factory = input.codexClientFactory ?? createCodexAppServerClient;
+    if (Bun.which("codex") || factory !== createCodexAppServerClient) {
       let client: CodexAppServerClient | undefined;
       try {
-        client = await clientFactory();
-        const summaries = await listCodexThreadSummaries(client, targetDir, "all", now);
-        sessions.push(...summaries.threads.map((summary) => ({
-          source: "codex" as const,
-          id: String(summary.id),
-          updatedAt: codexThreadTimestamp(summary)
-        })));
-      } catch {
-        // Discovery is advisory; the analysis run will report detailed session errors.
-      } finally {
-        await client?.close();
-      }
+        client = await factory();
+        const listed = await listCodexThreadSummaries(client, targetDir, "all", now);
+        sessions.push(...listed.threads.map((summary) => ({ source: "codex" as const, id: String(summary.id), updatedAt: codexThreadTimestamp(summary) })));
+      } catch { /* discovery remains advisory */ } finally { await client?.close(); }
     }
   }
   return countInventory(sessions, targets, now);
 }
 
 export async function collectProjectSessionEvidence(input: {
-  targetDir: string;
-  targets?: AdviceVendor[];
-  codexClientFactory?: CodexAppServerFactory;
-  claudeTranscriptsDir?: string;
-  lookback?: AdviceSessionLookback;
-  now?: number;
+  targetDir: string; targets?: AdviceVendor[]; codexClientFactory?: CodexAppServerFactory;
+  claudeTranscriptsDir?: string; lookback?: AdviceSessionLookback; now?: number;
 }): Promise<AdviceSessionEvidence> {
   const targetDir = resolve(input.targetDir);
   const targets = input.targets ?? ["claude", "codex"];
   const lookback = input.lookback ?? "7d";
   const now = input.now ?? Date.now();
-  const results = await Promise.all([
-    targets.includes("claude") ? collectClaude(targetDir, input.claudeTranscriptsDir, lookback, now) : Promise.resolve(undefined),
-    targets.includes("codex") ? collectCodex(targetDir, input.codexClientFactory ?? createCodexAppServerClient, lookback, now) : Promise.resolve(undefined)
-  ]);
-  const included = results.filter((result): result is AdviceSessionEvidence => result !== undefined);
-  const signals = selectFairSignals(included);
-  const sourceFunnels = included.flatMap((result) => result.funnel?.sources ?? []);
+  const results = (await Promise.all([
+    targets.includes("claude") ? collectClaude(targetDir, input.claudeTranscriptsDir, lookback, now) : undefined,
+    targets.includes("codex") ? collectCodex(targetDir, input.codexClientFactory ?? createCodexAppServerClient, lookback, now) : undefined
+  ])).filter((item): item is AdviceSessionEvidence => item !== undefined);
+  const allEpisodes = results.flatMap((result) => result.episodes ?? []);
+  annotateEpisodeOccurrences(allEpisodes);
+  const selected = selectFairEpisodes(allEpisodes);
+  const sourceFunnels = results.flatMap((result) => result.funnel?.sources ?? []);
   for (const source of sourceFunnels) {
-    const retained = signals.filter((signal) => signal.source === source.source).length;
-    source.discarded.limits = Math.max(source.retainedPatterns - retained, 0);
+    const retained = selected.episodes.filter((episode) => episode.provider === source.source).length;
+    const original = allEpisodes.filter((episode) => episode.provider === source.source).length;
     source.retainedPatterns = retained;
+    source.retainedEpisodes = retained;
+    source.omittedEpisodes = Math.max(original - retained, 0);
+    source.discarded.limits = source.omittedEpisodes;
   }
   return {
-    sources: included.flatMap((result) => result.sources),
-    signals,
-    notes: included.flatMap((result) => result.notes),
+    sources: results.flatMap((result) => result.sources), episodes: selected.episodes, signals: selected.episodes.map(episodeEvidence),
+    notes: results.flatMap((result) => result.notes),
     funnel: {
-      sources: sourceFunnels,
-      visibleEvents: sourceFunnels.reduce((sum, source) => sum + source.visibleEvents, 0),
-      recurringPatterns: signals.filter((signal) => (signal.distinctSessions ?? 0) >= 2 || (signal.occurrences ?? 1) >= 2).length
+      sources: sourceFunnels, visibleEvents: sourceFunnels.reduce((sum, source) => sum + source.visibleEvents, 0),
+      recurringPatterns: new Set(selected.episodes.filter((episode) => episode.distinctSessions > 1).map(episodePatternKey)).size,
+      retainedEpisodes: selected.episodes.length, omittedEpisodes: selected.omitted,
+      truncatedEpisodes: selected.episodes.filter((episode) => episode.truncated).length
     }
   };
 }

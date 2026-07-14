@@ -25,9 +25,11 @@ const advisorInventory = [
   ".claude/skills/harness-advisor/SKILL.md",
   ".claude/skills/claude-automation-recommender/SKILL.md",
   ".agents/skills/farrier-project-advisor/SKILL.md",
+  ".agents/skills/codex-automation-recommender/SKILL.md",
   ".claude/skills/harness-advisor/evals/cases.json",
   ".claude/skills/claude-automation-recommender/evals/cases.json",
   ".agents/skills/farrier-project-advisor/evals/cases.json",
+  ".agents/skills/codex-automation-recommender/evals/cases.json",
   ".claude/skills/claude-automation-recommender/UPSTREAM.md",
   ".claude/skills/claude-automation-recommender/upstream/SKILL.md",
   ".claude/skills/claude-automation-recommender/upstream/LICENSE.txt",
@@ -35,7 +37,12 @@ const advisorInventory = [
   ".claude/skills/claude-automation-recommender/upstream/references/mcp-servers.md",
   ".claude/skills/claude-automation-recommender/upstream/references/plugins-reference.md",
   ".claude/skills/claude-automation-recommender/upstream/references/skills-reference.md",
-  ".claude/skills/claude-automation-recommender/upstream/references/subagent-templates.md"
+  ".claude/skills/claude-automation-recommender/upstream/references/subagent-templates.md",
+  ".agents/skills/codex-automation-recommender/references/skills-reference.md",
+  ".agents/skills/codex-automation-recommender/references/plugins-reference.md",
+  ".agents/skills/codex-automation-recommender/references/hooks-patterns.md",
+  ".agents/skills/codex-automation-recommender/references/mcp-servers.md",
+  ".agents/skills/codex-automation-recommender/references/subagent-templates.md"
 ];
 
 const pythonFastapiInventory = [
@@ -149,7 +156,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(pythonFastapiInventory);
-    expect(plan.files).toHaveLength(38);
+    expect(plan.files).toHaveLength(45);
   });
 
   test("renders harness-advisor skill into every pack inventory", async () => {
@@ -163,7 +170,7 @@ describe("render engine", () => {
     expect(skill?.content).toContain("name: harness-advisor");
     expect(skill?.content).toContain("farrier update --dir .");
     expect(skill?.content).toContain("Never edit `.farrier.json` by hand");
-    expect(skill?.content).toContain("skills find <query>");
+    expect(skill?.content).toContain("$codex-automation-recommender");
     expect(skill?.content).toContain("skill-creator");
   });
 
@@ -173,10 +180,14 @@ describe("render engine", () => {
     const byPath = new Map(plan.files.map((file) => [file.path, file.content]));
     const claude = byPath.get(".claude/skills/claude-automation-recommender/SKILL.md") ?? "";
     const codex = byPath.get(".agents/skills/farrier-project-advisor/SKILL.md") ?? "";
+    const codexRecommender = byPath.get(".agents/skills/codex-automation-recommender/SKILL.md") ?? "";
     const provenance = byPath.get(".claude/skills/claude-automation-recommender/UPSTREAM.md") ?? "";
 
     expect(claude).toContain("farrier advise --dir . --sessions auto --since 7d --targets claude");
     expect(codex).toContain("farrier advise --dir . --sessions auto --since 7d --targets codex");
+    expect(codex).toContain("$codex-automation-recommender");
+    expect(codexRecommender).toContain(".agents/skills");
+    expect(codexRecommender).toContain(".codex/agents");
     expect(provenance).toContain("a5c7fb5d86a4cd34c4f47819658654c3d8f08dda");
     expect(provenance).toContain("Apache-2.0");
 
@@ -682,7 +693,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(tsReactViteInventory);
-    expect(plan.files).toHaveLength(38);
+    expect(plan.files).toHaveLength(45);
 
     const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";
     expect(agents).toContain("Use Bun for TypeScript package and script execution");
@@ -736,7 +747,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(railsInventory);
-    expect(plan.files).toHaveLength(37);
+    expect(plan.files).toHaveLength(44);
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
@@ -778,7 +789,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(genericInventory);
-    expect(plan.files).toHaveLength(32);
+    expect(plan.files).toHaveLength(39);
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
     expect(plan.files.some((file) => file.path.includes("verb-runner.py"))).toBe(false);
     expect(plan.files.some((file) => file.path.includes("stop-judge.py"))).toBe(false);

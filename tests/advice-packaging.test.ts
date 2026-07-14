@@ -52,6 +52,13 @@ describe("advice package inventory", () => {
       "src/templates/skills/claude-automation-recommender/upstream/references/plugins-reference.md",
       "src/templates/skills/claude-automation-recommender/upstream/references/skills-reference.md",
       "src/templates/skills/claude-automation-recommender/upstream/references/subagent-templates.md",
+      "src/templates/skills/codex-automation-recommender/SKILL.md",
+      "src/templates/skills/codex-automation-recommender/evals/cases.json",
+      "src/templates/skills/codex-automation-recommender/references/skills-reference.md",
+      "src/templates/skills/codex-automation-recommender/references/plugins-reference.md",
+      "src/templates/skills/codex-automation-recommender/references/hooks-patterns.md",
+      "src/templates/skills/codex-automation-recommender/references/mcp-servers.md",
+      "src/templates/skills/codex-automation-recommender/references/subagent-templates.md",
       "src/templates/skills/farrier-project-advisor/SKILL.md"
     ]) {
       expect(output).toContain(path);

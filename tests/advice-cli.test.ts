@@ -60,9 +60,9 @@ console.log("\`\`\`");
     expect(human.exitCode).toBe(0);
     expect(json.exitCode).toBe(0);
     for (const stderr of [human.stderr, json.stderr]) {
-      expect(stderr).toContain("Profiling project structure");
-      expect(stderr).toContain(`Asking ${backend} for bounded recommendations`);
-      expect(stderr).toContain("Report ready with 1 validated recommendation");
+      expect(stderr).toContain("Profiling dependencies, workflows, services, and installed automation");
+      expect(stderr).toContain("recommender for bounded recommendations");
+      expect(stderr).toContain("Report ready with 1 supported recommendation");
     }
     const report = JSON.parse(json.stdout);
     expect(report.reportOnly).toBe(true);

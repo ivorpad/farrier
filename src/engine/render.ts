@@ -578,6 +578,14 @@ const claudeAutomationReferenceFiles = [
   "upstream/references/subagent-templates.md"
 ];
 
+const codexAutomationReferenceFiles = [
+  "references/skills-reference.md",
+  "references/plugins-reference.md",
+  "references/hooks-patterns.md",
+  "references/mcp-servers.md",
+  "references/subagent-templates.md"
+];
+
 export async function createRenderPlan(options: CreateRenderPlanOptions): Promise<RenderPlan> {
   const agents = normalizeAgents(options.agents ?? options.existingManifest?.agents);
   const existingSkills = stringArray(options.existingManifest?.skills);
@@ -629,6 +637,10 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
       content: await readTemplate("skills", "farrier-project-advisor", "SKILL.md")
     },
     {
+      path: ".agents/skills/codex-automation-recommender/SKILL.md",
+      content: await readTemplate("skills", "codex-automation-recommender", "SKILL.md")
+    },
+    {
       path: ".claude/skills/harness-advisor/evals/cases.json",
       content: await readTemplate("skills", "harness-advisor", "evals", "cases.json")
     },
@@ -639,6 +651,10 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     {
       path: ".agents/skills/farrier-project-advisor/evals/cases.json",
       content: await readTemplate("skills", "farrier-project-advisor", "evals", "cases.json")
+    },
+    {
+      path: ".agents/skills/codex-automation-recommender/evals/cases.json",
+      content: await readTemplate("skills", "codex-automation-recommender", "evals", "cases.json")
     }
   );
 
@@ -646,6 +662,13 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     files.push({
       path: posixPath(join(".claude", "skills", "claude-automation-recommender", relativePath)),
       content: await readTemplate("skills", "claude-automation-recommender", relativePath)
+    });
+  }
+
+  for (const relativePath of codexAutomationReferenceFiles) {
+    files.push({
+      path: posixPath(join(".agents", "skills", "codex-automation-recommender", relativePath)),
+      content: await readTemplate("skills", "codex-automation-recommender", relativePath)
     });
   }
 

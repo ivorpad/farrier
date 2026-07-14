@@ -1,0 +1,10 @@
+{
+  "jobs": [
+    {"category":"guidance","claude":"AGENTS.md or CLAUDE.md","codex":"AGENTS.md"},
+    {"category":"hooks","claude":".claude/settings.json","codex":".codex/hooks.json or .codex/config.toml"},
+    {"category":"skills","claude":".claude/skills/<name>/SKILL.md","codex":".agents/skills/<name>/SKILL.md"},
+    {"category":"subagents","claude":".claude/agents/<name>.md","codex":".codex/agents/<name>.toml"},
+    {"category":"plugins","claude":"Claude plugin marketplace","codex":".agents/plugins/marketplace.json or plugin directory"},
+    {"category":"mcp","claude":".mcp.json","codex":".codex/config.toml"}
+  ]
+}

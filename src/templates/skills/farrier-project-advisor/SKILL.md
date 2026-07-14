@@ -1,33 +1,18 @@
 ---
 name: farrier-project-advisor
-description: Run Farrier's read-only project advisor for Codex, using exact-project session evidence and Codex-native artifact locations.
+description: Compatibility entry point for Farrier's read-only Codex automation advice. Delegates to codex-automation-recommender.
 ---
 
-# Farrier Project Advisor for Codex
+# Farrier Project Advisor
 
-Use Farrier's shared advice engine rather than inspecting Codex transcript files directly:
+Use `$codex-automation-recommender` for codebase-first, provider-native advice. It covers `AGENTS.md`, `.agents/skills`, Codex plugins, trusted project hooks, `.codex/agents`, and project MCP configuration.
+
+The underlying report command is:
 
 ```bash
 farrier advise --dir . --sessions auto --since 7d --targets codex
 ```
 
-If `farrier` is not on `PATH`, use `bunx farrier` or `npx farrier` with the same arguments. Add `--since 14d` for a wider recent window or `--since all` only for an explicit full-history request. Add `--json` for the validated report schema. Add `--sessions none` when the user wants codebase-only analysis.
+Sessions are optional enrichment. Use `--sessions none` for codebase-only analysis and `--only <category>` for a focused provider-native report. `farrier advise skills` is the separate legacy registry-only command.
 
-For a focused report, pass `--only guidance`, `--only hooks`, `--only subagents`, `--only plugins`, or `--only mcp`. `--only skills` preserves Farrier's registry-backed skill-only advisor.
-
-## Codex routes
-
-- Durable shared guidance: `AGENTS.md`
-- Codex project lifecycle hooks: `.codex/hooks.json`; trust the project, then inspect and approve exact commands through `/hooks`
-- Reusable project skills: `.agents/skills/<name>/SKILL.md`
-- Specialist agents: the project Codex configuration surface
-- Plugins and MCP servers: verified Codex project configuration references
-
-## Safety
-
-- The workflow is report-only and must not mutate project configuration.
-- Farrier reads Codex sessions through App Server `thread/list` and read-only `thread/read`, filtered to the exact resolved `cwd`.
-- Codex selection consumes and targets Codex evidence only. Claude evidence and Claude-only artifact routes are rejected; compatible shared routes remain.
-- Farrier normalizes, bounds, and redacts evidence locally and never consumes hidden reasoning records.
-- Never turn a hook recommendation into executable code unless the user separately asks to implement it.
-- Treat Codex hooks as partial enforcement: simple Bash, `apply_patch`, and Stop mappings do not cover every `unified_exec`, native read/search, or WebSearch path, and PostToolUse cannot undo completed effects.
+Keep the result report-only. Do not create or install a recommendation until the user separately asks for that action.
