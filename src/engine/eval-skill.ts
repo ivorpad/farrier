@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { access, cp, lstat, mkdir, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { access, cp, lstat, mkdir, readlink, rename, rm } from "node:fs/promises";
+import { join } from "node:path";
 import {
   defaultBackendRunner,
   invokeBackend,
@@ -11,6 +11,7 @@ import type { ReasoningEffort } from "../config/farrier-config";
 import {
   ensureCreatorInstalled,
   nativeSkillRoots,
+  normalizeSkillCreationRequest,
   resolvedHomedir,
   type CreateAgent,
   type SkillCreationOutcome
@@ -22,6 +23,8 @@ import {
   type LabelAssignment
 } from "./eval-judge";
 import { writeEvalReports, type EvalReportPaths } from "./eval-report";
+import { placeSkillTrees } from "./skill-placement";
+import { nativeSkillRef } from "./skill-paths";
 import { maxSkillNameLength, skillNamePattern } from "./skill-validate";
 import type { CommandRunner, ResolveSkillsCommandDeps } from "./skills";
 
@@ -40,6 +43,8 @@ export type SkillEvalCopyScore = {
 
 export type SkillEvalVerdict = {
   skillName: string;
+  author: AgentBackend;
+  /** @deprecated Compatibility alias for author. */
   backend: AgentBackend;
   recommendedWinner: SkillEvalWinner;
   rationale: string;
@@ -50,9 +55,11 @@ export type SkillEvalVerdict = {
 
 export type SkillWinnerResolution = {
   skillName: string;
+  author?: AgentBackend;
   winner: CreateAgent;
   loser: CreateAgent;
   winnerPath: string;
+  canonicalPath: string;
   deleted: string[];
   links: Array<{ path: string; target: string; resolvesTo: string }>;
   /** Where the deleted copy was retained, when the recoverable path was used. */
@@ -81,6 +88,12 @@ function assertSafeSkillName(skillName: string, context: string): void {
       `${context}: skill name '${skillName}' must be kebab-case ([a-z0-9] and single hyphens), at most ${maxSkillNameLength} chars.`
     );
   }
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
 }
 
 function skillPath(agent: CreateAgent, skillName: string): string {
@@ -148,6 +161,8 @@ async function resolvePinnedCreatorRoot(
 
 export type SkillEvalCandidate = {
   skillName: string;
+  /** First declared author; used as the inline evaluation judge. */
+  author: CreateAgent;
   /** Directory name per agent — the copies can legitimately diverge. */
   names: PerAgentSkillNames;
   description: string;
@@ -161,7 +176,8 @@ export type SkillEvalCandidate = {
  */
 export function perAgentEvalCandidates(outcomes: SkillCreationOutcome[]): SkillEvalCandidate[] {
   return outcomes.flatMap((outcome) => {
-    if (outcome.error || !outcome.name || outcome.request.mode !== "per-agent") {
+    const request = normalizeSkillCreationRequest(outcome.request);
+    if (outcome.error || !outcome.name || request.layout !== "native" || request.authors.length !== 2) {
       return [];
     }
 
@@ -186,6 +202,7 @@ export function perAgentEvalCandidates(outcomes: SkillCreationOutcome[]): SkillE
     return [
       {
         skillName: outcome.name,
+        author: request.authors[0]!,
         names: names as PerAgentSkillNames,
         description: outcome.request.description
       }
@@ -208,7 +225,9 @@ export async function evaluatePerAgentSkill(input: {
   /** Per-agent directory names when the copies diverged; defaults to skillName for both. */
   names?: PerAgentSkillNames;
   description?: string;
-  backend: AgentBackend;
+  author?: AgentBackend;
+  /** @deprecated */
+  backend?: AgentBackend;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   runner?: BackendCommandRunner;
@@ -217,6 +236,9 @@ export async function evaluatePerAgentSkill(input: {
   skillsRunner?: CommandRunner;
   resolveDeps?: ResolveSkillsCommandDeps;
 }): Promise<SkillEvalVerdict> {
+  const author = input.author ?? input.backend;
+  if (!author) throw new Error("Skill evaluation requires one author.");
+  if (input.author && input.backend && input.author !== input.backend) throw new Error("Skill evaluation author and backend must match.");
   const names = resolveNames(input, "Cannot evaluate");
   const creatorRoot = await resolvePinnedCreatorRoot(input.targetDir, input.skillsRunner, input.resolveDeps);
   await assertPerAgentSkillPair(input.targetDir, names);
@@ -241,7 +263,7 @@ export async function evaluatePerAgentSkill(input: {
       const bPath = stagedPaths[assignment.B];
 
       const parsed = await invokeBackend({
-        backend: input.backend,
+        backend: author,
         model: input.model,
         reasoningEffort: input.reasoningEffort,
         prompt: buildLabeledEvalPrompt({
@@ -257,7 +279,7 @@ export async function evaluatePerAgentSkill(input: {
       });
 
       return {
-        verdict: validateLabeledEvalVerdict(parsed, input.backend, { skillName: input.skillName, aPath, bPath }),
+        verdict: validateLabeledEvalVerdict(parsed, author, { skillName: input.skillName, aPath, bPath }),
         assignment
       };
     };
@@ -273,7 +295,8 @@ export async function evaluatePerAgentSkill(input: {
 
     const verdict: SkillEvalVerdict = {
       skillName: input.skillName,
-      backend: input.backend,
+      author,
+      backend: author,
       recommendedWinner: merged.recommendedWinner,
       rationale: merged.rationale,
       copies: {
@@ -316,6 +339,7 @@ export async function resolvePerAgentSkillWinner(input: {
   /** Per-agent directory names when the copies diverged; defaults to skillName for both. */
   names?: PerAgentSkillNames;
   winner: CreateAgent;
+  author?: AgentBackend;
   confirmDeleteAndLink: boolean;
   /**
    * Keep the deleted copy in .farrier-staging/trash/ instead of removing it.
@@ -332,64 +356,74 @@ export async function resolvePerAgentSkillWinner(input: {
   }
 
   const loser: CreateAgent = input.winner === "claude" ? "codex" : "claude";
-  const winnerPath = skillPath(input.winner, names[input.winner]);
+  const winnerName = names[input.winner];
+  const winnerPath = skillPath(input.winner, winnerName);
   const loserPath = skillPath(loser, names[loser]);
-  // The link carries the winner's name so both roots expose the same skill;
-  // it only differs from loserPath when the copies chose different names.
-  const linkPath = skillPath(loser, names[input.winner]);
-
   await assertRealSkillDir(input.targetDir, winnerPath);
   await assertRealSkillDir(input.targetDir, loserPath);
 
-  const winnerAbs = join(input.targetDir, winnerPath);
-  const loserAbs = join(input.targetDir, loserPath);
-  const linkAbs = join(input.targetDir, linkPath);
-
-  if (linkPath !== loserPath && (await lstat(linkAbs).catch(() => undefined))) {
-    throw new Error(`Cannot resolve winner: ${linkPath} already exists and would be overwritten by the symlink.`);
+  const canonicalPath = skillPath("codex", winnerName);
+  const linkPath = skillPath("claude", winnerName);
+  const selectedPaths = new Set([winnerPath, loserPath]);
+  for (const destination of [canonicalPath, linkPath]) {
+    if (selectedPaths.has(destination)) continue;
+    try {
+      await lstat(join(input.targetDir, destination));
+      throw new Error(`Cannot resolve winner: ${destination} already exists and is not one of the reviewed copies`);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") throw error;
+    }
   }
 
-  const winnerSkillReal = await realpath(join(winnerAbs, "SKILL.md"));
-  const backupAbs = `${loserAbs}.farrier-delete-${randomUUID().slice(0, 8)}`;
-  const linkTarget = relative(dirname(linkAbs), winnerAbs) || ".";
-
-  await rename(loserAbs, backupAbs);
-
+  const stagingRoot = `.farrier-staging/authoring/eval-${randomUUID().slice(0, 8)}`;
+  const stagedPath = `${stagingRoot}/${winnerName}`;
+  await cp(join(input.targetDir, winnerPath), join(input.targetDir, stagedPath), { recursive: true });
   try {
-    await symlink(linkTarget, linkAbs, "dir");
-    const linkedSkillReal = await realpath(join(linkAbs, "SKILL.md"));
-
-    if (linkedSkillReal !== winnerSkillReal) {
-      throw new Error(`symlink ${linkPath} resolves to ${linkedSkillReal}, not ${winnerSkillReal}`);
-    }
-
+    const stalePaths = new Set<string>();
+    if (skillPath("claude", names.claude) !== linkPath) stalePaths.add(skillPath("claude", names.claude));
+    if (skillPath("codex", names.codex) !== canonicalPath) stalePaths.add(skillPath("codex", names.codex));
+    const removeManifestRefs = [
+      nativeSkillRef("claude", names.claude),
+      nativeSkillRef("codex", names.codex)
+    ];
+    const placed = await placeSkillTrees({
+      targetDir: input.targetDir,
+      copies: [{ author: input.winner, name: winnerName, sourcePath: stagedPath }],
+      layout: "shared",
+      force: true,
+      removePaths: [...stalePaths],
+      removeManifestRefs
+    });
     let backupPath: string | undefined;
-
-    if (input.retainBackupInTrash) {
-      backupPath = `.farrier-staging/trash/${names[loser]}-${randomUUID().slice(0, 8)}`;
-      await mkdir(dirname(join(input.targetDir, backupPath)), { recursive: true });
-      await rename(backupAbs, join(input.targetDir, backupPath));
-    } else {
-      await rm(backupAbs, { recursive: true, force: false });
+    if (input.retainBackupInTrash && placed.backupDir) {
+      const backedUpLoser = join(input.targetDir, placed.backupDir, loserPath);
+      try {
+        await lstat(backedUpLoser);
+        backupPath = `.farrier-staging/trash/${names[loser]}-${randomUUID().slice(0, 8)}`;
+        await mkdir(join(input.targetDir, ".farrier-staging", "trash"), { recursive: true });
+        await rename(backedUpLoser, join(input.targetDir, backupPath));
+      } catch (error) {
+        if (errorCode(error) !== "ENOENT") throw error;
+      }
     }
-
     return {
       skillName: input.skillName,
+      author: input.author,
       winner: input.winner,
       loser,
       winnerPath,
-      deleted: [loserPath],
-      links: [{ path: linkPath, target: linkTarget, resolvesTo: winnerPath }],
+      canonicalPath,
+      deleted: [...new Set([loserPath, ...stalePaths])],
+      links: placed.links,
       backupPath,
       notes: [
-        `Deleted ${loserPath} and linked ${linkPath} to ${winnerPath}.`,
-        ...(backupPath ? [`The deleted copy was kept at ${backupPath} in case you change your mind.`] : [])
+        `Canonicalized the ${input.winner} winner at ${canonicalPath} and linked ${linkPath} to it.`,
+        ...(backupPath ? [`The deleted copy was kept at ${backupPath} in case you change your mind.`] : []),
+        ...placed.notes,
+        ...(placed.backupDir ? [`Reviewed replaced content was retained at ${placed.backupDir}.`] : [])
       ]
     };
-  } catch (error) {
-    await rm(linkAbs, { recursive: true, force: true }).catch(() => undefined);
-    await rename(backupAbs, loserAbs).catch(() => undefined);
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to link ${linkPath} to ${winnerPath}: ${message}`);
+  } finally {
+    await rm(join(input.targetDir, stagingRoot), { recursive: true, force: true }).catch(() => undefined);
   }
 }

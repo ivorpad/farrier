@@ -27,6 +27,7 @@ function emptyReport(backend: "claude" | "codex", model?: string): AdviceReport 
   return {
     schemaVersion: 1,
     targetDir: "/tmp/example",
+    author: backend,
     backend,
     ...(model ? { model } : {}),
     reportOnly: true,
@@ -50,6 +51,7 @@ function emptyReport(backend: "claude" | "codex", model?: string): AdviceReport 
 
 test("advice TUI cycles bounded windows and scopes while surfacing running progress", () => {
   let state = createInitialAdviceTuiState(3, bothAvailable);
+  expect(state.author).toBeUndefined();
   expect(state.includeSessions).toBe(true);
   expect(state.lookback).toBe("7d");
   expect(adjacentAdviceLookback("7d", 1)).toBe("14d");
@@ -57,6 +59,7 @@ test("advice TUI cycles bounded windows and scopes while surfacing running progr
 
   state = adviceTuiReducer(state, { type: "SET_LOOKBACK", lookback: "14d" });
   state = adviceTuiReducer(state, { type: "CYCLE_SCOPE" });
+  state = adviceTuiReducer(state, { type: "SET_AUTHOR", author: "claude" });
   expect(state.lookback).toBe("14d");
   expect(state.scope).toBe("guidance");
 
@@ -74,7 +77,8 @@ test("advice TUI cycles bounded windows and scopes while surfacing running progr
 
 test("advice TUI retains the completed report until the user resets or exits", () => {
   const report = emptyReport("codex");
-  let state = adviceTuiReducer(createInitialAdviceTuiState(0, bothAvailable), { type: "START" });
+  let state = adviceTuiReducer(createInitialAdviceTuiState(0, bothAvailable), { type: "SET_AUTHOR", author: "codex" });
+  state = adviceTuiReducer(state, { type: "START" });
   state = adviceTuiReducer(state, { type: "SUCCEEDED", report });
 
   expect(state.status).toBe("done");
@@ -87,8 +91,8 @@ test("advice TUI retains the completed report until the user resets or exits", (
   expect(state.report).toBeUndefined();
 });
 
-test("reasoning backend selection prefers Claude and cycles only through available backends", () => {
-  expect(initialAdviceBackend(bothAvailable)).toBe("claude");
+test("author selection starts empty with both providers and cycles only through available providers", () => {
+  expect(initialAdviceBackend(bothAvailable)).toBeUndefined();
   expect(adjacentAvailableAdviceBackend("claude", bothAvailable, 1)).toBe("codex");
   expect(adjacentAvailableAdviceBackend("codex", bothAvailable, 1)).toBe("claude");
   expect(adjacentAvailableAdviceBackend("claude", bothAvailable, -1)).toBe("codex");
@@ -106,8 +110,8 @@ test("reasoning backend selection prefers Claude and cycles only through availab
   const unavailable = { claude: false, codex: false };
   expect(initialAdviceBackend(unavailable)).toBeUndefined();
   expect(adjacentAvailableAdviceBackend("claude", unavailable, 1)).toBeUndefined();
-  expect(() => createInitialAdviceTuiState(0, unavailable)).toThrow("No reasoning backend is available");
-  expect(adviceSetupControls).toEqual(["backend", "sessions", "lookback", "scope", "analyze"]);
+  expect(() => createInitialAdviceTuiState(0, unavailable)).toThrow("No author provider is available");
+  expect(adviceSetupControls).toEqual(["author", "sessions", "lookback", "scope", "analyze"]);
 });
 
 test("advice wizard preserves the actionable no-backend startup failure", async () => {
@@ -118,21 +122,21 @@ test("advice wizard preserves the actionable no-backend startup failure", async 
   });
 
   expect(outcome).toBe("cancel");
-  expect(messages).toEqual(["farrier advise: no agent backend found. Install claude or codex."]);
+  expect(messages).toEqual(["farrier advise: no author provider found. Install claude or codex."]);
 });
 
-test("reasoning backend state rejects unavailable values and survives errors and option resets", () => {
+test("author state rejects unavailable values and survives errors and option resets", () => {
   let state = createInitialAdviceTuiState(0, bothAvailable);
-  state = adviceTuiReducer(state, { type: "SET_BACKEND", backend: "codex" });
+  state = adviceTuiReducer(state, { type: "SET_AUTHOR", author: "codex" });
   state = adviceTuiReducer(state, { type: "START" });
   state = adviceTuiReducer(state, { type: "FAILED", error: "codex backend unavailable" });
   state = adviceTuiReducer(state, { type: "RESET" });
-  expect(state.backend).toBe("codex");
-  state = adviceTuiReducer(state, { type: "SET_BACKEND", backend: "claude" });
-  expect(state.backend).toBe("claude");
+  expect(state.author).toBe("codex");
+  state = adviceTuiReducer(state, { type: "SET_AUTHOR", author: "claude" });
+  expect(state.author).toBe("claude");
 
   const claudeOnly = createInitialAdviceTuiState(0, { claude: true, codex: false });
-  expect(adviceTuiReducer(claudeOnly, { type: "SET_BACKEND", backend: "codex" }).backend).toBe("claude");
+  expect(adviceTuiReducer(claudeOnly, { type: "SET_AUTHOR", author: "codex" }).author).toBe("claude");
 });
 
 test("advice wizard actions resolve fresh analysis settings for the selected backend", async () => {
@@ -150,7 +154,7 @@ test("advice wizard actions resolve fresh analysis settings for the selected bac
       isBackendAvailable: async () => true,
       advise: async (input) => {
         calls.push(input);
-        return emptyReport(input.backend, input.model);
+        return emptyReport(input.author, input.model);
       }
     }
   );
@@ -160,12 +164,13 @@ test("advice wizard actions resolve fresh analysis settings for the selected bac
   await actions.onRun("codex", false, "all", "all", () => undefined);
 
   expect(codexReport.backend).toBe("codex");
-  expect(calls.map(({ backend, model, reasoningEffort }) => ({ backend, model, reasoningEffort }))).toEqual([
-    { backend: "codex", model: "codex-advise", reasoningEffort: "high" },
-    { backend: "claude", model: "claude-advise", reasoningEffort: undefined },
-    { backend: "codex", model: "codex-advise", reasoningEffort: "high" }
+  expect(calls.map(({ author, model, reasoningEffort }) => ({ author, model, reasoningEffort }))).toEqual([
+    { author: "codex", model: "codex-advise", reasoningEffort: "high" },
+    { author: "claude", model: "claude-advise", reasoningEffort: undefined },
+    { author: "codex", model: "codex-advise", reasoningEffort: "high" }
   ]);
-  expect(calls[0]?.targets).toEqual(["claude", "codex"]);
+  expect(calls[0]?.targets).toEqual(["codex"]);
+  expect(calls[0]?.sessionSources).toEqual(["codex"]);
   expect(calls[0]?.only).toEqual(["hooks"]);
   expect(calls[1]?.sessions).toBe("none");
 });
@@ -190,7 +195,7 @@ test("advice wizard actions fail on the selected unavailable backend without fal
 });
 
 test("advice planning follows the report backend and resolves that backend's settings", async () => {
-  const planningCalls: Array<{ backend: string; model?: string; reasoningEffort?: string }> = [];
+  const planningCalls: Array<{ author: string; model?: string; reasoningEffort?: string }> = [];
   const plan = { recommendationId: "hooks:verify", summary: "Add the verified hook.", files: [] };
   const actions = createAdviceWizardActions(
     {
@@ -204,7 +209,7 @@ test("advice planning follows the report backend and resolves that backend's set
     {
       isBackendAvailable: async () => true,
       plan: async (input) => {
-        planningCalls.push({ backend: input.backend, model: input.model, reasoningEffort: input.reasoningEffort });
+        planningCalls.push({ author: input.author, model: input.model, reasoningEffort: input.reasoningEffort });
         return plan;
       },
       inspect: async () => ({
@@ -233,14 +238,14 @@ test("advice planning follows the report backend and resolves that backend's set
   await actions.onPlan(emptyReport("claude"), recommendation);
 
   expect(planningCalls).toEqual([
-    { backend: "codex", model: "codex-plan", reasoningEffort: "xhigh" },
-    { backend: "claude", model: "claude-plan", reasoningEffort: undefined }
+    { author: "codex", model: "codex-plan", reasoningEffort: "xhigh" },
+    { author: "claude", model: "claude-plan", reasoningEffort: undefined }
   ]);
 });
 
 test("Create all resolves fresh report-backend settings for file and skill jobs without target leakage", async () => {
   const fileCalls: Array<{ backend: string; model?: string; reasoningEffort?: string }> = [];
-  const skillCalls: Array<{ backend: string; mode: string; model?: string; reasoningEffort?: string; agents: string[] }> = [];
+  const skillCalls: Array<{ author: string; layout: string; model?: string; reasoningEffort?: string; authors: string[] }> = [];
   const prepared: string[] = [];
   let configRead = 0;
   const configurations = [
@@ -282,11 +287,11 @@ test("Create all resolves fresh report-backend settings for file and skill jobs 
       },
       planSkill: async (input) => {
         skillCalls.push({
-          backend: input.report.backend,
-          mode: input.request.mode,
+          author: input.report.author ?? input.report.backend,
+          layout: input.request.layout,
           model: input.modelSettings.model,
           reasoningEffort: input.modelSettings.reasoningEffort,
-          agents: input.request.agents
+          authors: input.request.authors
         });
         return {
           recommendationId: input.recommendation.id,
@@ -332,7 +337,7 @@ test("Create all resolves fresh report-backend settings for file and skill jobs 
   codexReport.recommendations = [fileRecommendation, skillRecommendation];
   await actions.onPlanBatch(codexReport, undefined, new AbortController().signal, () => undefined);
   await actions.onPlanBatch(codexReport, undefined, new AbortController().signal, () => undefined);
-  const claudeReport = { ...codexReport, backend: "claude" as const };
+  const claudeReport = { ...codexReport, author: "claude" as const, backend: "claude" as const };
   await actions.onPlanBatch(claudeReport, undefined, new AbortController().signal, () => undefined);
 
   expect(configRead).toBe(3);
@@ -342,9 +347,9 @@ test("Create all resolves fresh report-backend settings for file and skill jobs 
     { backend: "claude", model: "claude-plan", reasoningEffort: undefined }
   ]);
   expect(skillCalls).toEqual([
-    { backend: "codex", mode: "author-codex", model: "codex-skill-v1", reasoningEffort: "xhigh", agents: ["claude"] },
-    { backend: "codex", mode: "author-codex", model: "codex-skill-v2", reasoningEffort: "low", agents: ["claude"] },
-    { backend: "claude", mode: "author-claude", model: "claude-skill", reasoningEffort: undefined, agents: ["claude"] }
+    { author: "codex", layout: "shared", model: "codex-skill-v1", reasoningEffort: "xhigh", authors: ["codex"] },
+    { author: "codex", layout: "shared", model: "codex-skill-v2", reasoningEffort: "low", authors: ["codex"] },
+    { author: "claude", layout: "shared", model: "claude-skill", reasoningEffort: undefined, authors: ["claude"] }
   ]);
   expect(prepared).toEqual(["codex", "codex", "claude"]);
 });
@@ -371,6 +376,8 @@ test("advice report selection clamps and skill recommendations prefill the creat
     implementationRoute: { id: "skills:agents-shared", description: "Create a shared skill." }
   } satisfies AdviceReport["recommendations"][number];
   const request = adviceSkillCreationRequest("codex", recommendation);
+  expect(request.authors).toEqual(["codex"]);
+  expect(request.layout).toBe("shared");
   expect(request.mode).toBe("author-codex");
   expect(request.nameOverride).toBe("verification-helper");
   expect(request.description).toContain("Makes the workflow reusable");

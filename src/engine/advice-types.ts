@@ -106,6 +106,7 @@ export type AdviceArtifact = {
   vendor: AdviceVendor | "shared";
   path: string;
   kind: "config" | "guidance" | "hook" | "skill" | "agent";
+  linkTarget?: string;
 };
 
 const defaultAdviceBenefits: Record<AdviceCategory, string> = {
@@ -130,9 +131,13 @@ export type AdviceCoverage = {
 export type AdviceReport = {
   schemaVersion: 1;
   targetDir: string;
+  /** Canonical in new reports; optional while schema-v1 legacy reports remain readable. */
+  author?: AdviceVendor;
+  /** @deprecated JSON compatibility alias for author. */
   backend: AdviceVendor;
   model?: string;
   reportOnly: true;
+  /** @deprecated JSON compatibility alias; always [author] in new reports. */
   targets?: AdviceVendor[];
   sessions: {
     mode: "auto" | "none";

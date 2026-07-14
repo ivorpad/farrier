@@ -8,7 +8,7 @@ description: Run Farrier's read-only project advisor for Codex, using exact-proj
 Use Farrier's shared advice engine rather than inspecting Codex transcript files directly:
 
 ```bash
-farrier advise --dir . --sessions auto --since 7d --targets codex
+farrier advise --dir . --sessions auto --since 7d --author codex
 ```
 
 If `farrier` is not on `PATH`, use `bunx farrier` or `npx farrier` with the same arguments. Add `--since 14d` for a wider recent window or `--since all` only for an explicit full-history request. Add `--json` for the validated report schema. Add `--sessions none` when the user wants codebase-only analysis.

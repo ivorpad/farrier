@@ -24,7 +24,9 @@ import { searchSkills, type SkillSearchResult } from "./skills";
 
 export type ProjectAdviceInput = {
   targetDir: string;
-  backend: AdviceVendor;
+  author?: AdviceVendor;
+  /** @deprecated Compatibility alias for author. */
+  backend?: AdviceVendor;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   sessions?: "auto" | "none";
@@ -323,10 +325,20 @@ function emptyEvidenceFunnel(targets: AdviceVendor[]): AdviceEvidenceFunnel {
 
 export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceReport> {
   const targetDir = resolve(input.targetDir);
+  const author = input.author ?? input.backend;
+  if (!author) throw new Error("Project advice requires one author.");
+  if (input.author && input.backend && input.author !== input.backend) {
+    throw new Error(`Advice backend '${input.backend}' must match author '${input.author}'.`);
+  }
+  for (const [field, values] of [["targets", input.targets], ["sessionSources", input.sessionSources]] as const) {
+    if (values && (values.length !== 1 || values[0] !== author)) {
+      throw new Error(`Advice ${field} must contain only the selected author '${author}'.`);
+    }
+  }
   const sessions = input.sessions ?? "auto";
   const lookback = input.lookback ?? "7d";
-  const targets = input.targets ?? ["claude", "codex"];
-  const sessionSources = input.sessionSources ?? targets;
+  const targets: AdviceVendor[] = [author];
+  const sessionSources: AdviceVendor[] = [author];
   const categories = input.only?.length ? input.only : [...adviceCategories];
   const progress = (stage: AdviceProgressEvent["stage"], message: string): void => {
     try {
@@ -345,17 +357,26 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
       ? input.sessionEvidence ?? collectProjectSessionEvidence({ targetDir, targets: sessionSources, lookback, codexClientFactory: input.codexClientFactory })
       : Promise.resolve<AdviceSessionEvidence>({ sources: sessionSources.map((source) => ({ source, count: 0 })), signals: [], notes: [], funnel: emptyEvidenceFunnel(sessionSources) })
   ]);
-  const sessionCount = sessionEvidence.sources.reduce((sum, source) => sum + source.count, 0);
+  const pureSessionEvidence: AdviceSessionEvidence = {
+    ...sessionEvidence,
+    sources: sessionEvidence.sources.filter((source) => source.source === author),
+    signals: sessionEvidence.signals.filter((signal) => signal.source === author),
+    funnel: sessionEvidence.funnel ? {
+      ...sessionEvidence.funnel,
+      sources: sessionEvidence.funnel.sources.filter((source) => source.source === author)
+    } : undefined
+  };
+  const sessionCount = pureSessionEvidence.sources.reduce((sum, source) => sum + source.count, 0);
   progress("sessions", sessions === "auto"
-    ? `Found ${sessionCount} matching session(s); retained ${sessionEvidence.signals.length} bounded signal(s).`
+    ? `Found ${sessionCount} matching session(s); retained ${pureSessionEvidence.signals.length} bounded signal(s).`
     : "Session evidence disabled.");
   progress("catalog", categories.includes("skills") ? "Checking the skill registry for supported candidates…" : "Building supported implementation routes…");
   const skills = await collectSkillRegistry({ categories, stacks: profile.stacks, languages: profile.languages, search: input.search ?? searchSkills });
   const registry = [...builtinAdviceRegistry, ...skills.entries].filter((entry) => categories.includes(entry.category) && entry.vendors.some((vendor) => targets.includes(vendor)));
-  const evidence = [...profile.evidence, ...sessionEvidence.signals];
-  progress("backend", `Asking ${input.backend} for bounded recommendations…`);
+  const evidence = [...profile.evidence, ...pureSessionEvidence.signals];
+  progress("backend", `Asking ${author} for bounded recommendations…`);
   const invoke = (requestCategories: AdviceCategory[]) => invokeBackend({
-    backend: input.backend,
+    backend: author,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
     prompt: buildPrompt({ profileText: projectProfileSummary(profile), evidence, categories: requestCategories, targets, registry, focused: requestCategories.length === 1 }),
@@ -367,7 +388,7 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
   const firstParsed = await invoke(categories);
   progress("validation", "Validating evidence, routes, registry references, duplicates, and category limits…");
   const firstValidated = validateRecommendations({ parsed: firstParsed, evidence, categories, targets, registry });
-  const supportedCategories = categories.filter((category) => sessionEvidence.signals.some((item) =>
+  const supportedCategories = categories.filter((category) => pureSessionEvidence.signals.some((item) =>
     item.allowedCategories?.includes(category) && ((item.distinctSessions ?? 0) >= 2 || (item.occurrences ?? 1) >= 3)));
   const firstStrongCategories = new Set(firstValidated.recommendations.filter((item) => item.confidence !== "low").map((item) => item.category));
   const recoveryCategories = supportedCategories.filter((category) => !firstStrongCategories.has(category));
@@ -397,18 +418,18 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
   const weakLeads = validated.recommendations.filter((item) => item.confidence === "low");
   const coverage = validateCoverage({
     parsed: combinedParsed, categories, recommendations, weakLeads,
-    sessionEvidence: sessionEvidence.signals, rejectedCategories: validated.rejectedCategories, targets
+    sessionEvidence: pureSessionEvidence.signals, rejectedCategories: validated.rejectedCategories, targets
   });
-  const notes = [...sessionEvidence.notes, ...skills.notes, ...validated.notes];
+  const notes = [...pureSessionEvidence.notes, ...skills.notes, ...validated.notes];
   if (sessions === "none") notes.unshift("Project sessions were disabled; recommendations use codebase evidence only.");
   else if (sessionCount === 0) notes.unshift("No matching project sessions were found; recommendations use codebase evidence only.");
   notes.push("Report only: Farrier did not install recommendations or change project configuration.");
   if (weakLeads.length > 0) notes.push(`${weakLeads.length} low-confidence item(s) are shown as weak leads, not supported recommendations.`);
   progress("complete", `Report ready with ${validated.recommendations.length} validated recommendation(s): ${recommendations.length} supported and ${weakLeads.length} weak lead(s).`);
 
-  const funnel = sessionEvidence.funnel ?? emptyEvidenceFunnel(targets);
+  const funnel = pureSessionEvidence.funnel ?? emptyEvidenceFunnel(targets);
   funnel.recommendation = {
-    patternsSent: sessionEvidence.signals.length,
+    patternsSent: pureSessionEvidence.signals.length,
     returned: validated.returned,
     accepted: validated.recommendations.length,
     merged: recoveryParsed ? Math.max(validated.recommendations.length - firstValidated.recommendations.length, 0) : 0,
@@ -420,7 +441,8 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
   return {
     schemaVersion: 1,
     targetDir,
-    backend: input.backend,
+    author,
+    backend: author,
     ...(input.model ? { model: input.model } : {}),
     reportOnly: true,
     targets,
@@ -429,8 +451,8 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
       lookback,
       included: sessions === "auto" && sessionCount > 0,
       requestedSources: sessionSources,
-      sources: sessionEvidence.sources,
-      evidence: sessions === "auto" ? sessionEvidence.signals : [],
+      sources: pureSessionEvidence.sources,
+      evidence: sessions === "auto" ? pureSessionEvidence.signals : [],
       funnel
     },
     profile,

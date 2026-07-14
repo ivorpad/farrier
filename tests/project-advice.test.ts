@@ -49,7 +49,7 @@ describe("project advice", () => {
     const hook = (id: string, reason: string) => ({
       id: `hooks:${id}`,
       category: "hooks",
-      targetVendors: ["claude", "codex"],
+      targetVendors: ["claude"],
       reason,
       benefit: "Makes verification consistent while removing a repeated manual step.",
       evidence: ["project:package-scripts"],
@@ -98,7 +98,7 @@ describe("project advice", () => {
     expect(report.coverage.find((item) => item.category === "guidance")?.reason).toContain("already covers");
     expect(report.notes.some((note) => note.includes("beyond the 2 hooks limit"))).toBe(true);
     expect(report.notes.some((note) => note.includes("executable hook content"))).toBe(true);
-    expect(report.notes.some((note) => note.includes("mcp@invented") && note.includes("unsupported"))).toBe(true);
+    expect(report.notes.some((note) => note.includes("mcp:unknown") && note.includes("invalid target vendors"))).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.signal).toBe(controller.signal);
     expect(calls[0]?.cmd).toContain("--no-session-persistence");
@@ -174,7 +174,7 @@ describe("project advice", () => {
     const recommendations = Array.from({ length: 6 }, (_, index) => ({
       id: `guidance:route-${index}`,
       category: "guidance",
-      targetVendors: ["claude", "codex"],
+      targetVendors: ["claude"],
       reason: `Project guidance improvement ${index}.`,
       evidence: ["project:root"],
       confidence: "medium",
@@ -198,13 +198,13 @@ describe("project advice", () => {
       { id: "p:release", kind: "manual-workflow", allowedCategories: ["skills", "subagents", "hooks"] },
       { id: "p:config", kind: "guidance-edit", allowedCategories: ["guidance", "skills"] }
     ].map((item, index) => ({
-      ...item, source: index % 2 === 0 ? "claude" as const : "codex" as const,
+      ...item, source: "claude" as const,
       allowedCategories: item.allowedCategories as AdviceCategory[],
       summary: `Recurring actionable pattern ${index}`, occurrences: 6, distinctSessions: 5,
-      targetVendors: ["claude" as const, "codex" as const]
+      targetVendors: ["claude" as const]
     }));
     const recommendation = (category: string, evidence: string, routeId: string) => ({
-      id: `${category}:fixture`, category, targetVendors: ["claude", "codex"],
+      id: `${category}:fixture`, category, targetVendors: ["claude"],
       reason: `Recurring ${category} evidence supports a bounded improvement.`,
       benefit: `Makes the repeated ${category} workflow more reliable.`, evidence: [evidence], confidence: "high", routeId
     });
@@ -231,7 +231,7 @@ describe("project advice", () => {
     expect(report.recommendations).toHaveLength(5);
     expect(new Set(report.recommendations.map((item) => item.category)).size).toBe(5);
     expect(report.sessions.funnel?.recommendation?.recoveryCalls).toBe(1);
-    expect(formatAdviceReport(report)).toContain("34 sessions → 187 visible events → 6 recurring patterns → 5 supported recommendations");
+    expect(formatAdviceReport(report)).toContain("20 sessions → 187 visible events → 6 recurring patterns → 5 supported recommendations");
   });
 
   test("stays sparse without recurring actionable evidence and does not call recovery", async () => {
@@ -255,7 +255,7 @@ describe("project advice", () => {
   test("moves low-confidence candidates into weak leads with strengthening guidance", async () => {
     const root = await projectFixture();
     const { runner } = queuedRunner({ recommendations: [{
-      id: "skills:possible-review", category: "skills", targetVendors: ["claude", "codex"],
+      id: "skills:possible-review", category: "skills", targetVendors: ["claude"],
       reason: "One session requested a review workflow.", benefit: "Could make reviews repeatable.",
       evidence: ["project:root"], confidence: "low", routeId: "skills:agents-shared"
     }], coverage: [] });

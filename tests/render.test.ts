@@ -146,8 +146,8 @@ describe("render engine", () => {
     const codex = byPath.get(".agents/skills/farrier-project-advisor/SKILL.md") ?? "";
     const provenance = byPath.get(".claude/skills/claude-automation-recommender/UPSTREAM.md") ?? "";
 
-    expect(claude).toContain("farrier advise --dir . --sessions auto --since 7d --targets claude");
-    expect(codex).toContain("farrier advise --dir . --sessions auto --since 7d --targets codex");
+    expect(claude).toContain("farrier advise --dir . --sessions auto --since 7d --author claude");
+    expect(codex).toContain("farrier advise --dir . --sessions auto --since 7d --author codex");
     expect(provenance).toContain("a5c7fb5d86a4cd34c4f47819658654c3d8f08dda");
     expect(provenance).toContain("Apache-2.0");
 

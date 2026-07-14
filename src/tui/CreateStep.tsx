@@ -1,7 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useState } from "react";
 import type { AgentAvailability } from "../engine/backend";
-import type { AuthoringMode, CreateAgent, SkillCreationRequest } from "../engine/create-skill";
+import { normalizeSkillCreationRequest, type AuthoringMode, type CreateAgent, type SkillCreationRequest } from "../engine/create-skill";
 import { DetailPane, KeyHints, palette, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
 import { evalPolicyLabels, type SkillEvalPolicy } from "./create-eval";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
@@ -26,7 +26,7 @@ type CreateStepProps = {
   onQuit: () => void;
 };
 
-type Zone = "input" | "agents" | "mode" | "queued" | "refine" | "eval" | "actions";
+type Zone = "input" | "agents" | "mode" | "shared" | "queued" | "refine" | "eval" | "actions";
 
 type ActionId = "create" | "queue" | "back";
 
@@ -38,9 +38,8 @@ const agentRows: readonly CreateAgent[] = ["claude", "codex"];
  * picker only exists because "both agents" has three honest answers.
  */
 const modeRows: ReadonlyArray<{ mode: AuthoringMode; label: string; detail: string }> = [
-  { mode: "author-claude", label: "Claude authors, install to both", detail: "one canonical skills/<name>/, lock-tracked" },
-  { mode: "author-codex", label: "Codex authors, install to both", detail: "one canonical skills/<name>/, lock-tracked" },
-  { mode: "per-agent", label: "Each agent authors its own copy", detail: "native dirs, copies may diverge, no lock entry" }
+  { mode: "author-claude", label: "Claude is primary", detail: "refine and inline eval use Claude" },
+  { mode: "author-codex", label: "Codex is primary", detail: "refine and inline eval use Codex" }
 ];
 
 const createBindings = defineBindings(
@@ -58,16 +57,9 @@ const createInputBindings = defineBindings(
   binding("ctrl+c", "quit", "quit")
 );
 
-function modeFor(agents: CreateAgent[], chosen: AuthoringMode): AuthoringMode {
-  if (agents.length === 1) {
-    return agents[0] === "claude" ? "author-claude" : "author-codex";
-  }
-
-  return chosen;
-}
-
 function requestSummary(request: SkillCreationRequest): string {
-  return `${request.agents.join("+")} · ${request.mode}`;
+  const normalized = normalizeSkillCreationRequest(request);
+  return `${normalized.authors.join("+")} · ${normalized.layout}`;
 }
 
 function ActionChip(props: { label: string; focused: boolean; ember?: boolean; disabled?: boolean }) {
@@ -85,6 +77,7 @@ export function CreateStep(props: CreateStepProps) {
   const [description, setDescription] = useState("");
   const [agents, setAgents] = useState<CreateAgent[]>([]);
   const [mode, setMode] = useState<AuthoringMode>("author-claude");
+  const [shared, setShared] = useState(false);
   const [zone, setZone] = useState<Zone>("input");
   const [agentIndex, setAgentIndex] = useState(0);
   const [modeIndex, setModeIndex] = useState(0);
@@ -95,10 +88,11 @@ export function CreateStep(props: CreateStepProps) {
   const availability = props.availability;
   const availableAgents = agentRows.filter((agent) => availability?.[agent]);
   const showMode = agents.length > 1;
+  const showShared = agents.length === 1;
 
-  // Preselect every working agent once the probe lands; pick a valid default mode.
+  // Only an unambiguous single provider is preselected.
   useEffect(() => {
-    if (availability && agents.length === 0 && availableAgents.length > 0) {
+    if (availability && agents.length === 0 && availableAgents.length === 1) {
       setAgents(availableAgents);
       setMode(availability.claude ? "author-claude" : "author-codex");
       setModeIndex(availability.claude ? 0 : 1);
@@ -131,16 +125,20 @@ export function CreateStep(props: CreateStepProps) {
     { id: "back", label: props.standalone ? "✕ Cancel" : "← Back" }
   ];
 
-  const showRefine = Boolean(props.onToggleRefine && props.refineBackend);
+  const selectedPrimary = agents.length > 1
+    ? mode === "author-codex" ? "codex" : "claude"
+    : agents[0] ?? props.refineBackend;
+  const showRefine = Boolean(props.onToggleRefine && (selectedPrimary || props.requests.length > 0));
   // The eval policy only matters when both copies will exist to compare.
   const perAgentPlanned =
-    modeFor(agents, mode) === "per-agent" || props.requests.some((request) => request.mode === "per-agent");
+    agents.length > 1 || props.requests.some((request) => normalizeSkillCreationRequest(request).authors.length > 1);
   const showEval = Boolean(props.onCycleEvalPolicy && props.evalPolicy && perAgentPlanned);
 
   const zones: Zone[] = [
     "input",
     "agents",
     ...(showMode ? (["mode"] as Zone[]) : []),
+    ...(showShared ? (["shared"] as Zone[]) : []),
     ...(props.requests.length > 0 ? (["queued"] as Zone[]) : []),
     ...(showRefine ? (["refine"] as Zone[]) : []),
     ...(showEval ? (["eval"] as Zone[]) : []),
@@ -159,7 +157,10 @@ export function CreateStep(props: CreateStepProps) {
       return undefined;
     }
 
-    return { description: description.trim(), agents: [...agents], mode: modeFor(agents, mode) };
+    const authors: CreateAgent[] = agents.length > 1
+      ? (mode === "author-codex" ? ["codex", "claude"] : ["claude", "codex"])
+      : [...agents];
+    return { description: description.trim(), authors, layout: shared ? "shared" : "native" };
   }
 
   function queueSkill(): void {
@@ -229,8 +230,13 @@ export function CreateStep(props: CreateStepProps) {
     if (intent === "toggle") {
       if (zone === "agents") {
         const agent = agentRows[agentIndex]!;
-        if (availability?.[agent]) setAgents((current) => (current.includes(agent) ? current.filter((item) => item !== agent) : [...current, agent]));
+        if (availability?.[agent]) setAgents((current) => {
+          const next = current.includes(agent) ? current.filter((item) => item !== agent) : [...current, agent];
+          if (next.length !== 1) setShared(false);
+          return next;
+        });
       } else if (zone === "mode") setMode(modeRows[modeIndex]!.mode);
+      else if (zone === "shared") setShared((value) => !value);
       else if (zone === "queued") props.onRemoveRequest(queuedIndex);
       else if (zone === "refine") props.onToggleRefine?.();
       else if (zone === "eval") props.onCycleEvalPolicy?.();
@@ -248,6 +254,10 @@ export function CreateStep(props: CreateStepProps) {
       }
       if (zone === "mode") {
         setMode(modeRows[modeIndex]!.mode);
+        return;
+      }
+      if (zone === "shared") {
+        setShared((value) => !value);
         return;
       }
       if (zone === "refine") {
@@ -279,21 +289,22 @@ export function CreateStep(props: CreateStepProps) {
       return [{ fg: palette.warn, text: "Check at least one agent to create a skill." }];
     }
 
-    const effective = modeFor(agents, mode);
-
-    if (effective === "per-agent") {
+    if (agents.length > 1) {
       return [
         { fg: palette.muted, text: "claude + skill-creator → .claude/skills/<name>/" },
         { fg: palette.muted, text: "codex + $skill-creator → .agents/skills/<name>/" },
-        { fg: palette.gold, text: "native dirs, copies may diverge, no lock entry" }
+        { fg: palette.gold, text: `${mode === "author-codex" ? "codex" : "claude"} is primary; copies are independent and unlocked` }
       ];
     }
-
-    const author = effective === "author-claude" ? "claude + pinned skill-creator" : "codex + built-in $skill-creator";
+    const author = agents[0] === "claude" ? "claude + pinned skill-creator" : "codex + built-in $skill-creator";
+    if (shared) return [
+      { fg: palette.muted, text: `${author} → .agents/skills/<name>/` },
+      { fg: palette.muted, text: ".claude/skills/<name> → ../../.agents/skills/<name>" },
+      { fg: palette.gold, text: "one real shared tree; no skills-lock entry" }
+    ];
     return [
-      { fg: palette.muted, text: `${author} → skills/<name>/` },
-      { fg: palette.muted, text: `then: skills add ./skills -a ${agents.join(" ")}` },
-      { fg: palette.gold, text: "one canonical copy, lock-tracked" }
+      { fg: palette.muted, text: `${author} → ${agents[0] === "claude" ? ".claude" : ".agents"}/skills/<name>/` },
+      { fg: palette.gold, text: "provider-native tree; no skills-lock entry" }
     ];
   }
 
@@ -302,7 +313,7 @@ export function CreateStep(props: CreateStepProps) {
       {props.standalone ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
           <text fg={palette.accent}>{"⚒ farrier skill new"}</text>
-          <text fg={palette.muted}>Each vendor's own skill-creator authors; farrier validates and installs.</text>
+          <text fg={palette.muted}>Each selected provider authors; Farrier validates and places native trees.</text>
         </box>
       ) : (
         <StepHeader current="Create" subtitle="Queue new skills — each vendor's own skill-creator does the authoring." />
@@ -328,8 +339,8 @@ export function CreateStep(props: CreateStepProps) {
 
       <box style={{ flexDirection: "column", gap: 0 }}>
         <text>
-          <span fg={palette.gold}>{"Agents"}</span>
-          <span fg={palette.faint}>{" — who gets this skill"}</span>
+          <span fg={palette.gold}>{"Authors"}</span>
+          <span fg={palette.faint}>{" — choose one or two providers"}</span>
           {!availability ? <span fg={palette.muted}>{`  ${spinner} probing…`}</span> : null}
         </text>
         {agentRows.map((agent, index) => {
@@ -351,8 +362,8 @@ export function CreateStep(props: CreateStepProps) {
       {showMode ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
           <text>
-            <span fg={palette.gold}>{"Both checked"}</span>
-            <span fg={palette.faint}>{" — you decide how to author"}</span>
+            <span fg={palette.gold}>{"Primary author"}</span>
+            <span fg={palette.faint}>{" — used for refine and inline eval"}</span>
           </text>
           {modeRows.map((row, index) => {
             const focused = zone === "mode" && index === modeIndex;
@@ -367,6 +378,15 @@ export function CreateStep(props: CreateStepProps) {
             );
           })}
         </box>
+      ) : null}
+
+      {showShared ? (
+        <text bg={zone === "shared" ? palette.selBg : undefined}>
+          <span fg={palette.accent}>{zone === "shared" ? "▸ " : "  "}</span>
+          <span fg={shared ? palette.success : palette.faint}>{shared ? "[x] " : "[ ] "}</span>
+          <span fg={palette.text}>shared layout</span>
+          <span fg={palette.faint}>{"  real .agents tree plus exact Claude link"}</span>
+        </text>
       ) : null}
 
       {props.requests.length > 0 ? (
@@ -394,7 +414,7 @@ export function CreateStep(props: CreateStepProps) {
           <span fg={palette.accent}>{zone === "refine" ? "▸ " : "  "}</span>
           <span fg={props.refine ? palette.success : palette.faint}>{props.refine ? "[x] " : "[ ] "}</span>
           <span fg={palette.text}>{`ask clarifying questions first`}</span>
-          <span fg={palette.faint}>{`  ${props.refineBackend} interviews you one question at a time before authoring`}</span>
+          <span fg={palette.faint}>{`  ${selectedPrimary ?? "each request's primary author"} interviews you one question at a time before authoring`}</span>
         </text>
       ) : null}
 

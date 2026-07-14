@@ -1,13 +1,14 @@
 import { existsSync } from "node:fs";
 import { readFile, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
-import { stageSkill, type CreateAgent, type CreateSkillDeps, type SkillCreationRequest } from "./create-skill";
+import { normalizeSkillCreationRequest, stageSkill, type CreateSkillDeps, type SkillCreationRequest } from "./create-skill";
 import type { RenderedFile } from "./render";
 
 export type SkillCreationFilePlan = {
   name: string;
   files: RenderedFile[];
   notes: string[];
+  stagedTree?: { sourcePath: string; stagingRoot: string };
 };
 
 const planningStaging = new Map<string, { users: number; existed: boolean }>();
@@ -37,12 +38,14 @@ export async function authorSkillCreationPlan(input: {
   outputRoot: string;
   deps?: CreateSkillDeps;
   creatorReady?: boolean;
+  retainStaging?: boolean;
 }): Promise<SkillCreationFilePlan> {
-  if (input.request.mode === "per-agent") throw new Error("Advice batch skill authoring requires one report backend.");
+  const request = normalizeSkillCreationRequest(input.request);
+  if (request.authors.length !== 1) throw new Error("Advice batch skill authoring requires one report author.");
   if (!input.outputRoot || input.outputRoot.startsWith("/") || input.outputRoot.split(/[\\/]/).includes("..")) {
     throw new Error("Advice batch skill output root must stay inside the target directory.");
   }
-  const agent: CreateAgent = input.request.mode === "author-claude" ? "claude" : "codex";
+  const agent = request.authors[0]!;
   const releaseStaging = acquirePlanningStaging(input.targetDir);
   let staged: Awaited<ReturnType<typeof stageSkill>> | undefined;
   try {
@@ -66,9 +69,19 @@ export async function authorSkillCreationPlan(input: {
       }
       return { path: `${destinationPrefix}${path.slice(sourcePrefix.length)}`, content };
     }));
-    return { name: staged.validated.name, files, notes: staged.validated.notes };
+    return {
+      name: staged.validated.name,
+      files,
+      notes: staged.validated.notes,
+      ...(input.retainStaging ? {
+        stagedTree: {
+          sourcePath: `${staged.stagingRoot}/${staged.validated.name}`,
+          stagingRoot: staged.stagingRoot
+        }
+      } : {})
+    };
   } finally {
-    if (staged) await rm(join(input.targetDir, staged.stagingRoot), { recursive: true, force: true });
+    if (staged && !input.retainStaging) await rm(join(input.targetDir, staged.stagingRoot), { recursive: true, force: true });
     await releaseStaging();
   }
 }

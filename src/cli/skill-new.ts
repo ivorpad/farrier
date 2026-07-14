@@ -1,15 +1,11 @@
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
+import { parseArtifactAuthor, resolveAvailableAuthor } from "../engine/agent-selection";
 import { probeAgents } from "../engine/backend";
 import {
-  canonicalSkillRoot,
   createSkills,
-  installLocalSkill,
-  recordSkillInManifest,
-  scaffoldSkillDraft,
+  normalizeSkillCreationRequest,
   type AuthoringMode,
-  type CollisionDecision,
   type CreateAgent,
   type SkillCreationOutcome
 } from "../engine/create-skill";
@@ -22,13 +18,17 @@ import {
   type RefineAnswer,
   type RefineQuestion
 } from "../engine/refine-skill";
-import { writeRenderPlan } from "../engine/render";
+import { runSkillScaffold } from "./skill-scaffold";
 
 export type SkillNewCliOptions = {
   description?: string;
   dir: string;
   name?: string;
+  authors: CreateAgent[];
+  shared: boolean;
+  /** @deprecated */
   agents?: CreateAgent[];
+  /** @deprecated */
   mode?: AuthoringMode;
   model?: string;
   noLlm: boolean;
@@ -40,42 +40,39 @@ export type SkillNewCliOptions = {
   eval: boolean;
   json: boolean;
   help: boolean;
+  warnings: string[];
 };
 
 function skillNewUsage(): string {
   return `farrier skill new — create a new agent skill with each vendor's own skill-creator
 
 Usage:
-  farrier skill new "<description>" [--dir <target>] [--agents claude,codex] [--mode <mode>] --yes
+  farrier skill new "<description>" [--dir <target>] --author claude [--author codex] [--shared] --yes
 
 Authoring is delegated to the vendor's recommended creator: claude uses the pinned
-anthropics/skills skill-creator (installed into the target on first use), codex uses its
-built-in $skill-creator. Farrier validates the result and installs it via the skills CLI.
+anthropics/skills skill-creator, while codex uses its built-in $skill-creator. Farrier
+validates every result before placing it in provider-native project roots.
 
 Options:
   --dir <path>       Target directory. Defaults to current working directory.
-  --agents <list>    Comma-separated targets: claude, codex, or both. Defaults to the agents
-                     whose CLIs answer --version on PATH.
-  --mode <mode>      Required when more than one agent is selected:
-                       author-claude  claude authors one canonical skills/<name>/, installed to all agents
-                       author-codex   codex authors the canonical copy, installed to all agents
-                       per-agent      each agent authors its own copy in its native skill dir
+  --author <name>    Author provider. Repeat for independently authored Claude and Codex copies.
+  --shared           With one author, place one real .agents tree and the exact Claude link.
+  --agents, --mode   Deprecated compatibility aliases for --author/--shared.
   --name <kebab>     Ask the creator for this exact skill name.
   --model <name>     Backend model override for the authoring run (overrides the models config).
   --no-llm           Skip agent authoring; write a deterministic SKILL.md scaffold instead.
   --refine           Grill the brief first: clarifying questions one at a time (interactive; requires a terminal).
   --force            Replace an existing skill directory on collision (scaffold and authored).
-  --no-install       Skip the 'skills add ./skills' install step after authoring.
+  --no-install       Deprecated no-op; native placement is the installation.
   --dry-run          Preview the scaffold without writing (only valid with --no-llm).
   --yes, -y          Required for writes.
-  --eval             After a per-agent creation with both copies, run the read-only blind
+  --eval             After a two-author creation, run the read-only blind
                      eval and include the verdict (never deletes; apply a winner with
                      farrier skill eval --apply-winner ... --delete-loser-and-link).
-  --json             Emit { name, mode, agents, files, installed, notes, error, eval? }.
+  --json             Emit canonical authors/layout plus compatibility fields.
   --help             Show this help.
 
-Exits 0 on success; exits 1 on refusal, authoring failure, or install failure (authored files
-are kept on disk with a retry command).`;
+Exits 0 on success; exits 1 on refusal, authoring failure, or placement failure.`;
 }
 
 function parseAgentsList(value: string): CreateAgent[] {
@@ -108,6 +105,8 @@ function parseMode(value: string): AuthoringMode {
 export function parseSkillNewArgs(args: string[]): SkillNewCliOptions {
   const options: SkillNewCliOptions = {
     dir: process.cwd(),
+    authors: [],
+    shared: false,
     noLlm: false,
     refine: false,
     force: false,
@@ -116,12 +115,18 @@ export function parseSkillNewArgs(args: string[]): SkillNewCliOptions {
     yes: false,
     eval: false,
     json: false,
-    help: false
+    help: false,
+    warnings: []
   };
 
   const takesValue: Array<{ flag: string; set: (value: string) => void }> = [
     { flag: "--dir", set: (value) => (options.dir = value) },
     { flag: "--name", set: (value) => (options.name = value) },
+    { flag: "--author", set: (value) => {
+      const author = parseArtifactAuthor(value, "--author");
+      if (options.authors.includes(author)) throw new Error(`duplicate --author ${author} is not allowed`);
+      options.authors.push(author);
+    } },
     { flag: "--agents", set: (value) => (options.agents = parseAgentsList(value)) },
     { flag: "--mode", set: (value) => (options.mode = parseMode(value)) },
     { flag: "--model", set: (value) => (options.model = value) }
@@ -131,6 +136,7 @@ export function parseSkillNewArgs(args: string[]): SkillNewCliOptions {
     "--help": () => (options.help = true),
     "-h": () => (options.help = true),
     "--no-llm": () => (options.noLlm = true),
+    "--shared": () => (options.shared = true),
     "--refine": () => (options.refine = true),
     "--force": () => (options.force = true),
     "--no-install": () => (options.noInstall = true),
@@ -178,6 +184,19 @@ export function parseSkillNewArgs(args: string[]): SkillNewCliOptions {
     options.description = arg;
   }
 
+  if (options.agents || options.mode) {
+    if (options.agents) options.warnings.push("--agents is deprecated; use repeated --author flags.");
+    if (options.mode) options.warnings.push("--mode is deprecated; use --shared or repeated --author flags.");
+    const normalized = normalizeSkillCreationRequest({
+      description: options.description ?? "compatibility selection",
+      ...(options.authors.length ? { authors: options.authors, layout: options.shared ? "shared" : "native" as const } : {}),
+      agents: options.agents,
+      mode: options.mode
+    });
+    options.authors = normalized.authors;
+    options.shared = normalized.layout === "shared";
+  }
+  if (options.noInstall) options.warnings.push("--no-install is deprecated and has no effect; native placement is the installation.");
   return options;
 }
 
@@ -203,66 +222,6 @@ function emit(options: SkillNewCliOptions, result: Record<string, unknown>, line
   for (const line of lines) {
     console.log(line);
   }
-}
-
-async function runScaffold(options: SkillNewCliOptions, targetDir: string): Promise<number> {
-  const draft = scaffoldSkillDraft({ description: options.description!, nameOverride: options.name });
-  const skillDir = join(targetDir, canonicalSkillRoot, draft.name);
-
-  if (!options.force && existsSync(skillDir)) {
-    console.error(
-      `farrier skill new: ${canonicalSkillRoot}/${draft.name} already exists. Use --force to overwrite or --name to choose another name.`
-    );
-    return 1;
-  }
-
-  if (options.dryRun) {
-    emit(options, { name: draft.name, mode: "scaffold", files: draft.files.map((file) => file.path), installed: false, notes: draft.notes, dryRun: true }, [
-      `Would write ${draft.files.map((file) => file.path).join(", ")} (nothing written):`,
-      "",
-      draft.files[0]!.content
-    ]);
-    return 0;
-  }
-
-  if (!options.yes) {
-    console.error("farrier skill new: refusing to write without --yes. Use --dry-run to preview.");
-    return 1;
-  }
-
-  await writeRenderPlan({ targetDir, files: draft.files });
-  const notes = [...draft.notes];
-  let installed = false;
-
-  if (options.noInstall) {
-    notes.push(`Skipped install; run: skills add ./${canonicalSkillRoot} -s ${draft.name} -a claude-code codex -y`);
-  } else {
-    const install = await installLocalSkill(draft.name, targetDir, options.agents ?? ["claude", "codex"]);
-
-    if (!install.ok) {
-      console.error(
-        `farrier skill new: scaffold written to ${canonicalSkillRoot}/${draft.name}/ but install failed: ${install.error ?? install.stderr}`
-      );
-      return 1;
-    }
-
-    installed = true;
-
-    if (await recordSkillInManifest(targetDir, `./${canonicalSkillRoot}@${draft.name}`)) {
-      notes.push("Recorded in .farrier.json skills.");
-    }
-  }
-
-  emit(
-    options,
-    { name: draft.name, mode: "scaffold", files: draft.files.map((file) => file.path), installed, notes },
-    [
-      `✓ Scaffolded ${canonicalSkillRoot}/${draft.name}/SKILL.md${installed ? " and installed it" : ""}.`,
-      "  Edit the TODO sections before relying on it.",
-      ...notes.map((note) => `  - ${note}`)
-    ]
-  );
-  return 0;
 }
 
 /** Maps a typed reply to an answer: blank = creator decides, a number picks that option, anything else is literal. */
@@ -405,13 +364,41 @@ export async function runSkillNew(args: string[]): Promise<number> {
   const targetDir = resolve(options.dir);
 
   try {
-    if (options.eval && (options.noLlm || (options.mode && options.mode !== "per-agent"))) {
-      console.error("farrier skill new: --eval compares per-agent copies; it requires --mode per-agent (not --no-llm).");
+    for (const warning of options.warnings) console.error(`farrier skill new: warning: ${warning}`);
+    if (options.noLlm && options.authors.length === 0) {
+      console.error("farrier skill new: --no-llm requires at least one explicit --author.");
+      return 1;
+    }
+
+    let availability: Awaited<ReturnType<typeof probeAgents>> | undefined;
+    if (!options.noLlm) {
+      availability = await probeAgents();
+      if (options.authors.length === 0) {
+        options.authors = [resolveAvailableAuthor(undefined, availability, "farrier skill new")];
+      }
+      for (const author of options.authors) {
+        if (!availability[author]) {
+          console.error(`farrier skill new: requested author '${author}' did not answer --version.`);
+          return 1;
+        }
+      }
+    }
+
+    if (options.shared && options.authors.length !== 1) {
+      console.error("farrier skill new: --shared requires exactly one --author and cannot be combined with a second author.");
+      return 1;
+    }
+    if (options.model && options.authors.length > 1) {
+      console.error("farrier skill new: --model cannot be used with two authors; configure models.<provider>.skillCreation instead.");
+      return 1;
+    }
+    if (options.eval && (options.noLlm || options.shared || options.authors.length !== 2)) {
+      console.error("farrier skill new: --eval compares two independently authored copies; use --author claude --author codex without --shared or --no-llm.");
       return 1;
     }
 
     if (options.noLlm) {
-      return await runScaffold(options, targetDir);
+      return await runSkillScaffold(options, targetDir);
     }
 
     if (options.dryRun) {
@@ -419,35 +406,8 @@ export async function runSkillNew(args: string[]): Promise<number> {
       return 1;
     }
 
-    const availability = await probeAgents();
-    const agents = options.agents ?? (["claude", "codex"] as CreateAgent[]).filter((agent) => availability[agent]);
-
-    if (agents.length === 0) {
-      console.error(
-        "farrier skill new: no agent CLI answered --version. Install claude or codex, pass --agents, or use --no-llm."
-      );
-      return 1;
-    }
-
-    const mode: AuthoringMode | undefined =
-      agents.length === 1 ? (agents[0] === "claude" ? "author-claude" : "author-codex") : options.mode;
-
-    if (!mode) {
-      console.error(
-        "farrier skill new: --mode is required when more than one agent is selected (author-claude, author-codex, or per-agent)."
-      );
-      return 1;
-    }
-
-    const authoringAgents: CreateAgent[] =
-      mode === "per-agent" ? agents : [mode === "author-claude" ? "claude" : "codex"];
-
-    for (const agent of authoringAgents) {
-      if (!availability[agent]) {
-        console.error(`farrier skill new: mode '${mode}' needs the ${agent} CLI, but ${agent} --version failed.`);
-        return 1;
-      }
-    }
+    const authors = options.authors;
+    const layout = options.shared ? "shared" as const : "native" as const;
 
     if (!options.yes) {
       console.error("farrier skill new: authoring writes into the target. Refusing without --yes.");
@@ -464,17 +424,16 @@ export async function runSkillNew(args: string[]): Promise<number> {
         return 1;
       }
 
-      description = await refineDescription(options, targetDir, authoringAgents[0]!, models);
+      description = await refineDescription(options, targetDir, authors[0]!, models);
     }
 
     // Explicit --model stays on the request (it wins everywhere); config-derived
     // skillCreation settings fill in per backend when no --model was given.
     const outcomes = await createSkills(
-      [{ description, agents, mode, nameOverride: options.name, model: options.model }],
+      [{ description, authors, layout, nameOverride: options.name, model: options.model }],
       targetDir,
       {
-        install: !options.noInstall,
-        onCollision: options.force ? async (): Promise<CollisionDecision> => "replace" : undefined,
+        force: options.force,
         modelSettings: {
           claude: resolveModelSettings({ models, backend: "claude", role: "skillCreation" }),
           codex: resolveModelSettings({ models, backend: "codex", role: "skillCreation" })
@@ -482,6 +441,7 @@ export async function runSkillNew(args: string[]): Promise<number> {
       }
     );
     const outcome = outcomes[0]!;
+    outcome.notes.unshift(...options.warnings);
     let verdict: SkillEvalVerdict | undefined;
     const evalLines: string[] = [];
 
@@ -495,14 +455,14 @@ export async function runSkillNew(args: string[]): Promise<number> {
 
       const evalSettings = resolveModelSettings({
         models,
-        backend: authoringAgents[0]!,
+        backend: authors[0]!,
         role: "eval",
         explicitModel: options.model
       });
       verdict = await evaluatePerAgentSkill({
         targetDir,
         ...candidate,
-        backend: authoringAgents[0]!,
+        backend: authors[0]!,
         model: evalSettings.model,
         reasoningEffort: evalSettings.reasoningEffort
       });
@@ -519,8 +479,10 @@ export async function runSkillNew(args: string[]): Promise<number> {
       options,
       {
         name: outcome.name,
-        mode,
-        agents,
+        authors,
+        layout,
+        mode: authors.length > 1 ? "per-agent" : authors[0] === "claude" ? "author-claude" : "author-codex",
+        agents: authors,
         files: outcome.files,
         installed: outcome.installed,
         notes: outcome.notes,

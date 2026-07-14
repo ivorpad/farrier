@@ -1,6 +1,12 @@
 import { resolve } from "node:path";
 import { loadFarrierConfig, resolveModelSettings } from "../config/farrier-config";
-import { adviseSkills, detectAgentBackend, resolveContext, type AdviseBackend } from "../engine/advise";
+import { adviseSkills, resolveContext, type AdviseBackend } from "../engine/advise";
+import {
+  parseArtifactAuthor,
+  resolveAvailableAuthor,
+  resolveSingleAuthorSelectors
+} from "../engine/agent-selection";
+import { probeAgents } from "../engine/backend";
 import {
   adviceCategories,
   adviceSessionLookbackLabel,
@@ -17,44 +23,44 @@ import { adviseProject } from "../engine/project-advice";
 export type AdviseCliOptions = {
   dir: string;
   context?: string;
+  author?: AdviseBackend;
+  /** @deprecated Compatibility alias. */
   backend?: AdviseBackend;
   model?: string;
   sessions: "auto" | "none";
   since: AdviceSessionLookback;
-  targets: AdviceVendor[];
+  /** @deprecated Compatibility alias. */
+  targets?: AdviceVendor[];
   only?: AdviceCategory[];
   legacySkills: boolean;
   json: boolean;
   help: boolean;
+  warnings: string[];
 };
 
 function adviseUsage(): string {
   return `farrier advise — inspect a project and recommend agent configuration improvements
 
 Usage:
-  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude,codex]
+  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all]
                  [--only guidance,hooks,skills,subagents,plugins,mcp]
-                 [--backend claude|codex] [--model <name>] [--json]
-  farrier advise skills [--dir <target>] [--context <path|text>] [--backend claude|codex] [--json]
+                 --author claude|codex [--model <name>] [--json]
+  farrier advise skills [--dir <target>] [--context <path|text>] --author claude|codex [--json]
 
 Options:
   --dir <path>          Project directory. Defaults to the current working directory.
-  --sessions <mode>     Include exact-project Claude/Codex sessions (auto) or use code only (none).
+  --sessions <mode>     Include exact-project sessions for the selected author (auto) or use code only (none).
   --since <window>      Session lookback: 7d (default), 14d, or all.
-  --targets <vendors>   Comma-separated recommendation targets: claude,codex. Defaults to both.
   --only <categories>   Limit the report to selected categories. --only skills preserves skill-only advice.
   --context <path|text> Optional context for the legacy skill-only advisor.
-  --backend <name>      Reasoning backend: claude or codex. Defaults to Claude when both are found.
+  --author <name>       Artifact author and reasoning provider: claude or codex.
+  --backend <name>      Deprecated alias for --author.
+  --targets <name>      Deprecated single-provider alias for --author.
   --model <name>        Backend model override.
   --json                Emit the same validated report as machine-readable JSON.
   --help                Show this help.
 
 Advice is report-only. It never installs recommendations or changes project configuration.`;
-}
-
-function parseBackend(value: string): AdviseBackend {
-  if (value === "claude" || value === "codex") return value;
-  throw new Error("--backend must be claude or codex");
 }
 
 function commaValues(value: string, flag: string): string[] {
@@ -86,10 +92,10 @@ export function parseAdviseArgs(args: string[]): AdviseCliOptions {
     dir: process.cwd(),
     sessions: "auto",
     since: "7d",
-    targets: ["claude", "codex"],
     legacySkills: args[0] === "skills",
     json: false,
-    help: false
+    help: false,
+    warnings: []
   };
   const start = options.legacySkills ? 1 : 0;
 
@@ -101,8 +107,16 @@ export function parseAdviseArgs(args: string[]): AdviseCliOptions {
     else if (arg.startsWith("--dir=")) options.dir = arg.slice(6);
     else if (arg === "--context") { options.context = requiredValue(args, index, arg); index += 1; }
     else if (arg.startsWith("--context=")) options.context = arg.slice(10);
-    else if (arg === "--backend") { options.backend = parseBackend(requiredValue(args, index, arg)); index += 1; }
-    else if (arg.startsWith("--backend=")) options.backend = parseBackend(arg.slice(10));
+    else if (arg === "--author") {
+      if (options.author) throw new Error("--author may be specified only once for advice");
+      options.author = parseArtifactAuthor(requiredValue(args, index, arg), arg); index += 1;
+    }
+    else if (arg.startsWith("--author=")) {
+      if (options.author) throw new Error("--author may be specified only once for advice");
+      options.author = parseArtifactAuthor(arg.slice(9), "--author");
+    }
+    else if (arg === "--backend") { options.backend = parseArtifactAuthor(requiredValue(args, index, arg), arg); index += 1; }
+    else if (arg.startsWith("--backend=")) options.backend = parseArtifactAuthor(arg.slice(10), "--backend");
     else if (arg === "--model") { options.model = requiredValue(args, index, arg); index += 1; }
     else if (arg.startsWith("--model=")) options.model = arg.slice(8);
     else if (arg === "--sessions") {
@@ -130,6 +144,9 @@ export function parseAdviseArgs(args: string[]): AdviseCliOptions {
     else throw new Error(`Unknown advise argument: ${arg}`);
   }
 
+  const resolved = resolveSingleAuthorSelectors({ author: options.author, backend: options.backend, targets: options.targets });
+  options.author = resolved.author;
+  options.warnings.push(...resolved.warnings);
   if (options.only?.length === 1 && options.only[0] === "skills") options.legacySkills = true;
   return options;
 }
@@ -148,7 +165,7 @@ export function formatAdviceReport(report: AdviceReport): string {
   const lines = [
     "Farrier project advice — report only",
     `Project: ${report.targetDir}`,
-    `Backend: ${report.backend}${report.model ? ` (${report.model})` : ""}`,
+    `Author: ${report.author}${report.model ? ` (${report.model})` : ""}`,
     `Sessions: ${report.sessions.included ? "included" : "not included"} (${adviceSessionLookbackLabel(report.sessions.lookback)}; ${formatSources(report)})`,
     `Evidence funnel: ${sessionCount} sessions → ${funnel.visibleEvents} visible events → ${funnel.recurringPatterns} recurring patterns → ${report.recommendations.length} supported recommendations`,
     "",
@@ -209,32 +226,24 @@ export function formatAdviceReport(report: AdviceReport): string {
   return `${lines.join("\n")}\n`;
 }
 
-async function resolveBackend(options: AdviseCliOptions): Promise<AdviseBackend | undefined> {
-  if (options.backend) {
-    if (!Bun.which(options.backend)) return undefined;
-    return options.backend;
-  }
-  return detectAgentBackend();
-}
-
-async function runLegacySkills(options: AdviseCliOptions, backend: AdviseBackend, targetDir: string): Promise<number> {
+async function runLegacySkills(options: AdviseCliOptions, author: AdviseBackend, targetDir: string): Promise<number> {
   let context = await resolveContext({ targetDir, context: options.context });
   if (!context) {
     const profile = await profileProject(targetDir);
     context = { source: "deterministic-project-profile", text: projectProfileSummary(profile) };
   }
   const models = await loadFarrierConfig({ projectDir: targetDir }).then((loaded) => loaded.config.models).catch(() => ({}));
-  const settings = resolveModelSettings({ models, backend, role: "advise", explicitModel: options.model });
+  const settings = resolveModelSettings({ models, backend: author, role: "advise", explicitModel: options.model });
   const profile = await profileProject(targetDir);
   const result = await adviseSkills({
     targetDir,
     packId: profile.stacks[0] ?? "generic",
     contextText: context.text,
-    backend,
+    backend: author,
     model: settings.model,
     reasoningEffort: settings.reasoningEffort
   });
-  const output = { backend: result.backend, contextSource: context.source, queries: result.queries, recommendations: result.recommendations, notes: [...result.notes, "Report only: no skills were installed."] };
+  const output = { author, backend: author, contextSource: context.source, queries: result.queries, recommendations: result.recommendations, notes: [...options.warnings, ...result.notes, "Report only: no skills were installed."] };
   if (options.json) console.log(JSON.stringify(output, null, 2));
   else {
     console.log("Farrier skill advice — report only");
@@ -254,28 +263,30 @@ export async function runAdvise(args: string[]): Promise<number> {
   const options = parseAdviseArgs(args);
   if (options.help) { console.log(adviseUsage()); return 0; }
   const targetDir = resolve(options.dir);
-  const backend = await resolveBackend(options);
-  if (!backend) {
-    const detail = options.backend ? `requested backend '${options.backend}' was not found on PATH` : "no agent backend found; install claude or codex, or pass --backend";
-    console.error(`farrier advise: ${detail}.`);
+  for (const warning of options.warnings) console.error(`farrier advise: warning: ${warning}`);
+  let author: AdviseBackend;
+  try {
+    author = resolveAvailableAuthor(options.author, await probeAgents(), "farrier advise");
+  } catch (error) {
+    console.error(`farrier advise: ${errorMessage(error)}.`);
     return 1;
   }
 
   try {
-    if (options.legacySkills) return await runLegacySkills(options, backend, targetDir);
+    if (options.legacySkills) return await runLegacySkills(options, author, targetDir);
     const models = await loadFarrierConfig({ projectDir: targetDir }).then((loaded) => loaded.config.models).catch(() => ({}));
-    const settings = resolveModelSettings({ models, backend, role: "advise", explicitModel: options.model });
+    const settings = resolveModelSettings({ models, backend: author, role: "advise", explicitModel: options.model });
     const report = await adviseProject({
       targetDir,
-      backend,
+      author,
       model: settings.model,
       reasoningEffort: settings.reasoningEffort,
       sessions: options.sessions,
       lookback: options.since,
-      targets: options.targets,
       only: options.only,
       onProgress: ({ message }) => console.error(`farrier advise: ${message}`)
     });
+    report.notes.unshift(...options.warnings);
     if (options.json) console.log(JSON.stringify(report, null, 2));
     else console.log(formatAdviceReport(report).trimEnd());
     return 0;

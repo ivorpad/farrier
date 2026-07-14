@@ -57,6 +57,12 @@ Use this skill when the user asks about Farrier harness drift, stack changes, ge
 
 5. Use `farrier doctor --dir .` for static harness health checks and `farrier learn --dir .` to review transcript-derived tool-policy rule proposals.
 
+6. For authored local skills, check provider-native placement:
+   - Claude native trees live under `.claude/skills/<name>`.
+   - Codex native trees live under `.agents/skills/<name>`.
+   - Shared skills have a real `.agents/skills/<name>` tree and the exact link `.claude/skills/<name> -> ../../.agents/skills/<name>`.
+   - Native refs belong in `.farrier.json`; local authoring does not add `skills-lock.json` entries.
+
 ## Skill recommendations
 
 When new frameworks, file types, or secondary stacks appear:
@@ -75,6 +81,8 @@ When new frameworks, file types, or secondary stacks appear:
 
 - Suggest relevant skills to the user, but do not install them without explicit approval.
 - If repeated project-specific manual behavior appears, suggest creating a reusable skill with `skill-creator`.
+- Use `farrier skill new "<description>" --author claude --yes` for one native copy. Add a second `--author codex` for independent copies, or use `--shared` with one author for the canonical shared topology.
+- Use `farrier advise --dir . --author claude|codex` for provider-owned recommendations. Do not generate deprecated selector flags.
 
 ## Advice boundaries
 

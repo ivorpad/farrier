@@ -2,7 +2,7 @@ import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
 import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import { formatAgents, type EnforcementAgent } from "../engine/agent-selection";
-import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
+import { normalizeSkillCreationRequest, type SkillCreationOutcome, type SkillCreationRequest } from "../engine/create-skill";
 import type { InstallSkillResult } from "../engine/skills";
 import { ButtonBar } from "./ButtonBar";
 import { DetailPane, KeyHints, palette, scrollWindow, StepHeader, truncateTo, useSpinner, type PaneLine } from "./chrome";
@@ -286,7 +286,7 @@ export function ReviewStep(props: ReviewStepProps) {
             <text key={`${request.description}-${index}`}>
               <span fg={palette.accent}>{"  ⚒ "}</span>
               <span fg={palette.text}>{truncateTo(request.description, 42).padEnd(44)}</span>
-              <span fg={palette.faint}>{`${request.agents.join("+")} · ${request.mode}`}</span>
+              <span fg={palette.faint}>{`${normalizeSkillCreationRequest(request).authors.join("+")} · ${normalizeSkillCreationRequest(request).layout}`}</span>
             </text>
           ))}
         </box>

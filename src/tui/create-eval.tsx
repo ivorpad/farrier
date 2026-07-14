@@ -144,7 +144,8 @@ export function EvalVerdictScreen(props: {
 export function EvalConfirmScreen(props: { names: PerAgentSkillNames; winner: CreateAgent; onConfirm: () => void; onBack: () => void; onQuit: () => void }) {
   const loser = props.winner === "claude" ? "codex" : "claude";
   const deletePath = `${nativeSkillRoots[loser]}/${props.names[loser]}`;
-  const linkPath = `${nativeSkillRoots[loser]}/${props.names[props.winner]}`;
+  const canonicalPath = `${nativeSkillRoots.codex}/${props.names[props.winner]}`;
+  const linkPath = `${nativeSkillRoots.claude}/${props.names[props.winner]}`;
 
   const bindings = defineBindings(
     ...destructiveConfirmationBindings,
@@ -160,12 +161,11 @@ export function EvalConfirmScreen(props: { names: PerAgentSkillNames; winner: Cr
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <text fg={palette.warn}>{`Delete the ${loser} copy and symlink it to the ${props.winner} copy?`}</text>
+      <text fg={palette.warn}>{`Canonicalize the ${props.winner} winner as one shared skill?`}</text>
       <text fg={palette.muted}>
-        {deletePath === linkPath
-          ? `${deletePath} will be replaced by a relative symlink.`
-          : `${deletePath} will be deleted; ${linkPath} will become a relative symlink.`}
+        {`${canonicalPath} will hold the real tree; ${linkPath} will link to ../../.agents/skills/${props.names[props.winner]}.`}
       </text>
+      {deletePath !== canonicalPath && deletePath !== linkPath ? <text fg={palette.muted}>{`${deletePath} will be removed.`}</text> : null}
       <KeyHints hint={bindingsHint(bindings)} />
     </box>
   );

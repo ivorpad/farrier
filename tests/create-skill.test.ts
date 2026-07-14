@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultBackendRunner, probeAgents, type BackendCommandRunner, type BackendCommandRunnerInput } from "../src/engine/backend";
@@ -180,7 +180,7 @@ describe("create-skill engine", () => {
     expect(codex).toContain("Name the skill exactly 'iban-extractor'");
   });
 
-  test("createSkill author-claude authors canonically, installs to the selected agents, and records the manifest", async () => {
+  test("legacy author-claude with both agents maps to shared native placement", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];
     process.env[skillsBin] = "skills";
@@ -207,17 +207,19 @@ describe("create-skill engine", () => {
       expect(outcome.error).toBeUndefined();
       expect(outcome.name).toBe("iban-extractor");
       expect(outcome.installed).toBe(true);
-      expect(outcome.files).toEqual(["skills/iban-extractor/SKILL.md"]);
-      expect(skills.calls).toEqual([
-        {
-          cmd: ["skills", "add", "./skills", "-s", "iban-extractor", "-a", "claude-code", "codex", "-y"],
-          cwd: dir
-        }
+      expect(outcome.authors).toEqual(["claude"]);
+      expect(outcome.layout).toBe("shared");
+      expect(outcome.files).toEqual([
+        ".agents/skills/iban-extractor/SKILL.md",
+        ".claude/skills/iban-extractor"
       ]);
+      expect(skills.calls).toEqual([]);
+      expect(await readlink(join(dir, ".claude/skills/iban-extractor"))).toBe("../../.agents/skills/iban-extractor");
 
       const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8")) as { skills: string[]; farrierVersion: string };
-      expect(manifest.skills).toEqual(["./skills@iban-extractor"]);
+      expect(manifest.skills).toEqual(["./.claude/skills@iban-extractor", "./.agents/skills@iban-extractor"]);
       expect(manifest.farrierVersion).toBe("0.1.0");
+      expect(JSON.parse(await readFile(join(dir, "skills-lock.json"), "utf8"))).toEqual({ version: 1, skills: { "skill-creator": {} } });
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
@@ -245,9 +247,8 @@ describe("create-skill engine", () => {
 
       expect(outcome.error).toBeUndefined();
       expect(outcome.installed).toBe(true);
-      expect(skills.calls).toEqual([
-        { cmd: ["skills", "add", "./skills", "-s", "table-to-markdown", "-a", "codex", "-y"], cwd: dir }
-      ]);
+      expect(outcome.files).toEqual([".agents/skills/table-to-markdown/SKILL.md"]);
+      expect(skills.calls).toEqual([]);
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
@@ -397,7 +398,7 @@ describe("create-skill engine", () => {
     }
   });
 
-  test("createSkill per-agent authors one copy per agent in its native root and skips install", async () => {
+  test("createSkill authors independent native copies without invoking the skills CLI", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];
     process.env[skillsBin] = "skills";
@@ -416,23 +417,23 @@ describe("create-skill engine", () => {
       );
 
       expect(outcome.error).toBeUndefined();
-      expect(outcome.installed).toBe(false);
+      expect(outcome.installed).toBe(true);
       expect(outcome.files.sort()).toEqual([".agents/skills/pii-masker/SKILL.md", ".claude/skills/pii-masker/SKILL.md"]);
       expect(backend.calls).toHaveLength(2);
       expect(skills.calls).toEqual([]);
-      expect(outcome.notes.join(" ")).toContain("may diverge");
+      expect(outcome.notes.join(" ")).toContain("authored independently");
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
   });
 
-  test("createSkill per-agent runs legs in parallel and one leg's collision does not stop the other", async () => {
+  test("createSkill runs legs in parallel and a collision blocks the complete placement", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];
     process.env[skillsBin] = "skills";
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
-    // Claude's copy already exists from a previous run — its leg must fail
-    // with a collision while the codex leg still completes.
+    // Claude's copy already exists from a previous run. Both authoring legs
+    // still finish, but neither staged copy is placed.
     await writeSkill(dir, ".claude/skills", "pii-masker");
 
     let inFlight = 0;
@@ -454,10 +455,10 @@ describe("create-skill engine", () => {
       );
 
       expect(maxInFlight).toBe(2);
-      expect(outcome.error).toContain("claude: .claude/skills/pii-masker already exists");
-      expect(outcome.error).toContain("(codex copy succeeded)");
-      expect(outcome.files).toEqual([".agents/skills/pii-masker/SKILL.md"]);
-      expect(await readFile(join(dir, ".agents/skills", "pii-masker", "SKILL.md"), "utf8")).toContain("pii-masker");
+      expect(outcome.error).toContain(".claude/skills/pii-masker already exists");
+      expect(outcome.files).toEqual([]);
+      expect(outcome.notes).toHaveLength(2);
+      expect(Bun.file(join(dir, ".agents/skills", "pii-masker", "SKILL.md")).exists()).resolves.toBe(false);
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
@@ -541,7 +542,7 @@ describe("create-skill engine", () => {
       expect(outcome.notes.join(" ")).toContain("Repaired frontmatter name");
       expect(outcome.notes.join(" ")).toContain("truncated to 500");
 
-      const rewritten = await readFile(join(dir, "skills", "query-router", "SKILL.md"), "utf8");
+      const rewritten = await readFile(join(dir, ".claude", "skills", "query-router", "SKILL.md"), "utf8");
       expect(rewritten).toStartWith("---\nname: query-router\n");
       expect(rewritten).toContain("\nBody.\n");
     } finally {
@@ -576,12 +577,12 @@ describe("create-skill engine", () => {
     }
   });
 
-  test("createSkill errors when the canonical destination already exists and keeps staged files", async () => {
+  test("createSkill errors when the native destination already exists and keeps staged files", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];
     process.env[skillsBin] = "skills";
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
-    await writeSkill(dir, "skills", "taken-name");
+    await writeSkill(dir, ".claude/skills", "taken-name");
 
     let stagingRoot = "";
     const backend = writingBackendRunner(async (input) => {
@@ -596,7 +597,7 @@ describe("create-skill engine", () => {
         { backendRunner: backend.runner, skillsRunner: recordingSkillsRunner().runner }
       );
 
-      expect(outcome.error).toContain("skills/taken-name already exists");
+      expect(outcome.error).toContain(".claude/skills/taken-name already exists");
       expect(await readFile(join(dir, stagingRoot, "taken-name", "SKILL.md"), "utf8")).toContain("taken-name");
     } finally {
       restoreEnv(skillsBin, previousBin);
@@ -608,7 +609,7 @@ describe("create-skill engine", () => {
     const previousBin = process.env[skillsBin];
     process.env[skillsBin] = "skills";
     await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
-    await writeSkill(dir, "skills", "taken-name", "taken-name", "the OLD copy");
+    await writeSkill(dir, ".claude/skills", "taken-name", "taken-name", "the OLD copy");
 
     const backend = writingBackendRunner(async (input) => {
       await writeSkill(dir, rootFromPrompt(input), "taken-name", "taken-name", "the NEW copy");
@@ -630,15 +631,15 @@ describe("create-skill engine", () => {
       );
 
       expect(outcome.error).toBeUndefined();
-      expect(collisions).toEqual(["skills/taken-name"]);
-      expect(outcome.notes.join(" ")).toContain("Replaced the existing skills/taken-name");
-      expect(await readFile(join(dir, "skills", "taken-name", "SKILL.md"), "utf8")).toContain("the NEW copy");
+      expect(collisions).toEqual([".claude/skills/taken-name"]);
+      expect(outcome.backupDir).toContain(".farrier-staging/backups/");
+      expect(await readFile(join(dir, ".claude/skills", "taken-name", "SKILL.md"), "utf8")).toContain("the NEW copy");
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
   });
 
-  test("createSkill reports install failure with a retry command and keeps authored files", async () => {
+  test("createSkill ignores a failing skills runner after creator preparation", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];
     process.env[skillsBin] = "skills";
@@ -656,17 +657,17 @@ describe("create-skill engine", () => {
         { backendRunner: backend.runner, skillsRunner: skills.runner }
       );
 
-      expect(outcome.installed).toBe(false);
+      expect(outcome.installed).toBe(true);
       expect(outcome.name).toBe("latency-timer");
-      expect(outcome.error).toContain("install failed");
-      expect(outcome.error).toContain("skills add ./skills -s latency-timer -a claude-code -y");
-      expect(await readFile(join(dir, "skills", "latency-timer", "SKILL.md"), "utf8")).toContain("latency-timer");
+      expect(outcome.error).toBeUndefined();
+      expect(skills.calls).toEqual([]);
+      expect(await readFile(join(dir, ".claude/skills", "latency-timer", "SKILL.md"), "utf8")).toContain("latency-timer");
     } finally {
       restoreEnv(skillsBin, previousBin);
     }
   });
 
-  test("createSkills authors concurrently, serializes installs, and reports progress", async () => {
+  test("createSkills authors concurrently, serializes placement, and reports progress", async () => {
     const dir = await tempDir();
     const previousBin = process.env[skillsBin];
     process.env[skillsBin] = "skills";
@@ -709,11 +710,12 @@ describe("create-skill engine", () => {
       expect(outcomes.map((outcome) => outcome.error)).toEqual([undefined, undefined, undefined]);
       expect(outcomes.map((outcome) => outcome.name)).toEqual(["alpha-skill", "beta-skill", "gamma-skill"]);
       expect(maxInFlightAuthoring).toBeGreaterThan(1);
-      expect(maxInFlightInstalls).toBe(1);
+      expect(maxInFlightInstalls).toBe(0);
 
       const doneEvents = events.filter((event) => event.phase === "done");
       expect(doneEvents).toHaveLength(3);
       expect(events.some((event) => event.phase === "authoring")).toBe(true);
+      expect(events.some((event) => event.phase === "placement")).toBe(true);
     } finally {
       restoreEnv(skillsBin, previousBin);
     }

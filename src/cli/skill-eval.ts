@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { loadFarrierConfig, resolveModelSettings } from "../config/farrier-config";
-import { detectAgentBackend, type AgentBackend } from "../engine/backend";
+import { parseArtifactAuthor, resolveAvailableAuthor, resolveSingleAuthorSelectors } from "../engine/agent-selection";
+import { probeAgents, type AgentBackend } from "../engine/backend";
 import {
   evaluatePerAgentSkill,
   resolvePerAgentSkillWinner,
@@ -14,6 +15,8 @@ export type SkillEvalCliOptions = {
   claudeName?: string;
   codexName?: string;
   dir: string;
+  author?: AgentBackend;
+  /** @deprecated */
   backend?: AgentBackend;
   model?: string;
   description?: string;
@@ -21,13 +24,14 @@ export type SkillEvalCliOptions = {
   deleteLoserAndLink: boolean;
   json: boolean;
   help: boolean;
+  warnings: string[];
 };
 
 function usage(): string {
   return `farrier skill eval — compare per-agent skill copies and optionally pick a winner
 
 Usage:
-  farrier skill eval <skill-name> [--dir <target>] [--backend claude|codex] [--description <text>] [--json]
+  farrier skill eval <skill-name> [--dir <target>] --author claude|codex [--description <text>] [--json]
   farrier skill eval <skill-name> --apply-winner claude|codex|recommended --delete-loser-and-link [--dir <target>]
   farrier skill eval <skill-name> --claude-name <name> --codex-name <name>   # copies that chose different names
 
@@ -35,19 +39,11 @@ By default this is read-only: the copies are staged at neutral paths and judged 
 twice with the candidates swapped, using the pinned Anthropic skill-creator eval guidance;
 a winner is only recommended when both passes agree. Per-copy reports are written under
 .farrier-staging/eval/<name>/. When the copies chose different directory names, pass
---claude-name/--codex-name (each defaults to <skill-name>); picking a winner then links
-the loser's root under the winner's name. It deletes and symlinks only when both
+--claude-name/--codex-name (each defaults to <skill-name>); picking a winner then
+canonicalizes it as a real .agents tree plus the exact Claude link. It changes files only when both
 --apply-winner and --delete-loser-and-link are present. --apply-winner recommended applies
 the verdict's own pick — it keeps the deleted copy in .farrier-staging/trash/ so you can
 change your mind, and keeps both copies (exit 0) when the verdict is a tie.`;
-}
-
-function parseBackend(value: string): AgentBackend {
-  if (value === "claude" || value === "codex") {
-    return value;
-  }
-
-  throw new Error("--backend must be claude or codex");
 }
 
 function parseWinner(value: string): CreateAgent | "recommended" {
@@ -63,12 +59,17 @@ export function parseSkillEvalArgs(args: string[]): SkillEvalCliOptions {
     dir: process.cwd(),
     deleteLoserAndLink: false,
     json: false,
-    help: false
+    help: false,
+    warnings: []
   };
 
   const takesValue: Array<{ flag: string; set: (value: string) => void }> = [
     { flag: "--dir", set: (value) => (options.dir = value) },
-    { flag: "--backend", set: (value) => (options.backend = parseBackend(value)) },
+    { flag: "--author", set: (value) => {
+      if (options.author) throw new Error("--author may be specified only once for skill eval");
+      options.author = parseArtifactAuthor(value, "--author");
+    } },
+    { flag: "--backend", set: (value) => (options.backend = parseArtifactAuthor(value, "--backend")) },
     { flag: "--model", set: (value) => (options.model = value) },
     { flag: "--description", set: (value) => (options.description = value) },
     { flag: "--apply-winner", set: (value) => (options.applyWinner = parseWinner(value)) },
@@ -120,6 +121,9 @@ export function parseSkillEvalArgs(args: string[]): SkillEvalCliOptions {
     options.skillName = arg;
   }
 
+  const resolved = resolveSingleAuthorSelectors({ author: options.author, backend: options.backend });
+  options.author = resolved.author;
+  options.warnings.push(...resolved.warnings);
   return options;
 }
 
@@ -185,12 +189,8 @@ export async function runSkillEval(args: string[]): Promise<number> {
 
   try {
     const targetDir = resolve(options.dir);
-    const backend = options.backend ?? detectAgentBackend();
-
-    if (!backend) {
-      console.error("farrier skill eval: no backend CLI found. Install claude or codex, or pass --backend.");
-      return 1;
-    }
+    for (const warning of options.warnings) console.error(`farrier skill eval: warning: ${warning}`);
+    const author = resolveAvailableAuthor(options.author, await probeAgents(), "farrier skill eval");
 
     const names = {
       claude: options.claudeName ?? options.skillName,
@@ -200,17 +200,18 @@ export async function runSkillEval(args: string[]): Promise<number> {
     const models = await loadFarrierConfig({ projectDir: targetDir })
       .then((loaded) => loaded.config.models)
       .catch(() => ({}));
-    const evalSettings = resolveModelSettings({ models, backend, role: "eval", explicitModel: options.model });
+    const evalSettings = resolveModelSettings({ models, backend: author, role: "eval", explicitModel: options.model });
 
     const verdict = await evaluatePerAgentSkill({
       targetDir,
       skillName: options.skillName,
       names,
       description: options.description,
-      backend,
+      author,
       model: evalSettings.model,
       reasoningEffort: evalSettings.reasoningEffort
     });
+    verdict.notes.unshift(...options.warnings);
 
     let resolution: SkillWinnerResolution | undefined;
     let tieKeptBoth = false;
@@ -223,6 +224,7 @@ export async function runSkillEval(args: string[]): Promise<number> {
         skillName: options.skillName,
         names,
         winner: options.applyWinner === "recommended" ? (verdict.recommendedWinner as CreateAgent) : options.applyWinner,
+        author,
         confirmDeleteAndLink: options.deleteLoserAndLink,
         // Consent for "recommended" was given before the verdict existed, so
         // the deleted copy is kept recoverable; an explicit pick deletes clean.

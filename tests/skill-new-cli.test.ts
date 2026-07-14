@@ -71,6 +71,13 @@ describe("parseSkillNewArgs", () => {
     expect(options.yes).toBe(true);
     expect(options.eval).toBe(true);
     expect(options.json).toBe(true);
+    expect(options.warnings).toHaveLength(3);
+  });
+
+  test("preserves canonical author order and rejects duplicates", () => {
+    expect(parseSkillNewArgs(["x", "--author", "codex", "--author=claude"]).authors).toEqual(["codex", "claude"]);
+    expect(() => parseSkillNewArgs(["x", "--author", "claude", "--author=claude"])).toThrow("duplicate --author claude");
+    expect(() => parseSkillNewArgs(["x", "--author", "claude", "--agents", "codex"])).toThrow("conflicts with legacy");
   });
 
   test("resolveRefineAnswer maps blank to creator-decides, numbers to options, text to itself", () => {
@@ -153,20 +160,20 @@ describe("parseSkillEvalArgs", () => {
 describe("farrier skill new e2e (scaffold paths)", () => {
   test("--eval refuses non-per-agent runs before any authoring", async () => {
     const dir = await tempDir();
-    const result = await runCli(["skill", "new", "Summarize PR diffs", "--no-llm", "--yes", "--eval", "--dir", dir]);
+    const result = await runCli(["skill", "new", "Summarize PR diffs", "--author", "claude", "--no-llm", "--yes", "--eval", "--dir", dir]);
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("--eval compares per-agent copies");
+    expect(result.stderr).toContain("--eval compares two independently authored copies");
   });
 
   test("scaffolds a SKILL.md with --no-llm --yes --no-install", async () => {
     const dir = await tempDir();
-    const result = await runCli(["skill", "new", "Summarize PR diffs before review", "--no-llm", "--yes", "--no-install", "--dir", dir]);
+    const result = await runCli(["skill", "new", "Summarize PR diffs before review", "--author", "claude", "--no-llm", "--yes", "--no-install", "--dir", dir]);
 
-    expect(result.stderr).toBe("");
+    expect(result.stderr).toContain("--no-install is deprecated");
     expect(result.exitCode).toBe(0);
 
-    const skillMd = await readFile(join(dir, "skills", "summarize-pr-diffs-before-review", "SKILL.md"), "utf8");
+    const skillMd = await readFile(join(dir, ".claude", "skills", "summarize-pr-diffs-before-review", "SKILL.md"), "utf8");
     expect(skillMd).toStartWith("---\nname: summarize-pr-diffs-before-review\n");
     expect(skillMd).toContain("description: Summarize PR diffs before review");
     expect(skillMd).toContain("## Steps");
@@ -174,26 +181,26 @@ describe("farrier skill new e2e (scaffold paths)", () => {
 
   test("refuses to write without --yes and writes nothing", async () => {
     const dir = await tempDir();
-    const result = await runCli(["skill", "new", "Some skill", "--no-llm", "--no-install", "--dir", dir]);
+    const result = await runCli(["skill", "new", "Some skill", "--author", "claude", "--no-llm", "--no-install", "--dir", dir]);
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("refusing to write without --yes");
-    expect(existsSync(join(dir, "skills"))).toBe(false);
+    expect(existsSync(join(dir, ".claude"))).toBe(false);
   });
 
   test("dry-run previews without writing", async () => {
     const dir = await tempDir();
-    const result = await runCli(["skill", "new", "Some skill", "--no-llm", "--dry-run", "--dir", dir]);
+    const result = await runCli(["skill", "new", "Some skill", "--author", "claude", "--no-llm", "--dry-run", "--dir", dir]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("skills/some-skill/SKILL.md");
+    expect(result.stdout).toContain(".claude/skills/some-skill/SKILL.md");
     expect(result.stdout).toContain("nothing written");
-    expect(existsSync(join(dir, "skills"))).toBe(false);
+    expect(existsSync(join(dir, ".claude"))).toBe(false);
   });
 
   test("collision exits 1 and --force overwrites", async () => {
     const dir = await tempDir();
-    const args = ["skill", "new", "Some skill", "--no-llm", "--yes", "--no-install", "--dir", dir];
+    const args = ["skill", "new", "Some skill", "--author", "claude", "--no-llm", "--yes", "--no-install", "--dir", dir];
 
     expect((await runCli(args)).exitCode).toBe(0);
 
@@ -210,6 +217,8 @@ describe("farrier skill new e2e (scaffold paths)", () => {
       "skill",
       "new",
       "Whatever text",
+      "--author",
+      "codex",
       "--no-llm",
       "--yes",
       "--no-install",
@@ -221,11 +230,14 @@ describe("farrier skill new e2e (scaffold paths)", () => {
     ]);
 
     expect(result.exitCode).toBe(0);
-    const parsed = JSON.parse(result.stdout) as { name: string; mode: string; files: string[]; installed: boolean };
+    const parsed = JSON.parse(result.stdout) as { name: string; authors: string[]; layout: string; mode: string; files: string[]; installed: boolean; notes: string[] };
     expect(parsed.name).toBe("my-skill");
+    expect(parsed.authors).toEqual(["codex"]);
+    expect(parsed.layout).toBe("native");
     expect(parsed.mode).toBe("scaffold");
-    expect(parsed.files).toEqual(["skills/my-skill/SKILL.md"]);
-    expect(parsed.installed).toBe(false);
+    expect(parsed.files).toEqual([".agents/skills/my-skill/SKILL.md"]);
+    expect(parsed.installed).toBe(true);
+    expect(parsed.notes.join(" ")).toContain("--no-install is deprecated");
   });
 
   test("requires a description and rejects unknown skill subcommands", async () => {

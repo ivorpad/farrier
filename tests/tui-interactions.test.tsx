@@ -21,6 +21,7 @@ function emptyAdviceReport(backend: "claude" | "codex"): AdviceReport {
   return {
     schemaVersion: 1,
     targetDir: "/tmp/example",
+    author: backend,
     backend,
     reportOnly: true,
     sessions: { mode: "none", lookback: "7d", included: false, sources: [], evidence: [] },
@@ -46,7 +47,7 @@ function detailedAdviceReport(): AdviceReport {
   const recommendation = {
     id: "hooks:full-details",
     category: "hooks" as const,
-    targetVendors: ["claude", "codex"] as const,
+    targetVendors: ["codex"] as const,
     reason: `${"Observed repeated verification work. ".repeat(4)}WHY-END`,
     benefit: `${"Automates that verification without losing project context. ".repeat(3)}VALUE-END`,
     evidence: ["project:details"],
@@ -118,16 +119,18 @@ describe("TUI keyboard interactions", () => {
       renderOptions
     );
     try {
-      expect(await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Claude › · Claude and Codex available"))).toContain(
-        "▸ Reasoning backend: ‹ Claude › · Claude and Codex available"
+      expect(await view.waitForFrame((frame) => frame.includes("▸ Artifact author: ‹ choose Claude or Codex › · Claude and Codex available"))).toContain(
+        "▸ Artifact author: ‹ choose Claude or Codex › · Claude and Codex available"
       );
       await interact(view, async () => { await Bun.sleep(10); });
       await interact(view, () => view.mockInput.pressArrow("right"));
-      await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Codex ›"));
-      await interact(view, () => view.mockInput.pressArrow("left"));
-      await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Claude ›"));
+      await view.waitForFrame((frame) => frame.includes("▸ Artifact author: ‹ Claude ›"));
       await interact(view, () => view.mockInput.pressArrow("right"));
-      await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Codex ›"));
+      await view.waitForFrame((frame) => frame.includes("▸ Artifact author: ‹ Codex ›"));
+      await interact(view, () => view.mockInput.pressArrow("left"));
+      await view.waitForFrame((frame) => frame.includes("▸ Artifact author: ‹ Claude ›"));
+      await interact(view, () => view.mockInput.pressArrow("right"));
+      await view.waitForFrame((frame) => frame.includes("▸ Artifact author: ‹ Codex ›"));
 
       await interact(view, () => view.mockInput.pressTab());
       await view.waitForFrame((frame) => frame.includes("▸ [ ] Include project sessions"));
@@ -160,6 +163,7 @@ describe("TUI keyboard interactions", () => {
     );
     try {
       await interact(view, () => view.mockInput.pressArrow("right"));
+      await interact(view, () => view.mockInput.pressArrow("right"));
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitForFrame((frame) => frame.includes("Advice failed: Codex reasoning backend stopped before invocation."));
@@ -167,7 +171,7 @@ describe("TUI keyboard interactions", () => {
 
       await interact(view, async () => { await Bun.sleep(10); });
       await interact(view, () => view.mockInput.typeText("r"));
-      await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Codex ›") && !frame.includes("Advice failed:"));
+      await view.waitForFrame((frame) => frame.includes("▸ Artifact author: ‹ Codex ›") && !frame.includes("Advice failed:"));
       await interact(view, () => view.mockInput.pressArrow("left"));
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
@@ -188,8 +192,10 @@ describe("TUI keyboard interactions", () => {
       { width: 90, height: 50 }
     );
     try {
-      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      await view.waitForFrame((frame) => frame.includes("Artifact author:"));
       await interact(view, async () => { await Bun.sleep(10); });
+      await interact(view, () => view.mockInput.pressArrow("right"));
+      await interact(view, () => view.mockInput.pressArrow("right"));
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => finishRun !== undefined);
@@ -243,7 +249,9 @@ describe("TUI keyboard interactions", () => {
       { width: 110, height: 50, kittyKeyboard: true, exitOnCtrlC: false }
     );
     try {
-      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      await view.waitForFrame((frame) => frame.includes("Artifact author:"));
+      await interact(view, () => view.mockInput.pressArrow("right"));
+      await interact(view, () => view.mockInput.pressArrow("right"));
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => finishRun !== undefined);
@@ -257,7 +265,7 @@ describe("TUI keyboard interactions", () => {
       expect(frame).toContain("▸ Create all (1)");
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => batchSignals.length === 1);
-      expect(await view.waitForFrame((value) => value.includes("Active backend: Codex"))).toContain("cmd+z/ctrl+c cancel batch");
+      expect(await view.waitForFrame((value) => value.includes("Active author: Codex"))).toContain("cmd+z/ctrl+c cancel batch");
 
       await interact(view, () => view.mockInput.pressKey("z", { super: true }));
       await interact(view, () => view.mockInput.pressKey("z", { super: true }));
@@ -366,6 +374,8 @@ describe("TUI keyboard interactions", () => {
     try {
       await interact(view, () => view.mockInput.typeText("q skill"));
       expect(quits).toBe(0);
+      await interact(view, () => view.mockInput.pressEnter());
+      expect(submissions).toBe(0);
       await interact(view, () => view.mockInput.pressEnter());
       expect(submissions).toBe(0);
       await interact(view, () => view.mockInput.pressTab());
