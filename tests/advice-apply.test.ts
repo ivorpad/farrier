@@ -30,6 +30,7 @@ function report(targetDir: string, recommendation: AdviceRecommendation): Advice
   return {
     schemaVersion: 1,
     targetDir,
+    author: "claude",
     backend: "claude",
     reportOnly: true,
     sessions: { mode: "none", lookback: "7d", included: false, sources: [], evidence: [] },
@@ -131,7 +132,9 @@ test("batch skill authoring uses the report backend and leaves only a review pla
     implementationRoute: { id: "skills:agents-shared", description: "Create one shared project skill." }
   };
   const skillReport = report(root, recommendation);
+  skillReport.author = "codex";
   skillReport.backend = "codex";
+  recommendation.targetVendors = ["codex"];
   let command: string[] = [];
   let receivedSignal: AbortSignal | undefined;
   const controller = new AbortController();
@@ -139,7 +142,7 @@ test("batch skill authoring uses the report backend and leaves only a review pla
     command = input.cmd;
     receivedSignal = input.signal;
     const prompt = input.stdin ?? input.cmd.at(-1) ?? "";
-    const stagingRoot = prompt.match(/(\.farrier-staging\/[a-f0-9]+)/)?.[1];
+    const stagingRoot = prompt.match(/(\.farrier-staging\/authoring\/[a-f0-9]+)/)?.[1];
     if (!stagingRoot) throw new Error("missing staging root in skill prompt");
     const skillDir = join(root, stagingRoot, "verification-helper");
     await mkdir(join(skillDir, "references"), { recursive: true });
@@ -153,8 +156,8 @@ test("batch skill authoring uses the report backend and leaves only a review pla
     recommendation,
     request: {
       description: recommendation.reason,
-      agents: recommendation.targetVendors,
-      mode: "author-codex",
+      authors: ["codex"],
+      layout: "shared",
       nameOverride: "verification-helper"
     },
     modelSettings: { model: "codex-skill", reasoningEffort: "high" },
@@ -171,21 +174,22 @@ test("batch skill authoring uses the report backend and leaves only a review pla
     ".agents/skills/verification-helper/references/checks.md"
   ]);
   expect(existsSync(join(root, ".agents"))).toBe(false);
-  expect(existsSync(join(root, ".farrier-staging"))).toBe(false);
+  expect(existsSync(join(root, ".farrier-staging", "authoring"))).toBe(true);
 
   const inspection = await inspectAdviceCreationPlan(root, plan);
   expect(inspection.files.map((file) => file.action)).toEqual(["create", "create"]);
   await applyAdviceCreationPlan(root, plan, false);
   expect(await readFile(join(root, ".agents", "skills", "verification-helper", "SKILL.md"), "utf8")).toContain("Reuse the project verification workflow");
+  expect(existsSync(join(root, ".farrier-staging", "authoring"))).toBe(false);
 
   await expect(planAdviceSkillRecommendation({
     report: skillReport,
     recommendation,
-    request: { description: recommendation.reason, agents: ["codex"], mode: "author-claude" },
+    request: { description: recommendation.reason, authors: ["claude"], layout: "shared" },
     modelSettings: {},
     runner,
     creatorReady: true
-  })).rejects.toThrow("must come from the codex report backend");
+  })).rejects.toThrow("must come from the codex advice report");
 });
 
 test("cancelled batch skill authoring removes disposable staging and writes no destination", async () => {
@@ -201,6 +205,7 @@ test("cancelled batch skill authoring removes disposable staging and writes no d
     implementationRoute: { id: "skills:agents-shared", description: "Create one shared project skill." }
   };
   const skillReport = report(root, recommendation);
+  skillReport.author = "codex";
   skillReport.backend = "codex";
   const controller = new AbortController();
   let started!: () => void;
@@ -213,7 +218,7 @@ test("cancelled batch skill authoring removes disposable staging and writes no d
   const planning = planAdviceSkillRecommendation({
     report: skillReport,
     recommendation,
-    request: { description: recommendation.reason, agents: ["codex"], mode: "author-codex", nameOverride: "cancelled-helper" },
+    request: { description: recommendation.reason, authors: ["codex"], layout: "shared", nameOverride: "cancelled-helper" },
     modelSettings: { reasoningEffort: "high" },
     runner,
     signal: controller.signal,

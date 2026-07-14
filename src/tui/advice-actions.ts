@@ -1,6 +1,7 @@
 import { resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
 import { planAdviceBatch, type AdviceBatchState } from "../engine/advice-batch";
 import {
+  cleanupAdviceCreationPlan,
   inspectAdviceCreationPlan,
   planAdviceRecommendation,
   planAdviceSkillRecommendation
@@ -12,7 +13,7 @@ import type {
   AdviceSessionLookback
 } from "../engine/advice-types";
 import { probeAgent, type AgentBackend } from "../engine/backend";
-import { ensureCreatorInstalled, type SkillCreationRequest } from "../engine/create-skill";
+import { ensureCreatorInstalled, type NormalizedSkillCreationRequest } from "../engine/create-skill";
 import { adviseProject, type AdviceProgressEvent, type ProjectAdviceInput } from "../engine/project-advice";
 import type { AdviceTuiScope } from "./advise-machine";
 
@@ -20,20 +21,32 @@ function backendName(backend: AgentBackend): "Claude" | "Codex" {
   return backend === "claude" ? "Claude" : "Codex";
 }
 
-export function adviceSkillCreationRequest(backend: AgentBackend, recommendation: AdviceRecommendation): SkillCreationRequest {
+export function adviceSkillCreationRequest(
+  author: AgentBackend,
+  recommendation: AdviceRecommendation
+): NormalizedSkillCreationRequest & { agents: AgentBackend[]; mode: "author-claude" | "author-codex" } {
+  const shared = recommendation.implementationRoute.id === "skills:agents-shared";
   return {
     description: `${recommendation.reason}\n\nExpected benefit: ${recommendation.benefit}\n\nImplementation route: ${recommendation.implementationRoute.description}`,
-    agents: recommendation.targetVendors,
-    mode: backend === "claude" ? "author-claude" : "author-codex",
+    authors: [author],
+    layout: shared ? "shared" : "native",
+    agents: shared ? ["claude", "codex"] : [author],
+    mode: author === "claude" ? "author-claude" : "author-codex",
     nameOverride: recommendation.id.slice(recommendation.id.indexOf(":") + 1)
   };
 }
 
 type AdviceWizardActionDependencies = {
   isBackendAvailable: (backend: AgentBackend) => Promise<boolean>;
-  advise: (input: ProjectAdviceInput) => Promise<AdviceReport>;
-  plan: typeof planAdviceRecommendation;
-  planSkill: typeof planAdviceSkillRecommendation;
+  advise: (input: ProjectAdviceInput & { author: AgentBackend; backend: AgentBackend }) => Promise<AdviceReport>;
+  plan: (
+    input: Parameters<typeof planAdviceRecommendation>[0] & { author: AgentBackend; backend: AgentBackend }
+  ) => ReturnType<typeof planAdviceRecommendation>;
+  planSkill: (
+    input: Omit<Parameters<typeof planAdviceSkillRecommendation>[0], "request"> & {
+      request: ReturnType<typeof adviceSkillCreationRequest>;
+    }
+  ) => ReturnType<typeof planAdviceSkillRecommendation>;
   inspect: typeof inspectAdviceCreationPlan;
   prepareSkillCreator: typeof ensureCreatorInstalled;
 };
@@ -71,28 +84,31 @@ export function createAdviceWizardActions(
       const settings = resolveModelSettings({ models: await loadModels(), backend, role: "advise" });
       const report = await runAdvice({
         targetDir: input.targetDir,
+        author: backend,
         backend,
         model: settings.model,
         reasoningEffort: settings.reasoningEffort,
         sessions: includeSessions ? "auto" : "none",
         lookback,
-        targets: ["claude", "codex"],
+        targets: [backend],
+        sessionSources: [backend],
         only: scope === "all" ? undefined : [scope as AdviceCategory],
         signal: input.signal,
         onProgress
       });
-      if (report.backend !== backend) {
-        throw new Error(`Selected ${backendName(backend)} reasoning backend returned a report attributed to ${backendName(report.backend)}.`);
+      if ((report.author ?? report.backend) !== backend) {
+        throw new Error(`Selected ${backendName(backend)} author returned a report attributed to ${backendName(report.author ?? report.backend)}.`);
       }
       return report;
     },
     onPlan: async (report: AdviceReport, recommendation: AdviceRecommendation) => {
-      const backend = report.backend;
+      const backend = report.author ?? report.backend;
       await requireBackend(backend);
       const settings = resolveModelSettings({ models: await loadModels(), backend, role: "advise" });
       const plan = await planRecommendation({
         report,
         recommendation,
+        author: backend,
         backend,
         model: settings.model,
         reasoningEffort: settings.reasoningEffort,
@@ -106,7 +122,7 @@ export function createAdviceWizardActions(
       signal: AbortSignal,
       onProgress: (state: AdviceBatchState) => void
     ): Promise<AdviceBatchState> => {
-      const backend = report.backend;
+      const backend = report.author ?? report.backend;
       await requireBackend(backend);
       const models = await loadModels();
       const fileSettings = resolveModelSettings({ models, backend, role: "advise" });
@@ -129,6 +145,7 @@ export function createAdviceWizardActions(
           planFiles: (recommendation, taskSignal) => planRecommendation({
             report,
             recommendation,
+            author: backend,
             backend,
             model: fileSettings.model,
             reasoningEffort: fileSettings.reasoningEffort,
@@ -140,13 +157,14 @@ export function createAdviceWizardActions(
             return planSkillRecommendation({
               report,
               recommendation,
-              request: adviceSkillCreationRequest(report.backend, recommendation),
+              request: adviceSkillCreationRequest(report.author ?? report.backend, recommendation),
               modelSettings: skillSettings,
               signal: taskSignal,
               creatorReady: true
             });
           },
-          inspect: (plan) => inspectPlan(input.targetDir, plan)
+          inspect: (plan) => inspectPlan(input.targetDir, plan),
+          cleanup: (plan) => cleanupAdviceCreationPlan(input.targetDir, plan)
         }
       });
     }

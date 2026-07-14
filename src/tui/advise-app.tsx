@@ -5,7 +5,7 @@ import { formatAdviceReport } from "../cli/advise";
 import { loadFarrierConfig } from "../config/farrier-config";
 import { discoverProjectSessionCounts } from "../engine/advice-sessions";
 import type { AdviceBatchState } from "../engine/advice-batch";
-import { adviceCreationSupport, applyAdviceCreationPlan, type AdviceCreationPlan } from "../engine/advice-apply";
+import { adviceCreationSupport, applyAdviceCreationPlan, cleanupAdviceCreationPlan, type AdviceCreationPlan } from "../engine/advice-apply";
 import { adviceSessionLookbackLabel, type AdviceRecommendation, type AdviceReport, type AdviceSessionCountInventory, type AdviceSessionLookback, type AdviceSessionSourceSummary } from "../engine/advice-types";
 import { probeAgents, type AgentAvailability, type AgentBackend } from "../engine/backend";
 import type { ApplyHarnessChangePlanResult, HarnessChangePlan } from "../engine/create-plan";
@@ -14,7 +14,7 @@ import type { AdviceProgressEvent } from "../engine/project-advice";
 import { AdviceApplyFlow } from "./AdviceApplyFlow";
 import { AdviceBatchFlow } from "./AdviceBatchFlow";
 import { adviceSkillCreationRequest, createAdviceWizardActions } from "./advice-actions";
-import { adjacentAdviceLookback, adjacentAvailableAdviceBackend, adviceTuiReducer, adviceTuiScopes, createInitialAdviceTuiState, initialAdviceBackend, type AdviceTuiScope } from "./advise-machine";
+import { adjacentAdviceLookback, adjacentAvailableAdviceBackend, adviceTuiReducer, adviceTuiScopes, createInitialAdviceTuiState, type AdviceTuiScope } from "./advise-machine";
 import { KeyHints, palette, useSpinner } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent, runningCancellationBindings } from "./keymap";
 
@@ -22,18 +22,19 @@ export type AdviceWizardOutcome = "done" | "back" | "cancel" | { kind: "create-s
 export { adviceSkillCreationRequest, createAdviceWizardActions } from "./advice-actions";
 
 const reportPageSize = 5;
-export const adviceSetupControls = ["backend", "sessions", "lookback", "scope", "analyze"] as const;
+export const adviceSetupControls: readonly string[] = ["author", "sessions", "lookback", "scope", "analyze"];
 
 function backendName(backend: AgentBackend): "Claude" | "Codex" {
   return backend === "claude" ? "Claude" : "Codex";
 }
 
-export function adviceBackendControlLabel(backend: AgentBackend, availability: AgentAvailability): string {
+export function adviceBackendControlLabel(author: AgentBackend | undefined, availability: AgentAvailability): string {
   const availabilityLabel = availability.claude && availability.codex
     ? "Claude and Codex available"
     : `${availability.claude ? "Codex" : "Claude"} unavailable`;
-  return `Reasoning backend: ‹ ${backendName(backend)} › · ${availabilityLabel}`;
+  return `Artifact author: ‹ ${author ? backendName(author) : "choose Claude or Codex"} › · ${availabilityLabel}`;
 }
+export const adviceAuthorControlLabel = adviceBackendControlLabel;
 
 const adviceCancelBindings = defineBindings(
   binding(["escape", "b"], "back", "back"),
@@ -93,7 +94,7 @@ export function AdviceApp(props: {
   onBack: () => void;
   onCancel: () => void;
   onRun: (
-    backend: AgentBackend,
+    author: AgentBackend,
     includeSessions: boolean,
     lookback: AdviceSessionLookback,
     scope: AdviceTuiScope,
@@ -107,6 +108,7 @@ export function AdviceApp(props: {
     onProgress: (state: AdviceBatchState) => void
   ) => Promise<AdviceBatchState>;
   onApply: (plan: AdviceCreationPlan, force: boolean) => Promise<ApplyHarnessChangePlanResult>;
+  onDiscard?: (plan: AdviceCreationPlan) => Promise<void>;
   onCreateSkill: (request: SkillCreationRequest) => void;
   registerBatchCancellation?: (cancel: (() => void) | undefined) => void;
   onDone: () => void;
@@ -144,11 +146,11 @@ export function AdviceApp(props: {
   );
 
   const start = () => {
-    if (state.status !== "ready") return;
-    const request = { backend: state.backend, includeSessions: state.includeSessions, lookback: state.lookback, scope: state.scope };
+    if (state.status !== "ready" || !state.author) return;
+    const request = { author: state.author, includeSessions: state.includeSessions, lookback: state.lookback, scope: state.scope };
     dispatch({ type: "START" });
     setTimeout(() => {
-      props.onRun(request.backend, request.includeSessions, request.lookback, request.scope, (event) => dispatch({ type: "PROGRESS", message: event.message }))
+      props.onRun(request.author, request.includeSessions, request.lookback, request.scope, (event) => dispatch({ type: "PROGRESS", message: event.message }))
         .then((report) => dispatch({ type: "SUCCEEDED", report }))
         .catch((error) => dispatch({ type: "FAILED", error: error instanceof Error ? error.message : String(error) }));
     }, 0);
@@ -190,7 +192,7 @@ export function AdviceApp(props: {
         const support = adviceCreationSupport(recommendation);
         if (support.kind === "files") setCreatingRecommendation(recommendation);
         else if (support.kind === "skill") {
-          props.onCreateSkill(adviceSkillCreationRequest(state.report.backend, recommendation));
+          props.onCreateSkill(adviceSkillCreationRequest(state.report.author ?? state.report.backend, recommendation));
         } else setActionMessage(support.description);
       }
       return;
@@ -217,9 +219,9 @@ export function AdviceApp(props: {
     else if (intent === "focus") {
       const delta = key.name === "up" || key.shift ? -1 : 1;
       setSetupFocus((current) => (current + delta + adviceSetupControls.length) % adviceSetupControls.length);
-    } else if (intent === "adjust" && focusedControl === "backend") {
-      const backend = adjacentAvailableAdviceBackend(state.backend, state.availability, key.name === "right" ? 1 : -1);
-      if (backend) dispatch({ type: "SET_BACKEND", backend });
+    } else if (intent === "adjust" && focusedControl === "author") {
+      const author = adjacentAvailableAdviceBackend(state.author, state.availability, key.name === "right" ? 1 : -1);
+      if (author) dispatch({ type: "SET_AUTHOR", author });
     } else if (intent === "toggle" && focusedControl === "sessions") dispatch({ type: "TOGGLE_SESSIONS" });
     else if (intent === "adjust" && focusedControl === "lookback") dispatch({ type: "SET_LOOKBACK", lookback: adjacentAdviceLookback(state.lookback, key.name === "right" ? 1 : -1) });
     else if (intent === "adjust" && focusedControl === "scope") {
@@ -248,6 +250,7 @@ export function AdviceApp(props: {
         report={state.report}
         onPlan={(previous, signal, onProgress) => props.onPlanBatch(state.report!, previous, signal, onProgress)}
         onApply={props.onApply}
+        onDiscard={props.onDiscard}
         onBack={() => setCreatingAll(false)}
         onDone={props.onDone}
         registerCancellation={props.registerBatchCancellation}
@@ -268,7 +271,7 @@ export function AdviceApp(props: {
         <box style={{ flexDirection: "row", width: "100%" }}>
           <text fg={palette.accent}>✦ Advice report</text>
           <box style={{ flexGrow: 1 }} />
-          <text fg={palette.success}>{`${backendName(state.report.backend)} · ${state.report.recommendations.length} validated recommendation(s)`}</text>
+          <text fg={palette.success}>{`${backendName(state.report.author ?? state.report.backend)} · ${state.report.recommendations.length} validated recommendation(s)`}</text>
         </box>
         {selected && decision ? (
           <box style={{ flexDirection: "column", gap: 0 }}>
@@ -300,11 +303,11 @@ export function AdviceApp(props: {
   }
 
   const setupLabels = [
-    adviceBackendControlLabel(state.backend, state.availability),
+    adviceAuthorControlLabel(state.author, state.availability),
     `${state.includeSessions ? "[x]" : "[ ]"} Include project sessions`,
     `Session window: ‹ ${adviceSessionLookbackLabel(state.lookback)} › (${sessionCount}; ${sourceLabel(sources)})`,
     `Recommendation scope: ${state.scope === "all" ? "all categories" : state.scope}`,
-    "Analyze project"
+    state.author ? "Analyze project" : "Analyze project (choose an author first)"
   ];
 
   return (
@@ -318,7 +321,7 @@ export function AdviceApp(props: {
           <span fg={palette.accent}>{setupFocus === index ? "▸ " : "  "}</span><span fg={palette.text}>{label}</span>
         </text>
       ))}
-      <text fg={palette.faint}>The reasoning backend only analyzes evidence; it does not choose recommendation targets or session sources.</text>
+      <text fg={palette.faint}>The selected author owns the reasoning call, session evidence, recommendation routes, and created artifacts.</text>
       <text fg={palette.faint}>Only sessions whose resolved project directory matches exactly are eligible.</text>
       {state.status === "running" ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
@@ -346,8 +349,8 @@ export async function runAdviceWizard(
 ): Promise<AdviceWizardOutcome> {
   const log = dependencies.log ?? ((message: string) => console.error(message));
   const availability = await (dependencies.probeAvailability ?? probeAgents)();
-  if (!initialAdviceBackend(availability)) {
-    log("farrier advise: no agent backend found. Install claude or codex.");
+  if (!availability.claude && !availability.codex) {
+    log("farrier advise: no author provider found. Install claude or codex.");
     return "cancel";
   }
   log("farrier advise: Discovering exact-project session counts…");
@@ -399,6 +402,7 @@ export async function runAdviceWizard(
           onCreateSkill={(request) => finish({ kind: "create-skill", request })}
           onPlan={actions.onPlan}
           onPlanBatch={actions.onPlanBatch}
+          onDiscard={(plan) => cleanupAdviceCreationPlan(targetDir, plan)}
           registerBatchCancellation={(handler) => { activeBatchCancel = handler; }}
           onApply={async (plan, force) => {
             applyingFiles = true;

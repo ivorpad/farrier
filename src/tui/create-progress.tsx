@@ -1,6 +1,6 @@
 import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
-import type { CreateAgent, SkillCreationOutcome, SkillCreationPhase, SkillCreationRequest } from "../engine/create-skill";
+import { normalizeSkillCreationRequest, type CreateAgent, type SkillCreationOutcome, type SkillCreationPhase, type SkillCreationRequest } from "../engine/create-skill";
 import { palette, truncateTo, useSpinner } from "./chrome";
 import { collisionBindings, CollisionPromptView, type CollisionPrompt } from "./collision";
 import type { PendingSkillEval } from "./create-eval";
@@ -22,6 +22,7 @@ export type RequestStatus =
   | { kind: "done"; outcome: SkillCreationOutcome };
 
 function statusText(status: RequestStatus, request: SkillCreationRequest): { fg: string; text: string } {
+  const normalized = normalizeSkillCreationRequest(request);
   if (status.kind === "pending") {
     return { fg: palette.faint, text: "queued" };
   }
@@ -34,8 +35,8 @@ function statusText(status: RequestStatus, request: SkillCreationRequest): { fg:
   }
 
   const agent =
-    request.mode === "per-agent" && request.agents.length > 1
-      ? ` via ${request.agents.join(" + ")} (parallel)`
+    normalized.authors.length > 1
+      ? ` via ${normalized.authors.join(" + ")} (parallel)`
       : status.agent
         ? ` via ${status.agent}`
         : "";
@@ -43,6 +44,7 @@ function statusText(status: RequestStatus, request: SkillCreationRequest): { fg:
     creator: "pinning skill-creator",
     authoring: `authoring${agent}`,
     validating: "validating",
+    placement: "placing",
     installing: "installing"
   };
   return { fg: palette.gold, text: phases[status.phase] };
@@ -88,7 +90,8 @@ export function CreateProgressScreen(props: {
         {props.requests.map((request, index) => {
           const requestStatus = props.statuses[index] ?? { kind: "pending" };
           const status = statusText(requestStatus, request);
-          const plan = `${request.agents.join("+")} · ${request.mode}`;
+          const normalized = normalizeSkillCreationRequest(request);
+          const plan = `${normalized.authors.join("+")} · ${normalized.layout}`;
           const activities =
             requestStatus.kind === "running" && requestStatus.activities
               ? Object.entries(requestStatus.activities).filter(([, activity]) => activity)

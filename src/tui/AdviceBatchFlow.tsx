@@ -49,6 +49,7 @@ export function AdviceBatchFlow(props: {
     onProgress: (state: AdviceBatchState) => void
   ) => Promise<AdviceBatchState>;
   onApply: (plan: AdviceCreationPlan, force: boolean) => Promise<ApplyHarnessChangePlanResult>;
+  onDiscard?: (plan: AdviceCreationPlan) => Promise<void>;
   onBack: () => void;
   onDone: () => void;
   registerCancellation?: (cancel: (() => void) | undefined) => void;
@@ -114,6 +115,14 @@ export function AdviceBatchFlow(props: {
     setAttempt((current) => current + 1);
   };
 
+  const back = () => {
+    if (state.plan && props.onDiscard) {
+      void props.onDiscard(state.plan).finally(props.onBack);
+      return;
+    }
+    props.onBack();
+  };
+
   const apply = (force: boolean) => {
     if (state.phase !== "review" || !state.plan) return;
     setState((current) => ({ ...current, phase: "applying", error: undefined }));
@@ -166,7 +175,7 @@ export function AdviceBatchFlow(props: {
     }
     if (state.phase === "review" && state.inspection) {
       const intent = resolveIntent(reviewBindings, key);
-      if (intent === "back") props.onBack();
+      if (intent === "back") back();
       else if (intent === "quit") props.onDone();
       else if (intent === "reject") setReplacementArmed(false);
       else if (intent === "confirm") apply(true);
@@ -183,7 +192,7 @@ export function AdviceBatchFlow(props: {
     }
     const intent = resolveIntent(finishedBindings, key);
     if (intent === "retry") retry();
-    else if (intent === "back") props.onBack();
+    else if (intent === "back") back();
     else if (intent === "quit") props.onDone();
   });
 
@@ -212,7 +221,7 @@ export function AdviceBatchFlow(props: {
       <box style={{ flexDirection: "row", width: "100%" }}>
         <text fg={palette.accent}>{statusTitle}</text>
         <box style={{ flexGrow: 1 }} />
-        <text fg={palette.gold}>{`Active backend: ${state.backend === "claude" ? "Claude" : "Codex"}`}</text>
+        <text fg={palette.gold}>{`Active author: ${(state.author ?? state.backend) === "claude" ? "Claude" : "Codex"}`}</text>
       </box>
       <text fg={palette.muted}>{`${counts.completed} completed · ${counts.running} running · ${counts.queued} queued`}</text>
       {state.items.map((item) => (

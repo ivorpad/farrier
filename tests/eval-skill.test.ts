@@ -370,7 +370,9 @@ describe("per-agent skill eval engine", () => {
     });
 
     expect(resolution.deleted).toEqual([".agents/skills/convert-tables"]);
-    expect(resolution.links[0]?.path).toBe(".agents/skills/pdf-tables");
+    expect(resolution.canonicalPath).toBe(".agents/skills/pdf-tables");
+    expect(resolution.links[0]?.path).toBe(".claude/skills/pdf-tables");
+    expect(resolution.links[0]?.target).toBe("../../.agents/skills/pdf-tables");
     expect(existsSync(join(dir, ".agents/skills/convert-tables"))).toBe(false);
     expect(await realpath(join(dir, ".agents/skills/pdf-tables/SKILL.md"))).toBe(
       await realpath(join(dir, ".claude/skills/pdf-tables/SKILL.md"))
@@ -408,10 +410,11 @@ describe("per-agent skill eval engine", () => {
     });
 
     expect(resolution.deleted).toEqual([".agents/skills/pii-masker"]);
-    expect(resolution.links[0]?.path).toBe(".agents/skills/pii-masker");
+    expect(resolution.canonicalPath).toBe(".agents/skills/pii-masker");
+    expect(resolution.links[0]?.path).toBe(".claude/skills/pii-masker");
     expect(resolution.backupPath).toBeUndefined();
-    expect(await readlink(join(dir, ".agents/skills/pii-masker"))).toBe("../../.claude/skills/pii-masker");
-    expect((await lstat(join(dir, ".agents/skills/pii-masker"))).isSymbolicLink()).toBe(true);
+    expect(await readlink(join(dir, ".claude/skills/pii-masker"))).toBe("../../.agents/skills/pii-masker");
+    expect((await lstat(join(dir, ".claude/skills/pii-masker"))).isSymbolicLink()).toBe(true);
     expect(await realpath(join(dir, ".agents/skills/pii-masker/SKILL.md"))).toBe(
       await realpath(join(dir, ".claude/skills/pii-masker/SKILL.md"))
     );
@@ -471,7 +474,7 @@ describe("per-agent skill eval engine", () => {
     };
 
     expect(eligiblePerAgentEvals([bothCopies])).toEqual([
-      { skillName: "pii-masker", names: { claude: "pii-masker", codex: "pii-masker" }, description: "Mask PII" }
+      { skillName: "pii-masker", author: "claude", names: { claude: "pii-masker", codex: "pii-masker" }, description: "Mask PII" }
     ]);
     expect(eligiblePerAgentEvals([{ ...bothCopies, error: "codex: leg failed" }])).toEqual([]);
     expect(eligiblePerAgentEvals([{ ...bothCopies, files: [".claude/skills/pii-masker/SKILL.md"] }])).toEqual([]);
@@ -495,7 +498,7 @@ describe("per-agent skill eval engine", () => {
     };
 
     expect(eligiblePerAgentEvals([diverged])).toEqual([
-      { skillName: "pdf-tables", names: { claude: "pdf-tables", codex: "convert-tables" }, description: "Tables to markdown" }
+      { skillName: "pdf-tables", author: "claude", names: { claude: "pdf-tables", codex: "convert-tables" }, description: "Tables to markdown" }
     ]);
   });
 

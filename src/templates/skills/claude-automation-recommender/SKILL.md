@@ -13,7 +13,7 @@ This is Farrier's read-only Claude wrapper around the pinned Anthropic automatio
 1. Run Farrier's shared advice engine from the project root:
 
    ```bash
-   farrier advise --dir . --sessions auto --since 7d --targets claude
+   farrier advise --dir . --sessions auto --since 7d --author claude
    ```
 
    If `farrier` is not installed globally, use `bunx farrier` or `npx farrier` with the same arguments.

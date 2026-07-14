@@ -12,6 +12,7 @@ import type { HookId, PackHookRef, ResolvedPack, SecondaryDetectionFinding, Skil
 import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 import { parseItemRef } from "../registry/ref";
 import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
+import { inspectTrackedSkillHealth, type NativeSkillHealth } from "./native-skill-health";
 
 export const notFarrierProjectMessage = "not a farrier project; run farrier first";
 
@@ -66,6 +67,9 @@ export type UpdateReport = {
   outdatedOwnedFiles: string[];
   outdatedUserFiles: string[];
   suggestedSkills: SkillRef[];
+  nativeSkillDrift: NativeSkillHealth[];
+  duplicateSkillRefs: string[];
+  legacySkillRefs: string[];
   notes: string[];
 };
 
@@ -619,6 +623,10 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
   });
 
   const inventoryDrift = await classifyInventoryDrift(targetDir, expectedPlan.files);
+  const trackedSkillHealth = await inspectTrackedSkillHealth(targetDir, manifest.skills);
+  const nativeSkillDrift = trackedSkillHealth.native.filter((item) =>
+    item.status !== "healthy-tree" && item.status !== "healthy-shared-link"
+  );
 
   const farrierVersion: FarrierVersionDrift = {
     manifest: manifest.farrierVersion,
@@ -637,6 +645,9 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     suggestedSkills
   });
   notes.push(...catalog.warnings.map((warning) => `${warning.namespace}: ${warning.message}`));
+  if (nativeSkillDrift.length > 0) notes.push("Tracked native skill drift requires manual repair; update will not overwrite authored content.");
+  if (trackedSkillHealth.legacyRefs.length > 0) notes.push("Legacy ./skills refs are preserved; update cannot infer their intended author or layout.");
+  if (trackedSkillHealth.duplicateRefs.length > 0) notes.push("Duplicate skill refs are reported but not rewritten automatically.");
 
   return {
     targetDir,
@@ -653,6 +664,9 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     outdatedOwnedFiles: inventoryDrift.outdatedOwnedFiles,
     outdatedUserFiles: inventoryDrift.outdatedUserFiles,
     suggestedSkills,
+    nativeSkillDrift,
+    duplicateSkillRefs: trackedSkillHealth.duplicateRefs,
+    legacySkillRefs: trackedSkillHealth.legacyRefs,
     notes
   };
 }
@@ -792,7 +806,16 @@ export function formatUpdateReport(report: UpdateReport): string {
     ...renderList(report.outdatedUserFiles, "none"),
     "",
     "Suggested skills (not installed):",
-    ...renderList(report.suggestedSkills, "none")
+    ...renderList(report.suggestedSkills, "none"),
+    "",
+    "Native skill drift (manual repair only):",
+    ...renderList(report.nativeSkillDrift.map((item) => `${item.path}: ${item.message}`), "none"),
+    "",
+    "Legacy skill refs (preserved):",
+    ...renderList(report.legacySkillRefs, "none"),
+    "",
+    "Duplicate skill refs:",
+    ...renderList(report.duplicateSkillRefs, "none")
   ];
 
   if (report.notes.length > 0) {

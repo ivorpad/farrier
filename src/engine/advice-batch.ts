@@ -15,6 +15,7 @@ export type AdviceBatchItem = {
 
 export type AdviceBatchState = {
   phase: AdviceBatchPhase;
+  author?: AdviceReport["author"];
   backend: AdviceReport["backend"];
   items: AdviceBatchItem[];
   plan?: AdviceCreationPlan;
@@ -32,6 +33,7 @@ export type AdviceBatchDependencies = {
   planFiles: (recommendation: AdviceRecommendation, signal: AbortSignal) => Promise<AdviceCreationPlan>;
   planSkill: (recommendation: AdviceRecommendation, signal: AbortSignal) => Promise<AdviceCreationPlan>;
   inspect: (plan: AdviceCreationPlan) => Promise<HarnessChangePlan>;
+  cleanup?: (plan: AdviceCreationPlan) => Promise<void>;
 };
 
 const defaultConcurrency = 3;
@@ -51,6 +53,7 @@ export function adviceBatchRetryableCount(state: AdviceBatchState): number {
 export function createInitialAdviceBatchState(report: AdviceReport): AdviceBatchState {
   return {
     phase: "idle",
+    author: report.author ?? report.backend,
     backend: report.backend,
     items: report.recommendations.map((recommendation) => {
       const support = adviceCreationSupport(recommendation);
@@ -87,6 +90,16 @@ function conflictDetails(items: AdviceBatchItem[]): Map<number, string[]> {
       entries.push({ index, content: file.content });
       byPath.set(file.path, entries);
     }
+    for (const tree of item.plan.trees ?? []) {
+      const entries = byPath.get(tree.path) ?? [];
+      entries.push({ index, content: `tree:${tree.sourcePath}` });
+      byPath.set(tree.path, entries);
+    }
+    for (const link of item.plan.links ?? []) {
+      const entries = byPath.get(link.path) ?? [];
+      entries.push({ index, content: `link:${link.target}` });
+      byPath.set(link.path, entries);
+    }
   });
 
   const conflicts = new Map<number, string[]>();
@@ -115,7 +128,10 @@ function aggregatePlans(items: AdviceBatchItem[]): AdviceCreationPlan | undefine
   return {
     recommendationId: `batch:${planned.map((item) => item.recommendation.id).join(",")}`,
     summary: `Create ${planned.length} reviewed recommendation(s) as one transaction.`,
-    files
+    files,
+    trees: planned.flatMap((item) => item.plan!.trees ?? []),
+    links: planned.flatMap((item) => item.plan!.links ?? []),
+    cleanupPaths: planned.flatMap((item) => item.plan!.cleanupPaths ?? [])
   };
 }
 
@@ -129,6 +145,7 @@ export async function planAdviceBatch(input: {
 }): Promise<AdviceBatchState> {
   const state: AdviceBatchState = {
     phase: "planning",
+    author: input.report.author ?? input.report.backend,
     backend: input.report.backend,
     items: restartableItems(input.report, input.previous)
   };
@@ -175,15 +192,21 @@ export async function planAdviceBatch(input: {
       }
     }
     state.phase = "cancelled";
+    await Promise.allSettled(state.items.flatMap((item) => item.plan && input.dependencies.cleanup
+      ? [input.dependencies.cleanup(item.plan)]
+      : []));
     emit();
     return snapshot(state);
   }
 
+  const conflictCleanups: Promise<void>[] = [];
   for (const [index, messages] of conflictDetails(state.items)) {
     const item = state.items[index]!;
     item.status = "failed";
     item.detail = `Conflicting planned path: ${messages.join("; ")}. No conflicting plan will be applied.`;
+    if (item.plan && input.dependencies.cleanup) conflictCleanups.push(input.dependencies.cleanup(item.plan));
   }
+  await Promise.allSettled(conflictCleanups);
   state.plan = aggregatePlans(state.items);
   if (!state.plan) {
     state.phase = state.items.some((item) => item.status === "failed") ? "error" : "done";
@@ -198,6 +221,7 @@ export async function planAdviceBatch(input: {
   } catch (error) {
     state.phase = "error";
     state.error = error instanceof Error ? error.message : String(error);
+    if (input.dependencies.cleanup) await input.dependencies.cleanup(state.plan);
   }
   emit();
   return snapshot(state);

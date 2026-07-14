@@ -5,6 +5,7 @@ import { inventoryOwnership, readManifest } from "./update";
 import { validateToolPolicyRuleProposal } from "./learn";
 import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 import { normalizeAgents } from "./agent-selection";
+import { inspectTrackedSkillHealth } from "./native-skill-health";
 
 export type DoctorGroup =
   | "manifest"
@@ -16,7 +17,8 @@ export type DoctorGroup =
   | "konsistent"
   | "learn"
   | "judge"
-  | "quality";
+  | "quality"
+  | "skills";
 
 export type DoctorSeverity = "error" | "warning";
 
@@ -48,7 +50,8 @@ const allGroups: DoctorGroup[] = [
   "konsistent",
   "learn",
   "judge",
-  "quality"
+  "quality",
+  "skills"
 ];
 
 const rulesRelativePath = ".claude/hooks/tool-policy-rules.json";
@@ -985,6 +988,30 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
   }
 
   await addToolPolicyProblems(targetDir, manifest.hookIds.includes("tool-policy"), problems);
+  const skillHealth = await inspectTrackedSkillHealth(targetDir, manifest.skills);
+  for (const item of skillHealth.native) {
+    if (item.status === "healthy-tree" || item.status === "healthy-shared-link") continue;
+    problems.push({
+      group: "skills",
+      severity: "error",
+      path: item.path,
+      id: item.ref,
+      message: item.message,
+      remediation: "Restore the authored native tree/link manually or remove the stale manifest ref; doctor will not overwrite authored content."
+    });
+  }
+  for (const ref of skillHealth.duplicateRefs) {
+    problems.push({ group: "skills", severity: "warning", id: ref, message: "Manifest contains this skill ref more than once." });
+  }
+  for (const ref of skillHealth.legacyRefs) {
+    problems.push({
+      group: "skills",
+      severity: "warning",
+      id: ref,
+      message: "Legacy ./skills ref is preserved; its intended provider-native layout cannot be inferred safely.",
+      remediation: "Create the intended native/shared copy explicitly, verify it, then remove the legacy ref and tree manually."
+    });
+  }
   const konsistentConfigFile = `${basePack.konsistentTool ?? "konsistent"}.json`;
   await addKonsistentProblems(
     targetDir,

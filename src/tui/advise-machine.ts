@@ -6,6 +6,8 @@ export const adviceTuiScopes: AdviceTuiScope[] = ["all", ...adviceCategories];
 
 export type AdviceTuiState = {
   availability: AgentAvailability;
+  author?: AgentBackend;
+  /** @deprecated UI compatibility alias for author. */
   backend: AgentBackend;
   includeSessions: boolean;
   lookback: AdviceSessionLookback;
@@ -18,6 +20,7 @@ export type AdviceTuiState = {
 };
 
 export type AdviceTuiEvent =
+  | { type: "SET_AUTHOR"; author: AgentBackend }
   | { type: "SET_BACKEND"; backend: AgentBackend }
   | { type: "TOGGLE_SESSIONS" }
   | { type: "SET_LOOKBACK"; lookback: AdviceSessionLookback }
@@ -30,27 +33,31 @@ export type AdviceTuiEvent =
   | { type: "RESET" };
 
 export function initialAdviceBackend(availability: AgentAvailability): AgentBackend | undefined {
-  if (availability.claude) return "claude";
-  if (availability.codex) return "codex";
+  if (availability.claude && !availability.codex) return "claude";
+  if (availability.codex && !availability.claude) return "codex";
   return undefined;
 }
 
+export const initialAdviceAuthor = initialAdviceBackend;
+
 export function adjacentAvailableAdviceBackend(
-  current: AgentBackend,
+  current: AgentBackend | undefined,
   availability: AgentAvailability,
   direction: -1 | 1
 ): AgentBackend | undefined {
   const available = (["claude", "codex"] as const).filter((backend) => availability[backend]);
   if (available.length === 0) return undefined;
+  if (!current) return direction > 0 ? available[0] : available.at(-1);
   const currentIndex = available.indexOf(current);
   if (currentIndex < 0) return available[0];
   return available[(currentIndex + direction + available.length) % available.length];
 }
 
 export function createInitialAdviceTuiState(sessionCount: number, availability: AgentAvailability): AdviceTuiState {
-  const backend = initialAdviceBackend(availability);
-  if (!backend) throw new Error("No reasoning backend is available.");
-  return { availability, backend, includeSessions: sessionCount > 0, lookback: "7d", scope: "all", status: "ready", progressHistory: [] };
+  if (!availability.claude && !availability.codex) throw new Error("No author provider is available.");
+  const author = initialAdviceAuthor(availability);
+  const backend = author ?? (availability.claude ? "claude" : "codex");
+  return { availability, author, backend, includeSessions: sessionCount > 0, lookback: "7d", scope: "all", status: "ready", progressHistory: [] };
 }
 
 export function adjacentAdviceLookback(current: AdviceSessionLookback, direction: -1 | 1): AdviceSessionLookback {
@@ -59,8 +66,11 @@ export function adjacentAdviceLookback(current: AdviceSessionLookback, direction
 }
 
 export function adviceTuiReducer(state: AdviceTuiState, event: AdviceTuiEvent): AdviceTuiState {
+  if (event.type === "SET_AUTHOR" && state.status === "ready" && state.availability[event.author]) {
+    return { ...state, author: event.author, backend: event.author };
+  }
   if (event.type === "SET_BACKEND" && state.status === "ready" && state.availability[event.backend]) {
-    return { ...state, backend: event.backend };
+    return { ...state, author: event.backend, backend: event.backend };
   }
   if (event.type === "TOGGLE_SESSIONS" && state.status === "ready") return { ...state, includeSessions: !state.includeSessions };
   if (event.type === "SET_LOOKBACK" && state.status === "ready") return { ...state, lookback: event.lookback };
@@ -69,8 +79,8 @@ export function adviceTuiReducer(state: AdviceTuiState, event: AdviceTuiEvent): 
     const index = adviceTuiScopes.indexOf(state.scope);
     return { ...state, scope: adviceTuiScopes[(index + 1) % adviceTuiScopes.length]! };
   }
-  if (event.type === "START" && state.status === "ready") {
-    const message = `Starting ${state.backend === "claude" ? "Claude" : "Codex"} analysis…`;
+  if (event.type === "START" && state.status === "ready" && state.author) {
+    const message = `Starting ${state.author === "claude" ? "Claude" : "Codex"} analysis…`;
     return { ...state, status: "running", error: undefined, report: undefined, progress: message, progressHistory: [message] };
   }
   if (event.type === "PROGRESS" && state.status === "running") {

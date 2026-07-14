@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { AgentAvailability } from "../engine/backend";
-import type { CreateAgent, SkillCreationRequest } from "../engine/create-skill";
+import { normalizeSkillCreationRequest, type CreateAgent, type SkillCreationRequest } from "../engine/create-skill";
 import { CreateStep } from "./CreateStep";
 import type { SkillEvalPolicy } from "./create-eval";
 import { RefineFlow } from "./RefineScreen";
@@ -28,17 +28,16 @@ export function WizardCreate(props: WizardCreateProps) {
   const [refine, setRefine] = useState(true);
   const [flow, setFlow] = useState<{ request: SkillCreationRequest; thenNext: boolean } | null>(null);
 
-  const refineBackend: CreateAgent | undefined = props.availability?.claude
-    ? "claude"
-    : props.availability?.codex
-      ? "codex"
-      : undefined;
+  const soleAvailableAuthor: CreateAgent | undefined = props.availability?.claude !== props.availability?.codex
+    ? props.availability?.claude ? "claude" : "codex"
+    : undefined;
 
-  if (flow && refineBackend) {
+  if (flow) {
+    const refineAuthor = normalizeSkillCreationRequest(flow.request).authors[0]!;
     return (
       <RefineFlow
         request={flow.request}
-        backend={refineBackend}
+        backend={refineAuthor}
         targetDir={props.targetDir}
         packId={props.packId}
         onDone={(refined) => {
@@ -54,14 +53,14 @@ export function WizardCreate(props: WizardCreateProps) {
     );
   }
 
-  const shouldRefine = refine && refineBackend !== undefined;
+  const shouldRefine = refine;
 
   return (
     <CreateStep
       requests={props.requests}
       availability={props.availability}
       refine={refine}
-      refineBackend={refineBackend}
+      refineBackend={soleAvailableAuthor}
       onToggleRefine={() => setRefine((current) => !current)}
       evalPolicy={props.evalPolicy}
       onCycleEvalPolicy={props.onCycleEvalPolicy}

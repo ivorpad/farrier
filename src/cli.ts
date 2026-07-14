@@ -36,10 +36,10 @@ Usage:
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
   farrier doctor --dir <target> [--json]
-  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude,codex] [--only guidance,hooks,skills,subagents,plugins,mcp] [--backend claude|codex] [--model <name>] [--json]
-  farrier advise skills [--dir <target>] [--context <path|text>] [--backend claude|codex] [--json]
-  farrier skill new "<description>" --yes [--dir <target>] [--agents claude,codex] [--mode author-claude|author-codex|per-agent] [--name <kebab>] [--no-llm] [--json]
-  farrier skill eval <skill-name> [--dir <target>] [--backend claude|codex] [--json]
+  farrier advise --dir <target> --author claude|codex [--sessions auto|none] [--since 7d|14d|all] [--only guidance,hooks,skills,subagents,plugins,mcp] [--model <name>] [--json]
+  farrier advise skills [--dir <target>] [--context <path|text>] --author claude|codex [--json]
+  farrier skill new "<description>" --yes [--dir <target>] --author claude [--author codex] [--shared] [--name <kebab>] [--no-llm] [--json]
+  farrier skill eval <skill-name> [--dir <target>] --author claude|codex [--json]
 
 Options:
   --stack <id>        Stack pack to render. Supported: ${supportedPackIds().join(", ")}
@@ -56,9 +56,9 @@ Options:
   --no-llm            Use deterministic learn proposals without calling claude or codex.
   --sessions <mode>   Advice session evidence: auto or none. Exact project directories only.
   --since <window>    Advice session lookback: 7d (default), 14d, or all.
-  --targets <vendors> Advice target vendors: claude,codex.
+  --author <name>     Artifact author for advice/eval; repeat for independent skill copies.
   --only <categories> Limit advice to guidance,hooks,skills,subagents,plugins,mcp.
-  --backend <name>    Learn/advise proposal backend: claude or codex. Defaults to claude for learn, auto-detected for advise.
+  --backend <name>    Learn proposal backend. Deprecated advice/eval alias for --author in 0.4.x.
   --model <name>      Learn/advise proposal backend model. Defaults to backend-specific low-cost model.
   --help              Show this help.
 
@@ -70,7 +70,8 @@ Note:
   farrier registry list shows configured private registries without executing payloads.
   farrier learn is report-only unless --yes is provided; it appends new declarative ToolPolicyRule data only.
   farrier doctor exits 0 when healthy and 1 when static harness health errors are found.
-  Headless farrier advise is report-only. The interactive report can create a selected recommendation only after review and confirmation.`;
+  Headless farrier advise is report-only. The interactive report can create a selected recommendation only after review and confirmation.
+  Advice/eval --backend and --targets, and skill-new --agents/--mode/--no-install, are deprecated in 0.4.x and removed in 0.5.0.`;
 }
 
 function parseBackend(value: string): LearnBackend {

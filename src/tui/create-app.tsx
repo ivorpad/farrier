@@ -5,6 +5,7 @@ import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../c
 import { probeAgents, type AgentAvailability } from "../engine/backend";
 import {
   createSkills,
+  normalizeSkillCreationRequest,
   type CreateAgent,
   type SkillCreationOutcome,
   type SkillCreationRequest
@@ -45,8 +46,9 @@ function CreateApp(props: CreateAppProps) {
   // Concurrent runs can collide at once; prompts are shown one at a time.
   const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
 
-  const refineBackend: CreateAgent | undefined = availability?.claude ? "claude" : availability?.codex ? "codex" : undefined;
-  const evalBackend = refineBackend;
+  const soleAvailableAuthor: CreateAgent | undefined = availability?.claude !== availability?.codex
+    ? availability?.claude ? "claude" : "codex"
+    : undefined;
 
   // exitOnCtrlC is off (it would orphan the spawned agent runs), so ctrl+c is
   // handled here for the phases that don't handle it themselves.
@@ -174,7 +176,7 @@ function CreateApp(props: CreateAppProps) {
           onAddRequest={(request) => setRequests((current) => [...current, request])}
           onRemoveRequest={(index) => setRequests((current) => current.filter((_, i) => i !== index))}
           refine={refine}
-          refineBackend={refineBackend}
+          refineBackend={soleAvailableAuthor}
           onToggleRefine={() => setRefine((current) => !current)}
           evalPolicy={evalPolicy}
           onCycleEvalPolicy={() => setEvalPolicy(nextEvalPolicy)}
@@ -188,7 +190,7 @@ function CreateApp(props: CreateAppProps) {
 
             setRequests(all);
             setGrillIndex(0);
-            setPhase(refine && refineBackend ? "questions" : "writing");
+            setPhase(refine ? "questions" : "writing");
           }}
           onBack={() =>
             props.onExit(
@@ -205,17 +207,19 @@ function CreateApp(props: CreateAppProps) {
     case "questions": {
       const request = requests[grillIndex];
 
-      if (!request || !refineBackend) {
+      if (!request) {
         return null;
       }
 
-      const refineSettings = resolveModelSettings({ models: props.models, backend: refineBackend, role: "refine" });
+      const refineAuthor = normalizeSkillCreationRequest(request).authors[0]!;
+
+      const refineSettings = resolveModelSettings({ models: props.models, backend: refineAuthor, role: "refine" });
 
       return (
         <RefineFlow
           key={grillIndex}
           request={request}
-          backend={refineBackend}
+          backend={refineAuthor}
           targetDir={props.targetDir}
           packId={packId}
           model={refineSettings.model}
@@ -274,7 +278,7 @@ function CreateApp(props: CreateAppProps) {
         <SkillEvalFlow
           targetDir={props.targetDir}
           candidate={pendingEval}
-          backend={evalBackend}
+          backend={pendingEval.author}
           autoApply={evalPolicy === "auto"}
           onClose={() => setPhase("done")}
           onExit={() => props.onExit(outcomes.some((outcome) => outcome.error) ? 1 : 0)}
