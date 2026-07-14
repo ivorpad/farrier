@@ -4,6 +4,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import type { HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef } from "../packs/types";
 import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
 import type { RegistryPin } from "../registry/catalog";
+import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
 
 export type RenderedFile = {
   path: string;
@@ -30,6 +31,7 @@ export type RenderOptions = {
   secondaryAcknowledged?: string[];
   existingManifest?: FarrierManifestInput;
   registryPins?: Record<string, RegistryPin>;
+  agents?: EnforcementAgent[];
 };
 
 export type CreateRenderPlanOptions = {
@@ -40,6 +42,7 @@ export type CreateRenderPlanOptions = {
   secondaryAcknowledged?: string[];
   existingManifest?: FarrierManifestInput;
   registryPins?: Record<string, RegistryPin>;
+  agents?: EnforcementAgent[];
 };
 
 export type FarrierManifestVersions = {
@@ -53,6 +56,7 @@ export type FarrierManifestVersions = {
 
 export type FarrierManifest = {
   farrierVersion: string;
+  agents: EnforcementAgent[];
   packIds: string[];
   hookIds: PackHookRef[];
   skills: SkillRef[];
@@ -88,14 +92,14 @@ type ClaudeHookEntry = {
 
 type ClaudeSettingsHooks = Partial<Record<ClaudeHookEvent, ClaudeHookEntry[]>>;
 
-export const farrierManifestVersion = 1;
+export const farrierManifestVersion = 2;
 
 export const hookCatalogVersions: Record<HookId, number> = {
-  "secret-shield": 1,
+  "secret-shield": 2,
   "tool-policy": 1,
-  "write-guard": 1,
-  "verb-runner": 1,
-  "quality-judge": 1,
+  "write-guard": 2,
+  "verb-runner": 2,
+  "quality-judge": 2,
   "stop-judge": 1
 };
 
@@ -179,7 +183,9 @@ function bulletList(values: string[]): string {
  * The AGENTS.md "Hard Rules" list. Exported so the wizard can honestly count
  * the rules it is about to write ("N rules") without duplicating the list.
  */
-export function agentsHardRules(pack: ResolvedPack): string[] {
+export function agentsHardRules(pack: ResolvedPack, agents: readonly EnforcementAgent[] = ["claude"]): string[] {
+  const selectedAgents = normalizeAgents(agents);
+  const hookNames = selectedAgents.map((agent) => agent === "claude" ? "Claude" : "Codex").join(" or ");
   return [
     "Do not read real `.env*` files or private key material; tracked examples such as `.env.example` are allowed.",
     ...pack.agentsRules,
@@ -189,11 +195,11 @@ export function agentsHardRules(pack: ResolvedPack): string[] {
     "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
     "Keep generated hook scripts and their tests together.",
     "LLM semantic judge hooks are present but disabled by default in `.farrier.json`; deterministic checks still run where configured.",
-    "Do not bypass Claude hooks; Codex and other agents must follow these rules from AGENTS.md and the justfile."
+    `Do not bypass ${hookNames} hooks; every agent must also follow these rules from AGENTS.md and the justfile.`
   ];
 }
 
-function renderAgentsMd(pack: ResolvedPack): string {
+function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[]): string {
   const commandLines = [
     `- Check: \`${pack.verbs.check}\``,
     `- Test: \`${pack.verbs.test}\``,
@@ -204,7 +210,24 @@ function renderAgentsMd(pack: ResolvedPack): string {
     commandLines.push(`- ${capitalize(konsistentToolName(pack))}: \`${pack.verbs.konsistent}\``);
   }
 
-  const hardRules = agentsHardRules(pack);
+  const selectedAgents = normalizeAgents(agents);
+  const hardRules = agentsHardRules(pack, selectedAgents);
+  const targetLines = [
+    `- Selected enforcement targets: ${selectedAgents.join(", ")}.`,
+    ...(selectedAgents.includes("claude")
+      ? ["- Claude reads the native `.claude/settings.json` binding."]
+      : []),
+    ...(selectedAgents.includes("codex")
+      ? [
+          "- Codex reads the native `.codex/hooks.json` binding; project and hook definitions require trust, and `/hooks` shows runtime status.",
+          "- Codex enforcement covers mapped simple Bash calls, mapped `apply_patch` edits, and Stop checks.",
+          "- Codex `unified_exec` interception remains incomplete; native reads, search, WebSearch, and other non-shell/non-MCP paths are not all intercepted.",
+          "- Codex PostToolUse feedback cannot undo an applied patch or another completed effect.",
+          "- Remote hooks without explicit Codex event and payload compatibility remain unbound.",
+          "- AGENTS.md instructions and project verification commands remain mandatory regardless of hook coverage."
+        ]
+      : [])
+  ];
 
   const acceptedRisks = pack.packIds.includes("python-uv") && pack.verbs.konsistent
     ? [
@@ -227,6 +250,10 @@ AGENTS.md is the source of truth for agent behavior in this repository.
 ## Commands
 
 ${commandLines.join("\n")}
+
+## Enforcement Targets
+
+${targetLines.join("\n")}
 
 ## Hard Rules
 
@@ -256,7 +283,7 @@ function hookEntry(input: { matcher?: string; command: string }): ClaudeHookEntr
   };
 }
 
-function renderSettingsJson(pack: ResolvedPack): string {
+function renderClaudeSettingsJson(pack: ResolvedPack): string {
   const preToolUse: ClaudeHookEntry[] = [];
   const postToolUse: ClaudeHookEntry[] = [];
   const stop: ClaudeHookEntry[] = [];
@@ -356,6 +383,34 @@ function renderSettingsJson(pack: ResolvedPack): string {
   return `${JSON.stringify(settings, null, 2)}\n`;
 }
 
+function codexCommand(fileName: string): string {
+  return `python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/${fileName}"`;
+}
+
+function renderCodexHooksJson(pack: ResolvedPack): string {
+  const preToolUse: ClaudeHookEntry[] = [];
+  const postToolUse: ClaudeHookEntry[] = [];
+  const stop: ClaudeHookEntry[] = [];
+
+  const add = (entries: ClaudeHookEntry[], matcher: string | undefined, fileName: string): void => {
+    entries.push(hookEntry({ matcher, command: codexCommand(fileName) }));
+  };
+
+  if (pack.hooks.includes("secret-shield")) add(preToolUse, "^Bash$", "secret-shield.py");
+  if (pack.hooks.includes("tool-policy")) add(preToolUse, "^Bash$", "tool-policy.py");
+  if (pack.hooks.includes("write-guard")) add(preToolUse, "^apply_patch$", "write-guard.py");
+  if (pack.hooks.includes("verb-runner")) add(postToolUse, "^apply_patch$", "verb-runner.py");
+  if (pack.hooks.includes("quality-judge")) add(postToolUse, "^apply_patch$", "quality-judge.py");
+  if (pack.hooks.includes("verb-runner")) add(stop, undefined, "verb-runner.py");
+  if (pack.hooks.includes("stop-judge")) add(stop, undefined, "stop-judge.py");
+
+  const hooks: ClaudeSettingsHooks = {};
+  if (preToolUse.length > 0) hooks.PreToolUse = preToolUse;
+  if (postToolUse.length > 0) hooks.PostToolUse = postToolUse;
+  if (stop.length > 0) hooks.Stop = stop;
+  return `${JSON.stringify({ hooks }, null, 2)}\n`;
+}
+
 function renderJustfile(pack: ResolvedPack): string {
   const recipes = [
     `check:
@@ -446,6 +501,7 @@ async function renderManifest(
     secondaryAcknowledged: string[];
     existingManifest?: FarrierManifestInput;
     registryPins?: Record<string, RegistryPin>;
+    agents: EnforcementAgent[];
   }
 ): Promise<string> {
   const remoteHookVersions = Object.fromEntries(
@@ -454,6 +510,7 @@ async function renderManifest(
   const registryPins = options.registryPins ?? {};
   const manifest: FarrierManifest = {
     farrierVersion: await getFarrierVersion(),
+    agents: [...options.agents],
     packIds: [...pack.packIds],
     hookIds: [...pack.hooks],
     skills: [...options.skills],
@@ -547,6 +604,7 @@ const claudeAutomationReferenceFiles = [
 ];
 
 export async function createRenderPlan(options: CreateRenderPlanOptions): Promise<RenderPlan> {
+  const agents = normalizeAgents(options.agents ?? options.existingManifest?.agents);
   const existingSkills = stringArray(options.existingManifest?.skills);
   const selectedSkills = options.skills ?? existingSkills ?? options.pack.skills;
   const existingLearnEnabled =
@@ -560,16 +618,29 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   const files: RenderedFile[] = [
     {
       path: "AGENTS.md",
-      content: renderAgentsMd(options.pack)
+      content: renderAgentsMd(options.pack, agents)
     },
     {
       path: "CLAUDE.md",
       content: renderClaudeMd()
-    },
-    {
+    }
+  ];
+
+  if (agents.includes("claude")) {
+    files.push({
       path: ".claude/settings.json",
-      content: renderSettingsJson(options.pack)
-    },
+      content: renderClaudeSettingsJson(options.pack)
+    });
+  }
+
+  if (agents.includes("codex")) {
+    files.push({
+      path: ".codex/hooks.json",
+      content: renderCodexHooksJson(options.pack)
+    });
+  }
+
+  files.push(
     {
       path: ".claude/skills/harness-advisor/SKILL.md",
       content: await readTemplate("skills", "harness-advisor", "SKILL.md")
@@ -582,7 +653,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
       path: ".agents/skills/farrier-project-advisor/SKILL.md",
       content: await readTemplate("skills", "farrier-project-advisor", "SKILL.md")
     }
-  ];
+  );
 
   for (const relativePath of claudeAutomationReferenceFiles) {
     files.push({
@@ -652,7 +723,8 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
         learnEnabled,
         secondaryAcknowledged,
         existingManifest: options.existingManifest,
-        registryPins: options.registryPins
+        registryPins: options.registryPins,
+        agents
       })
     },
     {
@@ -694,7 +766,8 @@ export async function renderHarness(options: RenderOptions): Promise<RenderPlan>
     learnEnabled: options.learnEnabled,
     secondaryAcknowledged: options.secondaryAcknowledged,
     existingManifest: options.existingManifest,
-    registryPins: options.registryPins
+    registryPins: options.registryPins,
+    agents: options.agents
   });
 
   if (!options.dryRun) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook that blocks reads of env files and private keys."""
+"""Shared PreToolUse hook for supported Claude and Codex secret-access payloads."""
 
 from __future__ import annotations
 
@@ -119,7 +119,10 @@ def looks_secretish(text: str) -> bool:
         r"($|[\s\"'])"
     )
 
-    return any(is_secret_path(match.group("candidate")) for match in token_pattern.finditer(text))
+    return any(
+        is_secret_path(match.group("candidate"))
+        for match in token_pattern.finditer(text)
+    )
 
 
 def should_deny(payload: dict[str, Any]) -> bool:

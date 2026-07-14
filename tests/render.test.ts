@@ -221,6 +221,103 @@ describe("render engine", () => {
     expect(settings.hooks.Stop[1].matcher).toBeUndefined();
   });
 
+  test("renders Claude-only by default and persists the normalized selection", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({ targetDir: dir, pack: resolvePack("generic") });
+    const paths = plan.files.map((file) => file.path);
+    const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
+
+    expect(paths).toContain(".claude/settings.json");
+    expect(paths).not.toContain(".codex/hooks.json");
+    expect(manifest.agents).toEqual(["claude"]);
+  });
+
+  test("renders the released Codex hook mappings without a second policy system", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack: resolvePack("python-fastapi"),
+      agents: ["codex"]
+    });
+    const paths = plan.files.map((file) => file.path);
+    const hooks = JSON.parse(plan.files.find((file) => file.path === ".codex/hooks.json")!.content).hooks;
+    const bindings = Object.entries(hooks).flatMap(([event, entries]) =>
+      (entries as Array<{ matcher?: string; hooks: Array<{ type: string; command: string }> }>).map((entry) => ({
+        event,
+        matcher: entry.matcher,
+        handlers: entry.hooks
+      }))
+    );
+
+    expect(paths).not.toContain(".claude/settings.json");
+    expect(paths).toContain(".codex/hooks.json");
+    expect(paths.filter((path) => path === ".claude/hooks/tool-policy-rules.json")).toHaveLength(1);
+    expect(paths.some((path) => path.endsWith(".rules"))).toBe(false);
+    expect(paths).not.toContain(".codex/config.toml");
+    expect(bindings).toEqual([
+      {
+        event: "PreToolUse",
+        matcher: "^Bash$",
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/secret-shield.py"' }]
+      },
+      {
+        event: "PreToolUse",
+        matcher: "^Bash$",
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/tool-policy.py"' }]
+      },
+      {
+        event: "PreToolUse",
+        matcher: "^apply_patch$",
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/write-guard.py"' }]
+      },
+      {
+        event: "PostToolUse",
+        matcher: "^apply_patch$",
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/verb-runner.py"' }]
+      },
+      {
+        event: "PostToolUse",
+        matcher: "^apply_patch$",
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/quality-judge.py"' }]
+      },
+      {
+        event: "Stop",
+        matcher: undefined,
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/verb-runner.py"' }]
+      },
+      {
+        event: "Stop",
+        matcher: undefined,
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/stop-judge.py"' }]
+      }
+    ]);
+
+    const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
+    expect(manifest.agents).toEqual(["codex"]);
+  });
+
+  test("renders both native bindings while sharing scripts and rules", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack: resolvePack("python-fastapi"),
+      agents: ["codex", "claude"]
+    });
+    const paths = plan.files.map((file) => file.path);
+    const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
+    const agents = plan.files.find((file) => file.path === "AGENTS.md")!.content;
+
+    expect(paths).toContain(".claude/settings.json");
+    expect(paths).toContain(".codex/hooks.json");
+    expect(paths.filter((path) => path === ".claude/hooks/tool-policy-rules.json")).toHaveLength(1);
+    expect(manifest.agents).toEqual(["claude", "codex"]);
+    expect(agents).toContain("project and hook definitions require trust");
+    expect(agents).toContain("`/hooks` shows runtime status");
+    expect(agents).toContain("`unified_exec` interception remains incomplete");
+    expect(agents).toContain("native reads, search, WebSearch");
+    expect(agents).toContain("PostToolUse feedback cannot undo");
+  });
+
   test("renders Claude settings and hook files from selected hooks only", async () => {
     const dir = await tempDir();
     const basePack = resolvePack("python-fastapi");
@@ -302,7 +399,8 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(manifestFile!.content);
 
-    expect(manifest.farrierVersion).toBe("0.2.0");
+    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.agents).toEqual(["claude"]);
     expect(manifest.packIds).toEqual(["python-uv", "python-fastapi"]);
     expect(manifest.hookIds).toEqual([...allHooks]);
     expect(manifest.skills).toEqual(pack.skills);
@@ -327,13 +425,13 @@ describe("render engine", () => {
       }
     });
     expect(manifest.quality).toEqual({ maxFileLines: 500 });
-    expect(manifest.versions.farrierManifest).toBe(1);
+    expect(manifest.versions.farrierManifest).toBe(2);
     expect(manifest.versions.hooks).toEqual({
-      "secret-shield": 1,
+      "secret-shield": 2,
       "tool-policy": 1,
-      "write-guard": 1,
-      "verb-runner": 1,
-      "quality-judge": 1,
+      "write-guard": 2,
+      "verb-runner": 2,
+      "quality-judge": 2,
       "stop-judge": 1
     });
     expect(manifest.versions.prompts).toEqual({
@@ -373,6 +471,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({
       targetDir: dir,
       pack,
+      agents: ["claude", "codex"],
       registryPins: {
         "@acme/guard": {
           type: "hook",
@@ -405,6 +504,9 @@ describe("render engine", () => {
         }
       ]
     });
+    const codexHooks = plan.files.find((file) => file.path === ".codex/hooks.json")!.content;
+    expect(codexHooks).not.toContain("@acme/guard");
+    expect(codexHooks).not.toContain("guard.sh");
 
     const remoteEntry = plan.files.find((file) => file.path === ".claude/hooks/@acme/guard/guard.sh");
     const remoteHelper = plan.files.find((file) => file.path === ".claude/hooks/@acme/guard/lib/helper.sh");
@@ -455,15 +557,15 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(manifestFile!.content);
 
-    expect(manifest.farrierVersion).toBe("0.2.0");
+    expect(manifest.farrierVersion).toBe("0.3.0");
     expect(manifest.packIds).toEqual(["python-uv", "python-fastapi"]);
     expect(manifest.hookIds).toEqual(["secret-shield"]);
     expect(manifest.skills).toEqual(selectedSkills);
     expect(manifest.secondaryAcknowledged).toEqual([]);
     expect(manifest.learn).toEqual({ enabled: true });
-    expect(manifest.versions.farrierManifest).toBe(1);
+    expect(manifest.versions.farrierManifest).toBe(2);
     expect(manifest.versions.hooks).toEqual({
-      "secret-shield": 1
+      "secret-shield": 2
     });
     expect(manifest.judge.perEdit.enabled).toBe(false);
     expect(manifest.judge.stop.enabled).toBe(false);
@@ -506,7 +608,7 @@ describe("render engine", () => {
     expect(manifest.quality).toEqual({
       maxFileLines: 250
     });
-    expect(manifest.farrierVersion).toBe("0.2.0");
+    expect(manifest.farrierVersion).toBe("0.3.0");
   });
 
   test("renders real konpy v1 grammar with templated package name", async () => {
@@ -581,7 +683,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["ts-base", "ts-react-vite"]);
     expect(manifest.hookIds).toEqual([...allHooks]);
-    expect(manifest.farrierVersion).toBe("0.2.0");
+    expect(manifest.farrierVersion).toBe("0.3.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
@@ -623,7 +725,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["rails"]);
     expect(manifest.hookIds).toEqual([...allHooks]);
-    expect(manifest.farrierVersion).toBe("0.2.0");
+    expect(manifest.farrierVersion).toBe("0.3.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
@@ -665,7 +767,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["generic"]);
     expect(manifest.hookIds).toEqual(["secret-shield", "tool-policy", "write-guard", "quality-judge"]);
-    expect(manifest.farrierVersion).toBe("0.2.0");
+    expect(manifest.farrierVersion).toBe("0.3.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 

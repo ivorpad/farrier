@@ -112,7 +112,8 @@ describe("creation CLI e2e", () => {
     }
 
     const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8"));
-    expect(manifest.farrierVersion).toBe("0.2.0");
+    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.agents).toEqual(["claude"]);
     expect(manifest.secondaryAcknowledged).toEqual([]);
     expect(existsSync(join(dir, "skills-lock.json"))).toBe(true);
     expect(existsSync(join(dir, ".claude", "skills", "python-code-style", "SKILL.md"))).toBe(true);
@@ -133,6 +134,64 @@ describe("creation CLI e2e", () => {
       expect(result.stdout).toContain(file);
       expect(existsSync(join(dir, file))).toBe(false);
     }
+  });
+
+  test("headless --agents renders Claude-only, Codex-only, and both selections", async () => {
+    const cases = [
+      { value: "claude", expected: ["claude"], claude: true, codex: false },
+      { value: "codex", expected: ["codex"], claude: false, codex: true },
+      { value: "codex,claude", expected: ["claude", "codex"], claude: true, codex: true }
+    ] as const;
+
+    for (const item of cases) {
+      const dir = await tempDir();
+      const result = await runCli([
+        "--stack",
+        "generic",
+        "--agents",
+        item.value,
+        "--yes",
+        "--no-skills",
+        "--dir",
+        dir
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8"));
+      expect(manifest.agents).toEqual([...item.expected]);
+      expect(existsSync(join(dir, ".claude", "settings.json"))).toBe(item.claude);
+      expect(existsSync(join(dir, ".codex", "hooks.json"))).toBe(item.codex);
+    }
+  });
+
+  test("agent availability and environment hints never change the saved selection", async () => {
+    const defaultDir = await tempDir();
+    const codexDir = await tempDir();
+    const noAgentPath = dirname(process.execPath);
+
+    const defaultResult = await runCli(
+      ["--stack", "generic", "--yes", "--no-skills", "--dir", defaultDir],
+      { env: { PATH: noAgentPath, CODEX_HOME: "/tmp/ignored-codex-home", CLAUDE_CODE_ENTRYPOINT: "ignored" } }
+    );
+    const codexResult = await runCli(
+      ["--stack", "generic", "--agents=codex", "--yes", "--no-skills", "--dir", codexDir],
+      { env: { PATH: noAgentPath, CODEX_HOME: undefined, CLAUDE_CODE_ENTRYPOINT: "present-but-irrelevant" } }
+    );
+
+    expect(defaultResult.exitCode).toBe(0);
+    expect(codexResult.exitCode).toBe(0);
+    expect(JSON.parse(await readFile(join(defaultDir, ".farrier.json"), "utf8")).agents).toEqual(["claude"]);
+    expect(JSON.parse(await readFile(join(codexDir, ".farrier.json"), "utf8")).agents).toEqual(["codex"]);
+  });
+
+  test("rejects empty and unknown enforcement-agent selections", async () => {
+    const empty = await runCli(["--stack", "generic", "--agents=", "--dry-run", "--dir", await tempDir()]);
+    const unknown = await runCli(["--stack", "generic", "--agents", "cursor", "--dry-run", "--dir", await tempDir()]);
+
+    expect(empty.exitCode).toBe(1);
+    expect(empty.stderr).toContain("agents must be a non-empty array");
+    expect(unknown.exitCode).toBe(1);
+    expect(unknown.stderr).toContain("agents must contain only claude and codex");
   });
 
   test("--detect writes most-specific FastAPI harness", async () => {
@@ -349,6 +408,7 @@ dependencies = ["fastapi"]
     expect(report.stack.selected).toBe("python-fastapi");
     expect(report.stack.detected[0].evidence).toContain("pyproject.toml dependency: fastapi");
     expect(report.harnessBehavior.skillAction).toBe("install");
+    expect(report.harnessBehavior.agents).toEqual(["claude"]);
     expect(report.summary.create).toBe(33);
     expect(report.applicable).toBe(true);
     expect(report.files.find((file: { path: string }) => file.path === "AGENTS.md").purpose).toContain("instructions");

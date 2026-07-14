@@ -40,7 +40,9 @@ def run_hook(payload: dict, tmp_path: Path, just_body: str) -> tuple[int, str, s
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def post_payload(tmp_path: Path, tool_name: str = "Edit", tool_input: dict | None = None) -> dict:
+def post_payload(
+    tmp_path: Path, tool_name: str = "Edit", tool_input: dict | None = None
+) -> dict:
     return {
         "session_id": "test",
         "transcript_path": "/tmp/transcript.jsonl",
@@ -63,7 +65,27 @@ def stop_payload(tmp_path: Path, active: bool = False) -> dict:
 
 
 def test_posttool_runs_just_check_and_is_silent_on_success(tmp_path: Path) -> None:
-    code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, 'test "$1" = "check" || exit 7\nexit 0')
+    code, stdout, stderr = run_hook(
+        post_payload(tmp_path), tmp_path, 'test "$1" = "check" || exit 7\nexit 0'
+    )
+
+    assert code == 0
+    assert stdout == ""
+    assert stderr == ""
+
+
+def test_codex_apply_patch_runs_just_check(tmp_path: Path) -> None:
+    payload = post_payload(
+        tmp_path,
+        tool_name="apply_patch",
+        tool_input={
+            "command": "*** Begin Patch\n*** Update File: src/app.py\n*** End Patch"
+        },
+    )
+
+    code, stdout, stderr = run_hook(
+        payload, tmp_path, 'test "$1" = "check" || exit 7\nexit 0'
+    )
 
     assert code == 0
     assert stdout == ""
@@ -182,7 +204,9 @@ def test_stop_hook_active_prevents_recursive_block(tmp_path: Path) -> None:
 
 def test_ignores_unrelated_tool_event(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(
-        post_payload(tmp_path, tool_name="Read", tool_input={"file_path": "src/app.py"}),
+        post_payload(
+            tmp_path, tool_name="Read", tool_input={"file_path": "src/app.py"}
+        ),
         tmp_path,
         'echo "should not run"\nexit 1',
     )
@@ -194,7 +218,9 @@ def test_ignores_unrelated_tool_event(tmp_path: Path) -> None:
 
 def test_skips_edits_inside_claude_hooks_to_avoid_recursion(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(
-        post_payload(tmp_path, tool_input={"file_path": ".claude/hooks/verb-runner.py"}),
+        post_payload(
+            tmp_path, tool_input={"file_path": ".claude/hooks/verb-runner.py"}
+        ),
         tmp_path,
         'echo "should not run"\nexit 1',
     )

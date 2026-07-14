@@ -51,7 +51,9 @@ def assert_allowed(stdout: str, stderr: str) -> None:
 
 
 def test_denies_git_directory_write() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Write", {"file_path": ".git/config", "content": "x"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Write", {"file_path": ".git/config", "content": "x"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -59,7 +61,9 @@ def test_denies_git_directory_write() -> None:
 
 
 def test_denies_nested_git_directory_write() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Edit", {"file_path": "/repo/.git/refs/heads/main"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Edit", {"file_path": "/repo/.git/refs/heads/main"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -67,7 +71,9 @@ def test_denies_nested_git_directory_write() -> None:
 
 
 def test_denies_skills_lock_write() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Write", {"file_path": "skills-lock.json", "content": "{}"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Write", {"file_path": "skills-lock.json", "content": "{}"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -75,7 +81,11 @@ def test_denies_skills_lock_write() -> None:
 
 
 def test_denies_farrier_manifest_write() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Edit", {"file_path": ".farrier.json", "old_string": "x", "new_string": "y"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(
+            "Edit", {"file_path": ".farrier.json", "old_string": "x", "new_string": "y"}
+        )
+    )
 
     assert code == 0
     assert stderr == ""
@@ -83,7 +93,9 @@ def test_denies_farrier_manifest_write() -> None:
 
 
 def test_denies_lockfile_write() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Write", {"file_path": "uv.lock", "content": "lock"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Write", {"file_path": "uv.lock", "content": "lock"})
+    )
 
     assert code == 0
     assert stderr == ""
@@ -91,7 +103,11 @@ def test_denies_lockfile_write() -> None:
 
 
 def test_denies_lockfile_write_in_subdirectory() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("MultiEdit", {"file_path": "frontend/pnpm-lock.yaml", "edits": []}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(
+            "MultiEdit", {"file_path": "frontend/pnpm-lock.yaml", "edits": []}
+        )
+    )
 
     assert code == 0
     assert stderr == ""
@@ -99,7 +115,11 @@ def test_denies_lockfile_write_in_subdirectory() -> None:
 
 
 def test_denies_notebook_path_lockfile() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("NotebookEdit", {"notebook_path": "package-lock.json", "cell_id": "1"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload(
+            "NotebookEdit", {"notebook_path": "package-lock.json", "cell_id": "1"}
+        )
+    )
 
     assert code == 0
     assert stderr == ""
@@ -107,7 +127,9 @@ def test_denies_notebook_path_lockfile() -> None:
 
 
 def test_allows_normal_source_write() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Write", {"file_path": "src/app.py", "content": "print('ok')"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Write", {"file_path": "src/app.py", "content": "print('ok')"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
@@ -129,7 +151,9 @@ def test_content_only_mention_does_not_deny() -> None:
 
 
 def test_ignores_unrelated_tool() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Read", {"file_path": ".farrier.json"}))
+    code, stdout, stderr = run_hook(
+        pretool_payload("Read", {"file_path": ".farrier.json"})
+    )
 
     assert code == 0
     assert_allowed(stdout, stderr)
@@ -157,3 +181,34 @@ def test_recursively_finds_path_like_fields_only() -> None:
     assert code == 0
     assert stderr == ""
     assert_denied(stdout, "git commands")
+
+
+def test_codex_apply_patch_checks_update_add_and_delete_headers() -> None:
+    patch = """*** Begin Patch
+*** Update File: src/app.py
+@@
+-old
++new
+*** Add File: docs/note.md
++note
+*** Delete File: nested/.farrier.json
+*** End Patch"""
+
+    code, stdout, stderr = run_hook(pretool_payload("apply_patch", {"command": patch}))
+
+    assert code == 0
+    assert stderr == ""
+    assert_denied(stdout, "farrier update")
+
+
+def test_codex_apply_patch_allows_unprotected_headers() -> None:
+    patch = """*** Begin Patch
+*** Update File: src/app.py
+*** Add File: docs/note.md
+*** Delete File: src/old.py
+*** End Patch"""
+
+    code, stdout, stderr = run_hook(pretool_payload("apply_patch", {"command": patch}))
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
