@@ -20,7 +20,8 @@ export type DoctorGroup =
   | "learn"
   | "judge"
   | "quality"
-  | "skills";
+  | "skills"
+  | "runtime";
 
 export type DoctorSeverity = "error" | "warning";
 
@@ -54,7 +55,8 @@ const allGroups: DoctorGroup[] = [
   "learn",
   "judge",
   "quality",
-  "skills"
+  "skills",
+  "runtime"
 ];
 
 const rulesRelativePath = `${hooksDirectory}/tool-policy-rules.json`;

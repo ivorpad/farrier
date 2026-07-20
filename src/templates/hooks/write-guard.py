@@ -11,6 +11,8 @@ from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any
 
+from _hook_runtime import log_event
+
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 PATH_KEYS = {"file_path", "path", "notebook_path"}
@@ -162,13 +164,16 @@ def main() -> int:
     cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else os.getcwd()
     for path in paths:
         if outside_root(path, cwd):
+            log_event(cwd, "write-guard", "PreToolUse", "blocked", rule="out-of-root")
             emit_deny(f"Blocked out-of-root mutation to `{normalize_path(path)}`. Keep edits inside the project root.")
             return 0
         reason = protected_reason(path)
         if reason is not None:
+            log_event(cwd, "write-guard", "PreToolUse", "blocked", rule="protected-file")
             emit_deny(reason)
             return 0
 
+    log_event(cwd, "write-guard", "PreToolUse", "allowed")
     return 0
 
 

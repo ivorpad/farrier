@@ -33,6 +33,7 @@ export const pythonUvPack: Pack = {
       toolPolicyRules: [
         {
           id: "python-use-uv-not-python-m-pip",
+          probe: "python -m pip install requests",
           description: "Python projects managed by uv must not install dependencies with python -m pip.",
           tool: "Bash",
           commandPattern: "(^|[;&|()\\s])python3?\\s+-m\\s+pip\\b",
@@ -42,6 +43,7 @@ export const pythonUvPack: Pack = {
         },
         {
           id: "python-use-uv-not-pip-install",
+          probe: "pip install requests",
           description: "Python projects managed by uv must not install dependencies with pip or pip3.",
           tool: "Bash",
           commandPattern: "(^|[;&|()\\s])pip3?\\s+install\\b",
@@ -51,6 +53,7 @@ export const pythonUvPack: Pack = {
         },
         {
           id: "python-run-scripts-through-uv",
+          probe: "python scripts/farrier_doctor_probe.py",
           description: "Run Python scripts through uv so the project environment is active.",
           tool: "Bash",
           commandPattern: "(^|[;&|]{1,2}\\s*)python3?\\s+(?!-m\\s+)(?:\\./|/|[A-Za-z0-9_./-]+\\.py\\b)",

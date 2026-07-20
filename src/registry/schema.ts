@@ -273,7 +273,8 @@ function validateToolPolicyRules(value: unknown, path: string): ToolPolicyRule[]
       commandPattern: stringField(rule.commandPattern, `${rulePath}.commandPattern`),
       flags: optionalStringField(rule.flags, `${rulePath}.flags`),
       message: stringField(rule.message, `${rulePath}.message`),
-      redirect: stringField(rule.redirect, `${rulePath}.redirect`)
+      redirect: stringField(rule.redirect, `${rulePath}.redirect`),
+      probe: optionalStringField(rule.probe, `${rulePath}.probe`)
     };
   });
 }

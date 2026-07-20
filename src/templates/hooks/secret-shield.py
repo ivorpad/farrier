@@ -9,6 +9,8 @@ import re
 import sys
 from typing import Any
 
+from _hook_runtime import log_event
+
 MAX_PAYLOAD_BYTES = 256 * 1024
 
 SECRET_BASENAMES = {
@@ -148,11 +150,16 @@ def should_deny(payload: dict[str, Any]) -> bool:
 
 def main() -> int:
     payload = read_payload()
+    cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else os.getcwd()
+    tool_name = payload.get("tool_name")
 
     if should_deny(payload):
+        log_event(cwd, "secret-shield", "PreToolUse", "blocked", rule="secret-access")
         emit_deny(
             "Blocked secret access. Do not read real .env* files or private key material; tracked examples such as .env.example are allowed."
         )
+    elif tool_name in {"Read", "Bash", "Grep"}:
+        log_event(cwd, "secret-shield", "PreToolUse", "allowed")
 
     return 0
 

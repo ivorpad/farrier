@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import selectors
 import signal
@@ -7,6 +8,32 @@ import stat
 import subprocess
 import time
 from pathlib import Path, PurePosixPath
+
+EVENT_LOG_RELATIVE_PARTS = (".farrier", "runtime", "events.jsonl")
+MAX_EVENT_LOG_BYTES = 1024 * 1024
+
+
+def log_event(cwd: str, hook: str, event: str, result: str, rule: str | None = None) -> None:
+    """Append one JSONL runtime event; never raises so logging cannot break a hook.
+
+    Rotates the previous log aside once it exceeds MAX_EVENT_LOG_BYTES.
+    """
+    try:
+        directory = os.path.join(cwd, *EVENT_LOG_RELATIVE_PARTS[:-1])
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, EVENT_LOG_RELATIVE_PARTS[-1])
+        try:
+            if os.path.getsize(path) > MAX_EVENT_LOG_BYTES:
+                os.replace(path, f"{path}.1")
+        except OSError:
+            pass
+        entry: dict[str, str] = {"hook": hook, "event": event, "result": result}
+        if rule is not None:
+            entry["rule"] = rule
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
 
 
 def terminate_process(proc: subprocess.Popen[bytes]) -> None:

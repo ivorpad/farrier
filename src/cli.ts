@@ -36,7 +36,7 @@ Usage:
   farrier update --dir <target> [--yes] [--json]
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
-  farrier doctor --dir <target> [--json]
+  farrier doctor --dir <target> [--json] [--static] [--live]
   farrier audit-panel prepare --manifest <panel.json> --output <new-directory> [--json]
   farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude|codex] [--only guidance,hooks,skills,subagents,plugins,mcp] [--backend claude|codex] [--model <name>] [--json]
   farrier advise --dir <target> --mode quick|baseline|deep [--plan] [--max-model-calls <n>] [--max-estimated-input-tokens <n>] [--max-provider-cost-usd-per-call <amount>] [--backend claude|codex] [--model <name>] [--json]
@@ -78,7 +78,7 @@ Note:
   --yes approves a conflict-free plan. Replacing existing differing files additionally requires --force.
   farrier registry list shows configured private registries without executing payloads.
   farrier learn is report-only unless --yes is provided; it appends new declarative ToolPolicyRule data only.
-  farrier doctor exits 0 when healthy and 1 when static harness health errors are found.
+  farrier doctor runs static checks plus runtime hook probes (fixture payloads through the installed bindings). --static skips probes; --live adds one real Codex session that must get blocked. Exits 0 only when every executed layer is healthy.
   Headless farrier advise is report-only. The interactive report can create a selected recommendation only after review and confirmation.`;
 }
 

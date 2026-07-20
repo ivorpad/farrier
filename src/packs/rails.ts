@@ -15,6 +15,7 @@ export const railsPack: Pack = {
   toolPolicyRules: [
     {
       id: "rails-use-bundle-add-not-gem-install",
+      probe: "gem install rails",
       description: "Rails projects should not install dependencies with gem install.",
       tool: "Bash",
       commandPattern: "(^|[;&|()\\s])gem\\s+install\\b",
@@ -24,6 +25,7 @@ export const railsPack: Pack = {
     },
     {
       id: "rails-avoid-npx",
+      probe: "npx cowsay farrier-doctor-probe",
       description: "Rails projects should avoid npx unless a JavaScript toolchain explicitly owns the command.",
       tool: "Bash",
       commandPattern: "(^|[;&|()\\s])npx\\b",

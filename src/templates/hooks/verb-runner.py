@@ -10,7 +10,7 @@ import re
 import sys
 from typing import Any
 
-from _hook_runtime import read_project_text, run_bounded_process
+from _hook_runtime import log_event, read_project_text, run_bounded_process
 
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
@@ -296,6 +296,7 @@ def main() -> int:
             return 0
 
         ok, output = run_command(["just", "check-fast", *targeted_test_files(payload, cwd)], cwd)
+        log_event(cwd, "verb-runner", "PostToolUse", "passed" if ok else "failed", rule="check-fast")
         if not ok:
             emit_posttool_failure(output)
         return 0
@@ -309,6 +310,7 @@ def main() -> int:
 
         ok, output = run_command(["just", "check-full"], cwd)
         if ok:
+            log_event(cwd, "verb-runner", "Stop", "passed", rule="check-full")
             state = read_verify_state(cwd)
             if "checkFullFailure" in state:
                 state.pop("checkFullFailure", None)
@@ -319,6 +321,7 @@ def main() -> int:
             if state.get("checkFullFailure") != fingerprint:
                 state["checkFullFailure"] = fingerprint
                 write_verify_state(cwd, state)
+                log_event(cwd, "verb-runner", "Stop", "blocked", rule="check-full")
                 emit_stop_block(
                     "check-full",
                     f"{output}\n\nIf this failure predates your changes, state it in your final summary and stop; "
@@ -326,6 +329,7 @@ def main() -> int:
                 )
                 return 0
             # Known baseline failure already reported once: allow the stop.
+            log_event(cwd, "verb-runner", "Stop", "baseline-allowed", rule="check-full")
 
         recipes, discovery_error = find_just_recipes(cwd)
         if discovery_error is not None:
@@ -337,6 +341,7 @@ def main() -> int:
             return 0
 
         ok, output = run_command(["just", recipe], cwd)
+        log_event(cwd, "verb-runner", "Stop", "passed" if ok else "blocked", rule=recipe)
         if not ok:
             emit_stop_block(recipe, output)
         return 0

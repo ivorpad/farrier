@@ -285,7 +285,7 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 14 create");
+    expect(result.stdout).toContain("File actions: 15 create");
     expect(result.stdout).toContain("AGENTS.md");
     expect(result.stdout).not.toContain(".claude/skills/harness-advisor/SKILL.md");
     expect(result.stdout).not.toContain("quality-judge.py");
@@ -407,7 +407,7 @@ dependencies = ["fastapi"]
     expect(result.stderr).toBe("");
     const report = JSON.parse(result.stdout);
     expect(report).toMatchObject({ mode: "apply", ok: true, written: true, applicable: true });
-    expect(report.applied.writtenFiles).toHaveLength(14);
+    expect(report.applied.writtenFiles).toHaveLength(15);
     expect(report.applied.unchangedFiles).toEqual([]);
     expect(report.applied.backupDir).toBeNull();
   });

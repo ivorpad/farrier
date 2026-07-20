@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from _hook_runtime import read_project_text
+from _hook_runtime import log_event, read_project_text
 
 
 RULES_RELATIVE_PATH = Path(".farrier") / "hooks" / "tool-policy-rules.json"
@@ -185,13 +185,17 @@ def main() -> int:
 
     rules, error = load_rules(cwd)
     if error:
+        log_event(cwd, "tool-policy", "PreToolUse", "blocked", rule="malformed-rules-file")
         emit_deny(error)
         return 0
     for rule in rules:
         if rule_matches(rule, command):
+            rule_id = rule.get("id") if isinstance(rule.get("id"), str) else None
+            log_event(cwd, "tool-policy", "PreToolUse", "blocked", rule=rule_id)
             emit_deny(deny_reason(rule))
             return 0
 
+    log_event(cwd, "tool-policy", "PreToolUse", "allowed")
     return 0
 
 

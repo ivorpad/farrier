@@ -739,7 +739,9 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     }
   }
 
-  if (options.pack.hooks.some((hook) => hook === "verb-runner" || hook === "quality-judge" || hook === "stop-judge")) {
+  // Every builtin hook imports the shared runtime (bounded subprocess/file
+  // helpers and the JSONL event log).
+  if (options.pack.hooks.some(isBuiltinHookId)) {
     files.push({
       path: posixPath(join(hooksDirectory, "_hook_runtime.py")),
       content: await readHookTemplate("_hook_runtime.py")

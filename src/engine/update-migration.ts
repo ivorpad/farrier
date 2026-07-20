@@ -282,6 +282,28 @@ async function classifyGeneratedSingletons(
     }
   }
 
+  // Rules files generated before probe fixtures existed differ from the new
+  // render only by the added probe fields; byte-matching the probe-stripped
+  // variant proves there are no learned rules or user edits to preserve.
+  const rulesPath = `${hooksDirectory}/tool-policy-rules.json`;
+  const generatedRules = planFilesByPath.get(rulesPath);
+  if (generatedRules) {
+    const current = await readTextIfExists(targetDir, rulesPath);
+    if (current !== undefined && current !== generatedRules.content) {
+      const parsed = parseToolPolicyRules(generatedRules.content);
+      if (parsed) {
+        const withoutProbes = `${JSON.stringify(
+          { version: parsed.version, rules: parsed.rules.map(({ probe: _probe, ...rest }) => rest) },
+          null,
+          2
+        )}\n`;
+        if (current === withoutProbes) {
+          report.repairUserFiles.push(rulesPath);
+        }
+      }
+    }
+  }
+
   const justfile = planFilesByPath.get("justfile");
   if (justfile) {
     const current = await readTextIfExists(targetDir, "justfile");

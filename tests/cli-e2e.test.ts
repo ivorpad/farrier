@@ -416,7 +416,7 @@ describe("CLI e2e", () => {
     expect(doctor.exitCode).toBe(0);
     expect(doctor.stderr).toBe("");
     expect(doctor.stdout).toContain("farrier doctor --dir <target> [--json]");
-    expect(doctor.stdout).toContain("farrier doctor exits 0 when healthy");
+    expect(doctor.stdout).toContain("farrier doctor runs static checks plus runtime hook probes");
   });
 
   test("bare CLI reports TTY boundary in non-TTY mode", async () => {

@@ -60,6 +60,12 @@ export type ToolPolicyRule = {
   flags?: string;
   message: string;
   redirect: string;
+  /**
+   * A harmless command that this rule must deny, used by `farrier doctor`
+   * runtime probes to prove the installed hook actually fires. Rules without
+   * a probe (e.g. learned rules) are skipped by the probe pass.
+   */
+  probe?: string;
 };
 
 export type PackDetect = {

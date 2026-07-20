@@ -23,6 +23,7 @@ export const tsBasePack: Pack = {
       toolPolicyRules: [
         {
           id: "typescript-use-bunx-not-npx",
+          probe: "npx cowsay farrier-doctor-probe",
           description: "TypeScript projects should not run one-off package binaries with npx.",
           tool: "Bash",
           commandPattern: "(^|[;&|()\\s])npx\\b",
@@ -32,6 +33,7 @@ export const tsBasePack: Pack = {
         },
         {
           id: "typescript-use-bun-add-not-npm-yarn-pnpm-install",
+          probe: "npm install left-pad",
           description: "TypeScript projects managed by Bun should not add dependencies with npm, yarn, or pnpm.",
           tool: "Bash",
           commandPattern: "(^|[;&|()\\s])(?:npm|yarn|pnpm)\\s+(?:install|add)\\b",
