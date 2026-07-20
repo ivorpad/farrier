@@ -1,12 +1,27 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ReasoningEffort } from "../config/farrier-config";
-
+import { backendProviderBudgetArgs } from "./backend-provider-budget";
+import { parseBackendEventResult, type BackendTokenUsage } from "./backend-json-events";
+import {
+  boundedBackendDiagnostic,
+  captureBackendStream,
+  createProcessGroupTerminator,
+  emptyBackendCapture,
+  resolveBackendOutputLimits,
+  type BackendOutputLimits,
+  type BackendStreamCapture
+} from "./backend-process";
+export type { BackendOutputLimits, BackendStreamCapture } from "./backend-process";
 export type AgentBackend = "claude" | "codex";
+const backendSafeEnvironmentNames = [
+  "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "USER",
+  "SSL_CERT_FILE", "SSL_CERT_DIR"
+] as const;
 
 const backendEnvironmentNames: Record<AgentBackend, readonly string[]> = {
   codex: ["OPENAI_API_KEY", "CODEX_HOME"],
-  claude: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"]
+  claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"]
 };
 
 /** Explicit authentication/config passthrough for an isolated backend process. */
@@ -14,12 +29,31 @@ export function backendEnvironmentPassthrough(backend: AgentBackend): readonly s
   return backendEnvironmentNames[backend];
 }
 
-/** Preserve the backend's standard login config without exposing the ambient HOME. */
-export function backendEnvironmentOverrides(backend: AgentBackend): Readonly<Record<string, string>> {
-  const home = homedir();
-  return backend === "codex"
-    ? { CODEX_HOME: process.env.CODEX_HOME ?? join(home, ".codex") }
-    : { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude") };
+/** Preserve standard login config while honoring explicit backend config paths. */
+export function backendEnvironmentOverrides(
+  backend: AgentBackend,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  home = homedir()
+): Readonly<Record<string, string>> {
+  if (backend === "codex") {
+    return { CODEX_HOME: environment.CODEX_HOME ?? join(home, ".codex") };
+  }
+  // On macOS, Claude subscription credentials live in Keychain. Synthesizing
+  // CLAUDE_CONFIG_DIR changes Claude's credential/account lookup even when the
+  // path is ~/.claude, so retain the normal HOME unless the user set the
+  // config directory themselves.
+  return environment.CLAUDE_CONFIG_DIR
+    ? { CLAUDE_CONFIG_DIR: environment.CLAUDE_CONFIG_DIR }
+    : { HOME: home };
+}
+
+function directBackendEnvironment(backend: AgentBackend): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const name of [...backendSafeEnvironmentNames, ...backendEnvironmentNames[backend]]) {
+    const value = process.env[name];
+    if (value) environment[name] = value;
+  }
+  return { ...environment, ...backendEnvironmentOverrides(backend) };
 }
 
 export type BackendCommandRunnerInput = {
@@ -28,16 +62,23 @@ export type BackendCommandRunnerInput = {
   stdin?: string;
   /** Aborting kills the spawned agent process. */
   signal?: AbortSignal;
-  /** Called with each stdout line as it arrives; stdout is still returned in full. */
+  /** Called with each bounded, scrubbed stdout line as it arrives. */
   onStdoutLine?: (line: string) => void;
   /** Explicit scrubbed environment for isolated external execution. */
   env?: Record<string, string>;
+  outputLimits?: BackendOutputLimits;
+  /** Exact sensitive values removed before pattern-based redaction. */
+  redactValues?: readonly string[];
 };
 
 export type BackendCommandRunnerOutput = {
   exitCode: number;
   stdout: string;
   stderr: string;
+  capture?: {
+    stdout: BackendStreamCapture;
+    stderr: BackendStreamCapture;
+  };
 };
 
 export type BackendCommandRunner = (input: BackendCommandRunnerInput) => Promise<BackendCommandRunnerOutput>;
@@ -68,7 +109,12 @@ export type AgentAvailability = Record<AgentBackend, boolean>;
 
 export async function probeAgent(backend: AgentBackend, runner: BackendCommandRunner = defaultBackendRunner): Promise<boolean> {
   try {
-    const output = await runner({ cmd: [backend, "--version"], cwd: process.cwd() });
+    const output = await runner({
+      cmd: [backend, "--version"],
+      cwd: process.cwd(),
+      env: directBackendEnvironment(backend),
+      redactValues: backendRedactValues(backend)
+    });
     return output.exitCode === 0;
   } catch {
     return false;
@@ -93,6 +139,8 @@ export type BackendCommandOptions = {
   stream?: boolean;
   /** codex-only reasoning effort; ignored by the claude branch. */
   reasoningEffort?: ReasoningEffort;
+  /** Claude print-mode spend ceiling applied to this single backend process. */
+  maxBudgetUsd?: number;
 };
 
 export function backendCommand(
@@ -101,6 +149,7 @@ export function backendCommand(
   prompt: string,
   options: BackendCommandOptions = {}
 ): { cmd: string[]; stdin?: string } {
+  const budgetArgs = backendProviderBudgetArgs(backend, options.maxBudgetUsd);
   if (backend === "claude") {
     const permissionArgs = options.write
       ? ["--permission-mode", "acceptEdits", "--allowedTools", "Write", "Edit", "Bash"]
@@ -108,9 +157,11 @@ export function backendCommand(
     // stream-json in -p mode requires --verbose.
     const streamArgs = options.stream ? ["--output-format", "stream-json", "--verbose"] : [];
     const ephemeralArgs = options.ephemeral ? ["--no-session-persistence"] : [];
-
     return {
-      cmd: ["claude", "-p", "--model", model ?? "sonnet", ...ephemeralArgs, ...permissionArgs, ...streamArgs],
+      cmd: [
+        "claude", "-p", "--model", model ?? "sonnet",
+        ...ephemeralArgs, ...budgetArgs, ...permissionArgs, ...streamArgs,
+      ],
       stdin: prompt
     };
   }
@@ -119,6 +170,7 @@ export function backendCommand(
   const streamArgs = options.stream ? ["--json"] : [];
   const effortArgs = options.reasoningEffort ? ["-c", `model_reasoning_effort=${options.reasoningEffort}`] : [];
   const ephemeralArgs = options.ephemeral ? ["--ephemeral"] : [];
+  const repositoryArgs = options.write ? [] : ["--skip-git-repo-check"];
 
   // No default codex model: an explicit --model for a model the account lacks
   // fails silently, while omitting the flag uses the account's default.
@@ -133,6 +185,7 @@ export function backendCommand(
       "codex",
       "exec",
       ...ephemeralArgs,
+      ...repositoryArgs,
       ...streamArgs,
       ...(model ? ["--model", model] : []),
       "-s",
@@ -147,8 +200,16 @@ export function backendCommand(
 }
 
 export async function defaultBackendRunner(input: BackendCommandRunnerInput): Promise<BackendCommandRunnerOutput> {
+  const limits = resolveBackendOutputLimits(input.outputLimits);
+  const redactValues = input.redactValues ?? [];
   if (input.signal?.aborted) {
-    return { exitCode: 130, stdout: "", stderr: "cancelled before start" };
+    const empty = emptyBackendCapture();
+    return {
+      exitCode: 130,
+      stdout: "",
+      stderr: "cancelled before start",
+      capture: { stdout: empty, stderr: { ...empty } }
+    };
   }
 
   const proc = Bun.spawn({
@@ -163,22 +224,10 @@ export async function defaultBackendRunner(input: BackendCommandRunnerInput): Pr
     env: input.env
   });
 
-  const onAbort = () => {
-    try {
-      process.kill(-proc.pid, "SIGTERM");
-    } catch {
-      proc.kill();
-    }
-    const forceKillTimer = setTimeout(() => {
-      try {
-        process.kill(-proc.pid, "SIGKILL");
-      } catch {
-        // The process group already exited.
-      }
-    }, 500);
-    forceKillTimer.unref?.();
-  };
+  const terminator = createProcessGroupTerminator(proc.pid, () => proc.kill());
+  const onAbort = () => terminator.terminate();
   input.signal?.addEventListener("abort", onAbort, { once: true });
+  if (input.signal?.aborted) onAbort();
 
   if (input.stdin !== undefined) {
     const stdin = proc.stdin as unknown as { write(data: string): unknown; end(): unknown } | undefined;
@@ -186,54 +235,38 @@ export async function defaultBackendRunner(input: BackendCommandRunnerInput): Pr
     stdin?.end();
   }
 
-  const readStdout = async (): Promise<string> => {
-    if (!proc.stdout) {
-      return "";
-    }
+  const exited = proc.exited.finally(terminator.rootExited);
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      exited,
+      captureBackendStream({
+        stream: proc.stdout,
+        retainBytes: limits.stdoutBytes,
+        retain: "head",
+        lineBytes: limits.lineBytes,
+        onLine: input.onStdoutLine,
+        redactValues
+      }),
+      captureBackendStream({
+        stream: proc.stderr,
+        retainBytes: limits.stderrBytes,
+        retain: "tail",
+        lineBytes: limits.lineBytes,
+        redactValues
+      })
+    ]);
 
-    if (!input.onStdoutLine) {
-      return new Response(proc.stdout).text();
-    }
-
-    // Line-buffered incremental read so callers can show live activity.
-    const decoder = new TextDecoder();
-    let full = "";
-    let pending = "";
-
-    for await (const chunk of proc.stdout) {
-      const text = decoder.decode(chunk, { stream: true });
-      full += text;
-      pending += text;
-
-      let newline = pending.indexOf("\n");
-      while (newline >= 0) {
-        const line = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
-
-        if (line.trim() !== "") {
-          try {
-            input.onStdoutLine(line);
-          } catch {
-            // Progress display failures must not kill the run.
-          }
-        }
-
-        newline = pending.indexOf("\n");
-      }
-    }
-
-    return full + decoder.decode();
-  };
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited,
-    readStdout(),
-    proc.stderr ? new Response(proc.stderr).text() : Promise.resolve("")
-  ]);
-
-  input.signal?.removeEventListener("abort", onAbort);
-
-  return { exitCode, stdout, stderr };
+    if (input.signal?.aborted) await terminator.wait();
+    return {
+      exitCode,
+      stdout: stdout.text,
+      stderr: stderr.text,
+      capture: { stdout: stdout.capture, stderr: stderr.capture }
+    };
+  } finally {
+    terminator.dispose();
+    input.signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 function shortPath(path: string): string {
@@ -362,6 +395,40 @@ export function parseBackendJson(stdout: string): unknown {
   }
 }
 
+export function backendRedactValues(
+  backend: AgentBackend,
+  environment: Readonly<Record<string, string | undefined>> = process.env
+): string[] {
+  return Array.from(new Set(backendEnvironmentNames[backend]
+    .map((name) => environment[name])
+    .filter((value): value is string => Boolean(value))));
+}
+
+function captureSummary(capture: BackendStreamCapture | undefined): string {
+  if (!capture) return "";
+  return `received ${capture.byteCount} bytes; sha256 ${capture.sha256}${capture.truncated ? "; truncated" : ""}`;
+}
+
+export function backendFailureMessage(input: {
+  backend: AgentBackend;
+  exitCode: number;
+  output: BackendCommandRunnerOutput;
+  redactValues?: readonly string[];
+  outputLimits?: BackendOutputLimits;
+}): string {
+  const limits = resolveBackendOutputLimits(input.outputLimits);
+  const values = Array.from(new Set([...backendRedactValues(input.backend), ...(input.redactValues ?? [])]));
+  const stderr = boundedBackendDiagnostic(input.output.stderr, values, limits.diagnosticTailBytes);
+  const stdout = stderr
+    ? ""
+    : boundedBackendDiagnostic(input.output.stdout, values, limits.diagnosticTailBytes);
+  const detail = stderr || (stdout ? `stdout: ${stdout}` : "");
+  const capture = stderr ? input.output.capture?.stderr : input.output.capture?.stdout;
+  const summary = captureSummary(capture);
+  const diagnostic = [detail, summary ? `[${summary}]` : ""].filter(Boolean).join(" ");
+  return `${input.backend} backend exited with code ${input.exitCode}${diagnostic ? `: ${diagnostic}` : ""}`;
+}
+
 export async function invokeBackend(input: {
   backend: AgentBackend;
   model?: string;
@@ -372,26 +439,59 @@ export async function invokeBackend(input: {
   signal?: AbortSignal;
   ephemeral?: boolean;
   env?: Record<string, string>;
+  outputLimits?: BackendOutputLimits;
+  redactValues?: readonly string[];
+  captureUsage?: boolean;
+  onUsage?: (usage: BackendTokenUsage) => void;
+  maxBudgetUsd?: number;
 }): Promise<unknown> {
   const command = backendCommand(input.backend, input.model, input.prompt, {
     reasoningEffort: input.reasoningEffort,
-    ephemeral: input.ephemeral
+    ephemeral: input.ephemeral,
+    stream: input.captureUsage,
+    maxBudgetUsd: input.maxBudgetUsd,
   });
+  const outputLimits = resolveBackendOutputLimits(input.outputLimits);
+  const environment = input.env ?? directBackendEnvironment(input.backend);
+  const redactValues = Array.from(new Set([
+    ...backendRedactValues(input.backend, environment),
+    ...(input.redactValues ?? [])
+  ]));
 
   const output = await input.runner({
     cmd: command.cmd,
     cwd: input.targetDir,
     stdin: command.stdin,
     signal: input.signal,
-    env: input.env
+    env: environment,
+    outputLimits,
+    redactValues
   });
 
   if (output.exitCode !== 0) {
-    const stderr = output.stderr.trim();
-    throw new Error(`${input.backend} backend exited with code ${output.exitCode}${stderr ? `: ${stderr}` : ""}`);
+    throw new Error(backendFailureMessage({
+      backend: input.backend,
+      exitCode: output.exitCode,
+      output,
+      redactValues,
+      outputLimits
+    }));
+  }
+
+  if (output.capture?.stdout.truncated) {
+    throw new Error(
+      `${input.backend} backend stdout exceeded ${outputLimits.stdoutBytes} bytes (${captureSummary(output.capture.stdout)})`
+    );
   }
 
   try {
+    if (input.captureUsage) {
+      const eventResult = parseBackendEventResult(input.backend, output.stdout);
+      if (eventResult) {
+        if (eventResult.usage) input.onUsage?.(eventResult.usage);
+        return parseBackendJson(eventResult.text);
+      }
+    }
     return parseBackendJson(output.stdout);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

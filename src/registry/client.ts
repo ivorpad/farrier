@@ -142,6 +142,7 @@ export class RegistryClient {
   private readonly maxRedirects: number;
   private readonly maxResponseBytes: number;
   private readonly memory = new Map<string, Promise<RegistryFetchResult<unknown>>>();
+  private cacheWriteTail: Promise<void> = Promise.resolve();
 
   constructor(options: RegistryClientOptions = {}) {
     this.env = options.env ?? process.env;
@@ -351,11 +352,15 @@ export class RegistryClient {
     raw: string,
     metadata: { schemaVersion: number; sourceIdentity: string; payloadSha256: string }
   ): Promise<void> {
-    const cacheDir = dirname(path);
-    await applyMutationPlan(await inspectMutationPlan(cacheDir, [
-      { kind: "write-file", path: basename(path), content: raw, mode: 0o600 },
-      { kind: "write-file", path: basename(metadataPath), content: `${JSON.stringify(metadata)}\n`, mode: 0o600 }
-    ]), { retainBackupsOnSuccess: false });
+    const write = this.cacheWriteTail.then(async () => {
+      const cacheDir = dirname(path);
+      await applyMutationPlan(await inspectMutationPlan(cacheDir, [
+        { kind: "write-file", path: basename(path), content: raw, mode: 0o600 },
+        { kind: "write-file", path: basename(metadataPath), content: `${JSON.stringify(metadata)}\n`, mode: 0o600 }
+      ]), { retainBackupsOnSuccess: false });
+    });
+    this.cacheWriteTail = write.catch(() => {});
+    return write;
   }
 
   private async readCache<T>(

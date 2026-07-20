@@ -49,7 +49,7 @@ function serveRegistryDir(root: string) {
 }
 
 describe("CLI e2e", () => {
-  test("renders a remote registry stack and updates from cache after the fixture stops", async () => {
+  test.serial("renders a remote registry stack and updates from cache after the fixture stops", async () => {
     const dir = await tempDir();
     const cacheDir = await tempDir();
     const registryIndex = {

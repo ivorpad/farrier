@@ -16,6 +16,7 @@ function stubRunner(stdout: string, exitCode = 0): { runner: BackendCommandRunne
 
 describe("grill engine", () => {
   test("first question: one read-only call, budget in the prompt, no transcript, options capped at 5", async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), "farrier-refine-grill-"));
     const { runner, calls } = stubRunner(
       JSON.stringify({
         question: "Which PDF library?",
@@ -26,7 +27,7 @@ describe("grill engine", () => {
     const question = await generateNextGrillQuestion({
       description: "Convert financial tables to markdown",
       backend: "claude",
-      targetDir: "/tmp/x",
+      targetDir,
       packId: "python-uv",
       priorAnswers: [],
       questionNumber: 1,
@@ -47,6 +48,7 @@ describe("grill engine", () => {
   });
 
   test("adaptive question: prior answers become a transcript, blanks render as skipped", async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), "farrier-refine-grill-"));
     const { runner, calls } = stubRunner(JSON.stringify({ question: "Output format?", options: ["GFM pipe tables"] }));
 
     const priorAnswers: RefineAnswer[] = [
@@ -57,7 +59,7 @@ describe("grill engine", () => {
     await generateNextGrillQuestion({
       description: "Convert financial tables to markdown",
       backend: "claude",
-      targetDir: "/tmp/x",
+      targetDir,
       priorAnswers,
       questionNumber: 3,
       runner
@@ -72,12 +74,13 @@ describe("grill engine", () => {
   });
 
   test('{"done": true} ends the grill with null', async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), "farrier-refine-grill-"));
     const { runner, calls } = stubRunner(JSON.stringify({ done: true }));
 
     const question = await generateNextGrillQuestion({
       description: "x",
       backend: "claude",
-      targetDir: "/tmp/x",
+      targetDir,
       priorAnswers: [],
       questionNumber: 2,
       runner
@@ -104,6 +107,7 @@ describe("grill engine", () => {
   });
 
   test("malformed steps reject with the backend-named shape error", async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), "farrier-refine-grill-"));
     const shapeError = 'codex backend JSON must be {"question":"...","options":[...]} or {"done":true}';
 
     const missing = stubRunner(JSON.stringify({ nope: true }));
@@ -111,7 +115,7 @@ describe("grill engine", () => {
       generateNextGrillQuestion({
         description: "x",
         backend: "codex",
-        targetDir: "/tmp/x",
+        targetDir,
         priorAnswers: [],
         questionNumber: 1,
         runner: missing.runner
@@ -123,7 +127,7 @@ describe("grill engine", () => {
       generateNextGrillQuestion({
         description: "x",
         backend: "codex",
-        targetDir: "/tmp/x",
+        targetDir,
         priorAnswers: [],
         questionNumber: 1,
         runner: empty.runner
@@ -131,7 +135,7 @@ describe("grill engine", () => {
     ).rejects.toThrow(shapeError);
   });
 
-  test("passes only the selected backend credential into the isolated runner", async () => {
+  test("passes Claude auth context but excludes unrelated environment variables", async () => {
     const previousAuth = process.env.ANTHROPIC_API_KEY;
     const previousSecret = process.env.FARRIER_TEST_SECRET;
     process.env.ANTHROPIC_API_KEY = "required-auth";
@@ -140,8 +144,8 @@ describe("grill engine", () => {
       const runner: BackendCommandRunner = async (input) => {
         expect(input.env?.ANTHROPIC_API_KEY).toBe("required-auth");
         expect(input.env?.FARRIER_TEST_SECRET).toBeUndefined();
-        expect(input.env?.CLAUDE_CONFIG_DIR).toBeTruthy();
-        expect(input.env?.HOME).not.toBe(process.env.HOME);
+        expect(input.env?.CLAUDE_CONFIG_DIR).toBeUndefined();
+        expect(input.env?.HOME).toBe(process.env.HOME);
         return { exitCode: 0, stdout: JSON.stringify({ done: true }), stderr: "" };
       };
       const targetDir = await mkdtemp(join(tmpdir(), "farrier-refine-auth-"));

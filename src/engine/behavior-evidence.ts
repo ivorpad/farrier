@@ -53,29 +53,50 @@ function isSensitiveKey(key: string): boolean {
   return sensitiveKeys.has(key.replace(/[^a-z0-9]/gi, "").toLowerCase());
 }
 
-function redactString(value: string): string {
+function normalizedExactValues(values: readonly string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.length > 0)))
+    .sort((left, right) => right.length - left.length || left.localeCompare(right));
+}
+
+export function redactExactValues(value: string, exactValues: readonly string[]): string {
+  let redacted = value;
+  for (const exact of normalizedExactValues(exactValues)) {
+    redacted = redacted.replaceAll(exact, "[REDACTED_EXACT]");
+  }
+  return redacted;
+}
+
+export function redactPatternText(value: string): string {
   return value
     .replace(/-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\n]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]")
     .replace(/\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|gl(?:pat|rt)-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{8,})\b/g, "[REDACTED_TOKEN]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}={0,2}/gi, "$1[REDACTED_TOKEN]")
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED_CREDENTIALS]@")
+    .replace(/(^|[^a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1$2[REDACTED_CREDENTIALS]@")
     .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|credential|authorization|private[_-]?key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[REDACTED]")
     .replace(/^\s*(?:api[_ -]?key|token|secret|password|authorization|username)\s+[A-Za-z0-9._~+/-]{8,}\s*$/gim, "[REDACTED_CREDENTIAL_ROW]")
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
 }
 
-export function redactEvidence<T>(value: T): T {
-  if (typeof value === "string") return redactString(value) as T;
-  if (Array.isArray(value)) return value.map((item) => redactEvidence(item)) as T;
+export function redactText(value: string, exactValues: readonly string[] = []): string {
+  return redactPatternText(redactExactValues(value, exactValues));
+}
+
+function redactEvidenceValue<T>(value: T, exactValues: readonly string[]): T {
+  if (typeof value === "string") return redactText(value, exactValues) as T;
+  if (Array.isArray(value)) return value.map((item) => redactEvidenceValue(item, exactValues)) as T;
   if (value && typeof value === "object") {
     const entries = Object.entries(value).map(([key, item]) => {
-      const redactedKey = redactString(key);
-      return [redactedKey, isSensitiveKey(key) ? "[REDACTED]" : redactEvidence(item)];
+      const redactedKey = redactText(key, exactValues);
+      return [redactedKey, isSensitiveKey(key) ? "[REDACTED]" : redactEvidenceValue(item, exactValues)];
     });
     return Object.fromEntries(entries) as T;
   }
   return value;
+}
+
+export function redactEvidence<T>(value: T, exactValues: readonly string[] = []): T {
+  return redactEvidenceValue(value, normalizedExactValues(exactValues));
 }
 
 export function canonicalEvidence(value: unknown): string {

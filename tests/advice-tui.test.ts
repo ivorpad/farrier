@@ -5,12 +5,15 @@ import {
   adjacentAdviceRecommendationIndex,
   adviceBackendControlLabel,
   adviceDecisionSummary,
+  adviceNoRecommendationSummary,
+  adviceSessionCountsFromMetadata,
   adviceSetupControls,
   adviceSkillCreationRequest,
   createAdviceWizardActions,
   formatAdviceTuiReportLines,
   isAdviceCancelKey,
-  runAdviceWizard
+  runAdviceWizard,
+  sessionEntriesForLookback
 } from "../src/tui/advise-app";
 import {
   adjacentAdviceLookback,
@@ -50,7 +53,7 @@ function emptyReport(backend: "claude" | "codex", model?: string): AdviceReport 
 
 test("advice TUI cycles bounded windows and scopes while surfacing running progress", () => {
   let state = createInitialAdviceTuiState(3, bothAvailable);
-  expect(state.includeSessions).toBe(true);
+  expect(state.includeSessions).toBe(false);
   expect(state.lookback).toBe("7d");
   expect(adjacentAdviceLookback("7d", 1)).toBe("14d");
   expect(adjacentAdviceLookback("7d", -1)).toBe("all");
@@ -72,6 +75,59 @@ test("advice TUI cycles bounded windows and scopes while surfacing running progr
   ]);
 });
 
+test("advice TUI binds explicit session consent and invalidates it when the window changes", () => {
+  const consent = {
+    version: 1 as const,
+    projectRootDigest: "project-digest",
+    selected: [{
+      provider: "claude" as const,
+      opaqueId: "session-1",
+      expectedFingerprint: "fingerprint-1",
+      maxBytes: 100_000,
+      maxTurns: 20
+    }],
+    categories: ["requests" as const],
+    selectionDigest: "selection-digest"
+  };
+  let state = createInitialAdviceTuiState(1, bothAvailable);
+
+  state = adviceTuiReducer(state, { type: "SET_SESSION_CONSENT", consent });
+  expect(state.includeSessions).toBe(true);
+  expect(state.sessionConsent).toBe(consent);
+
+  state = adviceTuiReducer(state, { type: "TOGGLE_SESSIONS" });
+  expect(state.includeSessions).toBe(false);
+  expect(state.sessionConsent).toBe(consent);
+
+  state = adviceTuiReducer(state, { type: "SET_LOOKBACK", lookback: "14d" });
+  expect(state.sessionConsent).toBeUndefined();
+  expect(state.includeSessions).toBe(false);
+});
+
+test("session metadata is counted and filtered without opening bodies", () => {
+  const now = Date.parse("2026-07-14T12:00:00.000Z");
+  const entry = (opaqueId: string, provider: "claude" | "codex", ageDays: number) => ({
+    opaqueId,
+    provider,
+    updatedAt: new Date(now - ageDays * 86_400_000).toISOString(),
+    projectMatch: "directory" as const,
+    sourceFingerprint: `fingerprint-${opaqueId}`
+  });
+  const inventory = {
+    entries: [entry("recent", "claude", 1), entry("older", "codex", 10), entry("oldest", "claude", 20)],
+    notes: [],
+    limits: [],
+    projectRootDigest: "project-digest"
+  };
+
+  expect(sessionEntriesForLookback(inventory.entries, "7d", now).map((item) => item.opaqueId)).toEqual(["recent"]);
+  expect(adviceSessionCountsFromMetadata(inventory, now)).toEqual({
+    "7d": [{ source: "claude", count: 1 }, { source: "codex", count: 0 }],
+    "14d": [{ source: "claude", count: 1 }, { source: "codex", count: 1 }],
+    all: [{ source: "claude", count: 2 }, { source: "codex", count: 1 }]
+  });
+});
+
 test("advice TUI retains the completed report until the user resets or exits", () => {
   const report = emptyReport("codex");
   let state = adviceTuiReducer(createInitialAdviceTuiState(0, bothAvailable), { type: "START" });
@@ -85,6 +141,30 @@ test("advice TUI retains the completed report until the user resets or exits", (
   state = adviceTuiReducer(state, { type: "RESET" });
   expect(state.status).toBe("ready");
   expect(state.report).toBeUndefined();
+});
+
+test("empty advice reports expose whether the backend returned nothing or validation rejected it", () => {
+  const report = emptyReport("claude");
+  report.sessions.funnel = {
+    sources: [],
+    visibleEvents: 0,
+    recurringPatterns: 0,
+    recommendation: {
+      patternsSent: 8,
+      returned: 2,
+      accepted: 0,
+      merged: 0,
+      rejected: 2,
+      rejectionReasons: ["Dropped recommendation 'skills:plan-review': evidence contains an unknown or missing reference."],
+      recoveryCalls: 0
+    }
+  };
+
+  expect(adviceNoRecommendationSummary(report)).toContain("Claude returned 2 candidates; Farrier rejected all of them");
+  expect(adviceNoRecommendationSummary(report)).toContain("First rejection: Dropped recommendation");
+  report.sessions.funnel.recommendation!.returned = 0;
+  report.sessions.funnel.recommendation!.rejected = 0;
+  expect(adviceNoRecommendationSummary(report)).toContain("Claude returned no candidates");
 });
 
 test("reasoning backend selection prefers Claude and cycles only through available backends", () => {
@@ -155,9 +235,9 @@ test("advice wizard actions resolve fresh analysis settings for the selected bac
     }
   );
 
-  const codexReport = await actions.onRun("codex", true, "14d", "hooks", () => undefined);
-  await actions.onRun("claude", false, "7d", "all", () => undefined);
-  await actions.onRun("codex", false, "all", "all", () => undefined);
+  const codexReport = await actions.onRun("codex", undefined, "14d", "hooks", () => undefined);
+  await actions.onRun("claude", undefined, "7d", "all", () => undefined);
+  await actions.onRun("codex", undefined, "all", "all", () => undefined);
 
   expect(codexReport.backend).toBe("codex");
   expect(calls.map(({ backend, model, reasoningEffort }) => ({ backend, model, reasoningEffort }))).toEqual([
@@ -167,7 +247,7 @@ test("advice wizard actions resolve fresh analysis settings for the selected bac
   ]);
   expect(calls[0]?.targets).toEqual(["codex"]);
   expect(calls[0]?.only).toEqual(["hooks"]);
-  expect(calls[1]?.sessions).toBe("none");
+  expect(calls.every((call) => call.sessions === "none")).toBe(true);
 });
 
 test("advice wizard actions fail on the selected unavailable backend without fallback", async () => {
@@ -183,7 +263,7 @@ test("advice wizard actions fail on the selected unavailable backend without fal
     }
   );
 
-  await expect(actions.onRun("codex", false, "7d", "all", () => undefined)).rejects.toThrow(
+  await expect(actions.onRun("codex", undefined, "7d", "all", () => undefined)).rejects.toThrow(
     "Selected Codex reasoning backend is unavailable"
   );
   expect(invoked).toBe(false);
@@ -236,6 +316,44 @@ test("advice planning follows the report backend and resolves that backend's set
     { backend: "codex", model: "codex-plan", reasoningEffort: "xhigh" },
     { backend: "claude", model: "claude-plan", reasoningEffort: undefined }
   ]);
+});
+
+test("inspect-only registry recommendations are rejected before TUI backend or planner work", async () => {
+  let availabilityChecks = 0;
+  let plannerCalls = 0;
+  const actions = createAdviceWizardActions(
+    {
+      targetDir: "/tmp/example",
+      signal: new AbortController().signal,
+      loadModels: async () => ({})
+    },
+    {
+      isBackendAvailable: async () => {
+        availabilityChecks += 1;
+        return true;
+      },
+      plan: async () => {
+        plannerCalls += 1;
+        throw new Error("planner must not run");
+      }
+    }
+  );
+  const recommendation = {
+    id: "skills:existing-helper",
+    category: "skills",
+    targetVendors: ["codex"],
+    reason: "A matching registry skill already exists.",
+    benefit: "Reuse reviewed content.",
+    evidence: ["project:root"],
+    confidence: "high",
+    registryRef: "acme/registry@existing-helper",
+    implementationRoute: { id: "skills:agents-shared", description: "Use the existing skill." }
+  } satisfies AdviceReport["recommendations"][number];
+
+  await expect(actions.onPlan(emptyReport("codex"), recommendation))
+    .rejects.toThrow("creating a replacement is disabled");
+  expect(availabilityChecks).toBe(0);
+  expect(plannerCalls).toBe(0);
 });
 
 test("Create all resolves fresh report-backend settings for file and skill jobs without target leakage", async () => {

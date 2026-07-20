@@ -1,5 +1,7 @@
 import type { EvidenceComparison } from "./behavior-evidence";
 
+export type { SessionConsent, SessionIndexEntry } from "./skill-types";
+
 export const adviceCategories = ["guidance", "hooks", "skills", "subagents", "plugins", "mcp"] as const;
 export const adviceSessionLookbacks = ["7d", "14d", "all"] as const;
 
@@ -19,10 +21,48 @@ export type AdviceEvidence = {
   occurrences?: number;
   distinctSessions?: number;
   lastSeenAt?: number;
-  allowedCategories?: AdviceCategory[];
   targetVendors?: AdviceVendor[];
   implementationRoutes?: string[];
   selectedProvider?: AdviceVendor;
+  line?: number;
+  extractor?: string;
+  factConfidence?: "exact" | "inferred";
+  contentDigest?: string;
+};
+
+export type ProjectRepositoryFact = {
+  id: string;
+  kind: "dependency" | "workflow" | "instruction" | "capability" | "installed-skill";
+  summary: string;
+  path: string;
+  line?: number;
+  extractor: string;
+  confidence: "exact" | "inferred";
+  contentDigest: string;
+};
+
+export type ProjectProfileCoverage = {
+  visitedPaths: string[];
+  skippedPaths: Array<{ path: string; reason: string }>;
+  readErrors: Array<{ path: string; reason: string }>;
+  truncatedPaths: Array<{ path: string; maxBytes: number }>;
+  complete: boolean;
+};
+
+export type ProjectInstalledSkill = {
+  name: string;
+  paths: string[];
+  topologies: string[];
+  provenance: string;
+  provenanceEvidence: string[];
+};
+
+export type ProjectSkillInventory = {
+  entries: ProjectInstalledSkill[];
+  malformedLocations: Array<{ path: string; reason: string }>;
+  roots: Array<{ path: string; status: string; skillLocations: number }>;
+  complete: boolean;
+  notes: string[];
 };
 
 export type ProjectDependency = {
@@ -69,6 +109,9 @@ export type ProjectProfile = {
   workflows?: ProjectWorkflow[];
   capabilities?: ProjectCapability[];
   automations?: ProjectAutomation[];
+  repositoryFacts?: ProjectRepositoryFact[];
+  repositoryCoverage?: ProjectProfileCoverage;
+  skillInventory?: ProjectSkillInventory;
   evidence: AdviceEvidence[];
 };
 
@@ -90,7 +133,6 @@ export type AdviceSessionEpisode = {
   occurrences: number;
   distinctSessions: number;
   truncated: boolean;
-  allowedCategories: AdviceCategory[];
 };
 
 export type AdviceSessionSourceSummary = {
@@ -103,6 +145,7 @@ export type AdviceSessionEvidence = {
   episodes?: AdviceSessionEpisode[];
   signals: AdviceEvidence[];
   notes: string[];
+  consentDigest?: string;
   funnel?: AdviceEvidenceFunnel;
 };
 
@@ -129,12 +172,20 @@ export type AdviceSourceFunnel = {
 };
 
 export type AdviceRecommendationFunnel = {
+  /** Distinct retained session episodes supplied to the analysis, not repeated worker deliveries. */
   patternsSent: number;
+  /** Raw recommendation records returned by recommendation workers. */
   returned: number;
+  /** Locally validated candidates, including weak leads and later omissions. */
   accepted: number;
+  /** Coordinator overlap omissions. */
   merged: number;
   rejected: number;
   rejectionReasons: string[];
+  localRecoveries?: number;
+  modelCalls?: number;
+  successfulModelCalls?: number;
+  failedModelCalls?: number;
   recoveryCalls: number;
 };
 
@@ -210,6 +261,23 @@ export type AdviceCoverage = {
   reason: string;
 };
 
+export type AdviceAnalysisCategoryExecution = {
+  category: AdviceCategory;
+  status: "completed" | "failed";
+  returned: number;
+  validated: number;
+};
+
+export type AdviceAnalysisSummary = {
+  mode: "focused" | "category-workers";
+  status: "complete" | "partial";
+  concurrency: number;
+  workerCalls: number;
+  coordinatorCalls: number;
+  recoveryCalls: number;
+  categories: AdviceAnalysisCategoryExecution[];
+};
+
 export type AdviceReport = {
   schemaVersion: 1;
   targetDir: string;
@@ -230,6 +298,7 @@ export type AdviceReport = {
   profile: ProjectProfile;
   policy?: { provider: AdviceVendor; id: string };
   registry?: AdviceRegistrySummary;
+  analysis?: AdviceAnalysisSummary;
   recommendations: AdviceRecommendation[];
   omittedRecommendations?: AdviceOmittedRecommendation[];
   weakLeads?: AdviceRecommendation[];

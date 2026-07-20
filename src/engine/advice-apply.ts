@@ -1,5 +1,4 @@
-import { readFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import type { ReasoningEffort, ResolvedModelSettings } from "../config/farrier-config";
 import { applyHarnessChangePlan, inspectHarnessChangePlan, type ApplyHarnessChangePlanResult, type HarnessChangePlan } from "./create-plan";
 import { defaultBackendRunner, invokeBackend, type BackendCommandRunner } from "./backend";
@@ -8,6 +7,7 @@ import type { SkillCreationRequest } from "./create-skill";
 import { authorSkillCreationPlan } from "./skill-creation-plan";
 import type { RenderPlan, RenderedFile } from "./render";
 import { compareEvidence, createEvidenceSet, redactEvidence, type BoundedEvidenceSet, type EvidenceComparison } from "./behavior-evidence";
+import { openContainedRepository, readContainedFile } from "./repository-paths";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -23,6 +23,7 @@ export type AdviceCreationPlan = {
 export type AdviceCreationSupport =
   | { kind: "files"; description: string }
   | { kind: "skill"; description: string }
+  | { kind: "inspect"; description: string }
   | { kind: "unsupported"; description: string };
 
 type PathPolicy = {
@@ -77,6 +78,17 @@ function pathPolicy(recommendation: AdviceRecommendation): PathPolicy | undefine
 }
 
 export function adviceCreationSupport(recommendation: AdviceRecommendation): AdviceCreationSupport {
+  if (recommendation.registryRef !== undefined) {
+    const kind = recommendation.category === "skills"
+      ? "skill"
+      : recommendation.category === "plugins"
+        ? "plugin"
+        : "MCP item";
+    return {
+      kind: "inspect",
+      description: `Inspect the verified registry ${kind} '${recommendation.registryRef}'; creating a replacement is disabled.`
+    };
+  }
   if (recommendation.category === "plugins") {
     return { kind: "unsupported", description: "Plugin installation needs a verified marketplace command and is not file-plan safe yet." };
   }
@@ -101,15 +113,15 @@ function secretLike(value: string): boolean {
 
 async function existingFileContext(targetDir: string, policy: PathPolicy): Promise<Array<{ path: string; content: string }>> {
   const files: Array<{ path: string; content: string }> = [];
+  const repository = await openContainedRepository(targetDir);
   for (const path of policy.existingPaths) {
-    try {
-      const content = (await readFile(resolve(targetDir, path), "utf8")).slice(0, 40_000);
-      if (secretLike(content)) throw new Error(`Refusing to send secret-like values from ${path} to the planning backend.`);
-      files.push({ path, content });
-    } catch (error) {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") continue;
-      throw error;
+    const result = await readContainedFile(repository, path, 40_000);
+    if (result.status === "missing") continue;
+    if (result.status !== "read") {
+      throw new Error(`Refusing to read ${path} for backend planning (${result.status}).`);
     }
+    if (secretLike(result.text)) throw new Error(`Refusing to send secret-like values from ${path} to the planning backend.`);
+    files.push({ path, content: result.text });
   }
   return files;
 }
@@ -214,8 +226,10 @@ export async function planAdviceRecommendation(input: {
   runner?: BackendCommandRunner;
   signal?: AbortSignal;
 }): Promise<AdviceCreationPlan> {
+  const support = adviceCreationSupport(input.recommendation);
+  if (support.kind === "inspect") throw new Error(support.description);
   const policy = pathPolicy(input.recommendation);
-  if (!policy) throw new Error(adviceCreationSupport(input.recommendation).description);
+  if (!policy) throw new Error(support.description);
   const existing = await existingFileContext(input.report.targetDir, policy);
   const dataset = createEvidenceSet({
     workflow: "advice",
@@ -251,13 +265,15 @@ export async function planAdviceSkillRecommendation(input: {
   signal?: AbortSignal;
   creatorReady?: boolean;
 }): Promise<AdviceCreationPlan> {
+  const support = adviceCreationSupport(input.recommendation);
+  if (support.kind === "inspect") throw new Error(support.description);
   const expectedMode = input.report.backend === "claude" ? "author-claude" : "author-codex";
   if (input.request.mode !== expectedMode) {
     throw new Error(`Skill authoring mode must come from the ${input.report.backend} report backend.`);
   }
   const policy = pathPolicy(input.recommendation);
   if (input.recommendation.category !== "skills" || !policy) {
-    throw new Error(adviceCreationSupport(input.recommendation).description);
+    throw new Error(support.description);
   }
   const outputRoot = input.recommendation.implementationRoute.id === "skills:agents-shared"
     ? ".agents/skills"

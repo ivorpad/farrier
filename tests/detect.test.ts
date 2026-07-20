@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { detectPacks, detectPacksWithEvidence, detectSecondary } from "../src/engine/detect";
@@ -307,6 +307,57 @@ gem "rails", "~> 8.0"
     expect(detected[0]?.evidence[19]).toBe("src/items/file-19.ts");
     expect(detected[0]?.evidence).not.toContain("src/items/file-20.ts");
     expect(detected[0]?.evidence).not.toContain("src/items/ignored.js");
+  });
+
+  test("does not detect from symlinked manifests", async () => {
+    const parent = await tempDir();
+    const dir = join(parent, "project");
+    const outside = join(parent, "outside");
+    await mkdir(dir);
+    await mkdir(outside);
+    await writeJson(join(outside, "package.json"), {
+      dependencies: { next: "15.0.0", typescript: "5.0.0" },
+    });
+    await writeFile(join(outside, "pyproject.toml"), "[project]\ndependencies = [\"fastapi\"]\n", "utf8");
+    await writeFile(join(outside, "Gemfile"), "gem \"rails\"\n", "utf8");
+    await writeJson(join(dir, "tsconfig.json"), { compilerOptions: { strict: true } });
+    await symlink(join(outside, "package.json"), join(dir, "package.json"));
+    await symlink(join(outside, "pyproject.toml"), join(dir, "pyproject.toml"));
+    await symlink(join(outside, "Gemfile"), join(dir, "Gemfile"));
+
+    await expect(detectPacks(dir)).resolves.toEqual([]);
+  });
+
+  test("does not count symlinks for exact-file or glob detection", async () => {
+    const parent = await tempDir();
+    const dir = join(parent, "project");
+    const outside = join(parent, "outside");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await mkdir(outside);
+    await writeFile(join(outside, "marker.txt"), "present\n", "utf8");
+    await symlink(join(outside, "marker.txt"), join(dir, "marker.txt"));
+    await symlink(join(outside, "marker.txt"), join(dir, "src", "marker.ts"));
+
+    await expect(detectPacksWithEvidence(dir, catalogForDetect({
+      anyFiles: ["marker.txt"],
+    }))).resolves.toEqual([]);
+    await expect(detectPacksWithEvidence(dir, catalogForDetect({
+      globs: ["src/*.ts"],
+    }))).resolves.toEqual([]);
+  });
+
+  test("does not traverse a symlinked directory for exact-file detection", async () => {
+    const parent = await tempDir();
+    const dir = join(parent, "project");
+    const outside = join(parent, "outside");
+    await mkdir(dir);
+    await mkdir(outside);
+    await writeFile(join(outside, "marker.txt"), "present\n", "utf8");
+    await symlink(outside, join(dir, "linked"));
+
+    await expect(detectPacksWithEvidence(dir, catalogForDetect({
+      files: ["linked/marker.txt"],
+    }))).resolves.toEqual([]);
   });
 
   test("malformed package.json does not throw", async () => {

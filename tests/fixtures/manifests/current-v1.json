@@ -1,0 +1,13 @@
+{
+  "farrierVersion": "0.3.0",
+  "agents": ["claude", "codex"],
+  "packIds": ["generic"],
+  "hookIds": ["secret-shield"],
+  "skills": ["owner/repo@skill"],
+  "secondaryAcknowledged": ["ack"],
+  "learn": { "enabled": true },
+  "versions": {
+    "farrierManifest": 1,
+    "hooks": { "secret-shield": 4 }
+  }
+}

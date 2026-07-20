@@ -5,6 +5,13 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SkillRef } from "../packs/types";
+import {
+  defaultBackendRunner,
+  type BackendCommandRunner,
+  type BackendCommandRunnerInput,
+  type BackendCommandRunnerOutput
+} from "./backend";
+import { redactText } from "./behavior-evidence";
 import { applyMutationPlan, inspectMutationPlan, type MutationOperation } from "./mutation-transaction";
 import { withIsolatedExecution, type IsolationFact, type IsolatedInput } from "./execution-isolation";
 
@@ -15,20 +22,9 @@ export type SkillSearchResult = {
   source: string;
 };
 
-export type CommandRunnerInput = {
-  cmd: string[];
-  cwd: string;
-  signal?: AbortSignal;
-  env?: Record<string, string>;
-};
-
-export type CommandRunnerOutput = {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-};
-
-export type CommandRunner = (input: CommandRunnerInput) => Promise<CommandRunnerOutput>;
+export type CommandRunnerInput = BackendCommandRunnerInput;
+export type CommandRunnerOutput = BackendCommandRunnerOutput;
+export type CommandRunner = BackendCommandRunner;
 
 export type InstallSkillResult = {
   ref: SkillRef;
@@ -185,32 +181,16 @@ export function resolveSkillsCommand(deps: ResolveSkillsCommandDeps = defaultRes
   );
 }
 
-async function defaultRunner(input: CommandRunnerInput): Promise<CommandRunnerOutput> {
-  const proc = Bun.spawn({
-    cmd: input.cmd,
-    cwd: input.cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: input.env,
-    detached: true
-  });
+const defaultRunner: CommandRunner = defaultBackendRunner;
 
-  const abort = () => {
-    try { process.kill(-proc.pid, "SIGTERM"); } catch { proc.kill(); }
-  };
-  input.signal?.addEventListener("abort", abort, { once: true });
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited,
-    proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
-    proc.stderr ? new Response(proc.stderr).text() : Promise.resolve("")
-  ]);
-
-  input.signal?.removeEventListener("abort", abort);
+function scrubCommandOutput(
+  output: CommandRunnerOutput,
+  redactValues: readonly string[]
+): CommandRunnerOutput {
   return {
-    exitCode,
-    stdout,
-    stderr
+    ...output,
+    stdout: redactText(output.stdout, redactValues),
+    stderr: redactText(output.stderr, redactValues)
   };
 }
 
@@ -292,7 +272,13 @@ export async function installSkills(
         },
         retainWorkspace: true,
         run: async (context) => ({
-          output: await runner({ cmd, cwd: context.workspace, signal: context.signal, env: context.environment }),
+          output: scrubCommandOutput(await runner({
+            cmd,
+            cwd: context.workspace,
+            signal: context.signal,
+            env: context.environment,
+            redactValues: context.redactValues
+          }), context.redactValues),
           workspace: context.workspace
         })
       });

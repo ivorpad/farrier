@@ -1,0 +1,9 @@
+{
+  "name": "seeded-harness-defects",
+  "private": true,
+  "packageManager": "bun@latest",
+  "scripts": {
+    "check": "bun test && tsc --noEmit",
+    "test": "bun test"
+  }
+}

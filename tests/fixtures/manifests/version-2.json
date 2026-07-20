@@ -1,0 +1,10 @@
+{
+  "packIds": ["generic"],
+  "hookIds": [],
+  "skills": [],
+  "learn": { "enabled": false },
+  "versions": {
+    "farrierManifest": 2,
+    "hooks": {}
+  }
+}

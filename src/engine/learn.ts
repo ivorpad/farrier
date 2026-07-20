@@ -1,12 +1,20 @@
 import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { readManifest } from "./update";
+import { readManifest } from "./manifest";
 import type { ToolPolicyRule } from "../packs/types";
 import type { ReasoningEffort } from "../config/farrier-config";
 import { applyMutationPlan, fingerprintPath, inspectMutationPlan } from "./mutation-transaction";
 import { withIsolatedExecution } from "./execution-isolation";
-import { backendEnvironmentOverrides, backendEnvironmentPassthrough } from "./backend";
+import {
+  backendEnvironmentOverrides,
+  backendEnvironmentPassthrough,
+  backendFailureMessage,
+  defaultBackendRunner,
+  type BackendCommandRunner,
+  type BackendCommandRunnerInput,
+  type BackendCommandRunnerOutput
+} from "./backend";
 import { compareEvidence, createEvidenceSet, type EvidenceComparison } from "./behavior-evidence";
 
 export type CandidateEvent = {
@@ -17,21 +25,9 @@ export type CandidateEvent = {
 
 export type LearnBackend = "claude" | "codex";
 
-export type LearnCommandRunnerInput = {
-  cmd: string[];
-  cwd: string;
-  stdin?: string;
-  signal?: AbortSignal;
-  env?: Record<string, string>;
-};
-
-export type LearnCommandRunnerOutput = {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-};
-
-export type LearnCommandRunner = (input: LearnCommandRunnerInput) => Promise<LearnCommandRunnerOutput>;
+export type LearnCommandRunnerInput = BackendCommandRunnerInput;
+export type LearnCommandRunnerOutput = BackendCommandRunnerOutput;
+export type LearnCommandRunner = BackendCommandRunner;
 
 export type DroppedProposal = {
   id?: string;
@@ -864,35 +860,6 @@ ${JSON.stringify(input.events, null, 2)}
 `;
 }
 
-async function defaultRunner(input: LearnCommandRunnerInput): Promise<LearnCommandRunnerOutput> {
-  const proc = Bun.spawn({
-    cmd: input.cmd,
-    cwd: input.cwd,
-    stdin: input.stdin !== undefined ? "pipe" : "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: input.env
-  });
-
-  if (input.stdin !== undefined) {
-    const stdin = proc.stdin as unknown as { write(data: string): unknown; end(): unknown } | undefined;
-    stdin?.write(input.stdin);
-    stdin?.end();
-  }
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited,
-    proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
-    proc.stderr ? new Response(proc.stderr).text() : Promise.resolve("")
-  ]);
-
-  return {
-    exitCode,
-    stdout,
-    stderr
-  };
-}
-
 async function llmRuleProposals(input: {
   targetDir: string;
   events: CandidateEvent[];
@@ -928,20 +895,31 @@ async function llmRuleProposals(input: {
     environmentPassthrough: backendEnvironmentPassthrough(input.backend),
     environmentOverrides: backendEnvironmentOverrides(input.backend),
     readOnlyWorkspace: true,
-    run: ({ workspace, environment, signal }) => input.runner({
-      cmd: command.cmd,
-      cwd: workspace,
-      stdin: command.stdin,
-      signal,
-      env: environment
+    run: async ({ workspace, environment, redactValues, signal }) => ({
+      output: await input.runner({
+        cmd: command.cmd,
+        cwd: workspace,
+        stdin: command.stdin,
+        signal,
+        env: environment,
+        redactValues
+      }),
+      redactValues
     })
   });
-  const output = isolated.value;
+  const { output, redactValues } = isolated.value;
 
   if (output.exitCode !== 0) {
-    const stderr = output.stderr.trim();
+    throw new Error(backendFailureMessage({
+      backend: input.backend,
+      exitCode: output.exitCode,
+      output,
+      redactValues
+    }));
+  }
+  if (output.capture?.stdout.truncated) {
     throw new Error(
-      `${input.backend} backend exited with code ${output.exitCode}${stderr ? `: ${stderr}` : ""}`
+      `${input.backend} backend stdout exceeded the capture limit (received ${output.capture.stdout.byteCount} bytes; sha256 ${output.capture.stdout.sha256})`
     );
   }
 
@@ -1059,7 +1037,7 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
           backend,
           model: options.model,
           reasoningEffort: options.reasoningEffort,
-          runner: options.runner ?? defaultRunner
+            runner: options.runner ?? defaultBackendRunner
         });
         notes.push(`Used ${backend} backend to propose rule data from an isolated staging workspace.`);
         notes.push(backend === "codex"

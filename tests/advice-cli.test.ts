@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -61,7 +61,8 @@ console.log("\`\`\`");
     expect(json.exitCode).toBe(0);
     for (const stderr of [human.stderr, json.stderr]) {
       expect(stderr).toContain("Profiling dependencies, workflows, services, and installed automation");
-      expect(stderr).toContain("recommender for bounded recommendations");
+      expect(stderr).toContain("Running one focused");
+      expect(stderr).toContain("recommendation call");
       expect(stderr).toContain("Report ready with 1 supported recommendation");
     }
     const report = JSON.parse(json.stdout);
@@ -74,4 +75,63 @@ console.log("\`\`\`");
     expect(human.stdout).toContain(report.recommendations[0].benefit);
     expect(human.stdout).toContain(report.recommendations[0].implementationRoute.description);
   }
+
+  const home = join(root, "home");
+  const canonicalRoot = await realpath(root);
+  const transcriptDir = join(home, ".claude", "projects", canonicalRoot.replaceAll("\\", "/").replaceAll("/", "-"));
+  await mkdir(transcriptDir, { recursive: true });
+  await writeFile(join(transcriptDir, "recent.jsonl"), `${JSON.stringify({
+    cwd: root,
+    type: "user",
+    message: { content: "Keep the verification command in project guidance" },
+  })}\n`);
+  const auto = await runCli([
+    "advise", "--dir", root, "--sessions", "auto", "--only", "guidance", "--backend", "claude", "--json",
+  ], { ...env, HOME: home });
+  expect(auto.exitCode).toBe(0);
+  expect(auto.stderr).toContain("consented 1 fingerprinted claude session(s)");
+  const autoReport = JSON.parse(auto.stdout);
+  expect(autoReport.sessions.included).toBe(true);
+  expect(autoReport.sessions.sources).toEqual([{ source: "claude", count: 1 }]);
+});
+
+test("headless advice prints a partial report and exits nonzero", async () => {
+  const root = await mkdtemp(join(tmpdir(), "farrier-advice-cli-partial-"));
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  await Bun.write(join(root, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }));
+  const claude = join(bin, "claude");
+  await writeFile(claude, `#!/usr/bin/env bun
+const prompt = await Bun.stdin.text();
+if (prompt.includes("advice coordinator")) {
+  console.log(JSON.stringify({ selectedIds: ["skills:cli-review"], omissions: [] }));
+  process.exit(0);
+}
+const category = prompt.match(/Use only requested categories \\(([^,)]+)\\)/)?.[1];
+if (category === "hooks") {
+  console.error("hook worker failed");
+  process.exit(4);
+}
+console.log(JSON.stringify({
+  recommendations: category === "skills" ? [{
+    id: "skills:cli-review",
+    category: "skills",
+    evidence: ["project:root"],
+    routeId: "skills:claude-local",
+    reason: "Keep repository review as a reusable procedure."
+  }] : [],
+  coverage: [{ category, reason: "Worker complete." }]
+}));
+`, "utf8");
+  await chmod(claude, 0o755);
+  const result = await runCli(
+    ["advise", "--dir", root, "--sessions", "none", "--backend", "claude", "--json"],
+    { PATH: `${bin}${delimiter}${Bun.env.PATH ?? ""}` },
+  );
+
+  expect(result.exitCode).toBe(1);
+  const report = JSON.parse(result.stdout);
+  expect(report.analysis.status).toBe("partial");
+  expect(report.analysis.categories.find((item: { category: string }) => item.category === "hooks").status).toBe("failed");
+  expect(report.recommendations.map((item: { id: string }) => item.id)).toEqual(["skills:cli-review"]);
 });

@@ -266,7 +266,7 @@ export async function evaluatePerAgentSkill(input: {
       { source: join(input.targetDir, skillPath("codex", names.codex)), path: stagedPaths.codex },
       { source: resolve(input.targetDir, creatorRoot), path: "creator" }
     ],
-    run: async ({ workspace, environment, signal }) => {
+    run: async ({ workspace, environment, redactValues, signal }) => {
     const runPass = async (assignment: LabelAssignment) => {
       const aPath = stagedPaths[assignment.A];
       const bPath = stagedPaths[assignment.B];
@@ -286,7 +286,8 @@ export async function evaluatePerAgentSkill(input: {
         targetDir: workspace,
         runner: input.runner ?? defaultBackendRunner,
         signal,
-        env: environment
+        env: environment,
+        redactValues
       });
 
       return {

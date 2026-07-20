@@ -13,6 +13,7 @@ export type IsolationFact = {
 export type IsolatedExecutionContext = {
   workspace: string;
   environment: Record<string, string>;
+  redactValues: readonly string[];
   signal: AbortSignal;
   isolation: IsolationFact;
 };
@@ -38,6 +39,15 @@ function scrubbedEnvironment(
     if (value) environment[name] = value;
   }
   return environment;
+}
+
+function passthroughRedactValues(
+  names: readonly string[],
+  environment: Readonly<Record<string, string | undefined>>
+): string[] {
+  return Array.from(new Set(names
+    .map((name) => environment[name])
+    .filter((value): value is string => Boolean(value))));
 }
 
 async function copyRegular(source: string, destination: string): Promise<void> {
@@ -83,6 +93,7 @@ function combinedAbort(parent: AbortSignal | undefined, timeoutMs: number): { co
   const controller = new AbortController();
   const abort = () => controller.abort(parent?.reason ?? new Error("cancelled"));
   parent?.addEventListener("abort", abort, { once: true });
+  if (parent?.aborted) abort();
   const timer = setTimeout(() => controller.abort(new Error(`external execution timed out after ${timeoutMs}ms`)), timeoutMs);
   timer.unref?.();
   return {
@@ -92,6 +103,33 @@ function combinedAbort(parent: AbortSignal | undefined, timeoutMs: number): { co
       parent?.removeEventListener("abort", abort);
     },
   };
+}
+
+const cancellationCleanupGraceMs = 1_000;
+const retainedCancellationWorkspaces = new Set<string>();
+
+async function settlesWithin<T>(execution: Promise<T>, graceMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), graceMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([
+      execution.then(() => true, () => true),
+      grace
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function targetUnchanged(targetDir: string, before: string): Promise<boolean> {
+  try {
+    return await targetDigest(targetDir) === before;
+  } catch {
+    return false;
+  }
 }
 
 export async function withIsolatedExecution<T>(input: {
@@ -119,6 +157,7 @@ export async function withIsolatedExecution<T>(input: {
         residualRisk: "The installed CLI has no supported native write-root confinement; output was staged and the target fingerprint was verified, but the process retained OS-user access.",
       };
   let succeeded = false;
+  let deferredCleanup = false;
   try {
     await mkdir(join(workspace, "home"), { recursive: true });
     await mkdir(join(workspace, "tmp"), { recursive: true });
@@ -126,30 +165,68 @@ export async function withIsolatedExecution<T>(input: {
     const workspaceBefore = input.readOnlyWorkspace
       ? await targetDigest(workspace, new Set(["home", "tmp"]))
       : undefined;
-    const execution = input.run({
+    const passthrough = input.environmentPassthrough ?? [];
+    if (timeout.controller.signal.aborted) {
+      throw timeout.controller.signal.reason ?? new Error("external execution cancelled");
+    }
+    const environment = scrubbedEnvironment(
       workspace,
-      environment: scrubbedEnvironment(
-        workspace,
-        input.environmentPassthrough ?? [],
-        input.environmentOverrides ?? {},
-      ),
+      passthrough,
+      input.environmentOverrides ?? {},
+    );
+    const execution = Promise.resolve().then(() => input.run({
+      workspace,
+      environment,
+      redactValues: passthroughRedactValues(passthrough, environment),
       signal: timeout.controller.signal,
       isolation
-    });
+    }));
     const timed = new Promise<never>((_, reject) => {
-      timeout.controller.signal.addEventListener("abort", () => reject(timeout.controller.signal.reason ?? new Error("external execution cancelled")), { once: true });
+      const rejectAbort = () => reject(timeout.controller.signal.reason ?? new Error("external execution cancelled"));
+      timeout.controller.signal.addEventListener("abort", rejectAbort, { once: true });
+      if (timeout.controller.signal.aborted) rejectAbort();
     });
-    const value = await Promise.race([execution, timed]);
+    let value: T;
+    try {
+      value = await Promise.race([execution, timed]);
+    } catch (error) {
+      if (timeout.controller.signal.aborted && !(await settlesWithin(execution, cancellationCleanupGraceMs))) {
+        deferredCleanup = true;
+        retainedCancellationWorkspaces.add(workspace);
+        const removeWhenSettled = !input.retainWorkspace || !input.retainWorkspaceOnError;
+        const finishDeferredCleanup = async () => {
+          try {
+            await targetUnchanged(input.targetDir, before);
+          } finally {
+            retainedCancellationWorkspaces.delete(workspace);
+            if (removeWhenSettled) {
+              await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
+            }
+          }
+        };
+        void execution.then(finishDeferredCleanup, finishDeferredCleanup);
+        throw new Error(
+          `External execution did not settle within ${cancellationCleanupGraceMs}ms after cancellation; target integrity could not be confirmed and the isolated workspace was retained until process cleanup completes.`
+        );
+      }
+      throw error;
+    }
     if (workspaceBefore && await targetDigest(workspace, new Set(["home", "tmp"])) !== workspaceBefore) {
       throw new Error("External process changed read-only staged inputs or produced unexpected output.");
     }
-    const after = await targetDigest(input.targetDir);
-    if (after !== before) throw new Error("External process changed the target project; staged output was rejected and the project must be reviewed for unaccepted writes.");
+    if (!(await targetUnchanged(input.targetDir, before))) {
+      throw new Error("External process changed the target project or prevented integrity verification; staged output was rejected and the project must be reviewed for unaccepted writes.");
+    }
     succeeded = true;
     return { value, isolation };
+  } catch (error) {
+    if (!deferredCleanup && !(await targetUnchanged(input.targetDir, before))) {
+      throw new Error("External execution failed and changed the target project or prevented integrity verification; review the project for unaccepted writes.");
+    }
+    throw error;
   } finally {
     timeout.dispose();
-    if (!input.retainWorkspace || (!succeeded && !input.retainWorkspaceOnError)) {
+    if (!deferredCleanup && (!input.retainWorkspace || (!succeeded && !input.retainWorkspaceOnError))) {
       await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
     }
   }

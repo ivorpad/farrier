@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -123,6 +123,22 @@ test("hook creation rejects executable files and unsupported plugin installs", a
 
   await expect(planAdviceRecommendation({ report: report(root, recommendation), recommendation, backend: "claude", runner })).rejects.toThrow("outside the selected route policy");
 
+  const outside = await mkdtemp(join(tmpdir(), "farrier-advice-apply-outside-"));
+  await mkdir(join(root, ".claude"));
+  await writeFile(join(outside, "settings.json"), '{"private":"outside project"}\n');
+  await symlink(join(outside, "settings.json"), join(root, ".claude", "settings.json"));
+  let unsafeReadPlannerCalls = 0;
+  await expect(planAdviceRecommendation({
+    report: report(root, recommendation),
+    recommendation,
+    backend: "claude",
+    runner: async () => {
+      unsafeReadPlannerCalls += 1;
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    },
+  })).rejects.toThrow("Refusing to read .claude/settings.json for backend planning (symlink)");
+  expect(unsafeReadPlannerCalls).toBe(0);
+
   const plugin: AdviceRecommendation = {
     ...recommendation,
     id: "plugins:hookify",
@@ -130,7 +146,26 @@ test("hook creation rejects executable files and unsupported plugin installs", a
     registryRef: "anthropics/claude-plugins-official@hookify",
     implementationRoute: { id: "plugins:claude-install", description: "Install Hookify." }
   };
-  expect(adviceCreationSupport(plugin).kind).toBe("unsupported");
+  expect(adviceCreationSupport(plugin).kind).toBe("inspect");
+  let plannerCalls = 0;
+  const guardedRunner: BackendCommandRunner = async () => {
+    plannerCalls += 1;
+    return { exitCode: 0, stdout: "{}", stderr: "" };
+  };
+  await expect(planAdviceRecommendation({
+    report: report(root, plugin),
+    recommendation: plugin,
+    backend: "claude",
+    runner: guardedRunner
+  })).rejects.toThrow("Inspect the verified registry plugin");
+  await expect(planAdviceSkillRecommendation({
+    report: report(root, plugin),
+    recommendation: plugin,
+    request: { description: "replace it", agents: ["claude"], mode: "author-codex" },
+    modelSettings: {},
+    runner: guardedRunner
+  })).rejects.toThrow("Inspect the verified registry plugin");
+  expect(plannerCalls).toBe(0);
 });
 
 test("batch skill authoring uses the report backend and leaves only a review plan before confirmation", async () => {

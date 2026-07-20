@@ -44,6 +44,14 @@ describe("behavior evidence contract", () => {
     expect(redacted.prose).toBe("The secret garden uses ordinary prose.");
   });
 
+  test("removes supplied exact values longest-first before pattern redaction", () => {
+    const redacted = redactEvidence(
+      { message: "prefix violet horse battery suffix violet horse" },
+      ["", "violet horse", "violet horse battery"]
+    );
+    expect(redacted.message).toBe("prefix [REDACTED_EXACT] suffix [REDACTED_EXACT]");
+  });
+
   test("enforces exact per-item and retained-set byte limits with escaping and multibyte input", () => {
     const set = createEvidenceSet({
       workflow: "learn",

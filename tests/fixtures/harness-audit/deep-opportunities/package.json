@@ -1,0 +1,8 @@
+{
+  "name": "deep-opportunities",
+  "private": true,
+  "packageManager": "pnpm@latest",
+  "scripts": {
+    "test": "vitest"
+  }
+}

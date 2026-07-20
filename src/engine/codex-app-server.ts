@@ -1,5 +1,14 @@
+export type CodexAppServerRequestOptions = {
+  maxResponseBytes?: number;
+  signal?: AbortSignal;
+};
+
 export type CodexAppServerClient = {
-  request: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  request: (
+    method: string,
+    params?: Record<string, unknown>,
+    options?: CodexAppServerRequestOptions,
+  ) => Promise<unknown>;
   close: () => Promise<void>;
 };
 
@@ -9,6 +18,9 @@ type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  maxResponseBytes: number;
+  signal?: AbortSignal;
+  abortHandler?: () => void;
 };
 
 type RpcMessage = {
@@ -19,10 +31,20 @@ type RpcMessage = {
 };
 
 const requestTimeoutMs = 20_000;
+const defaultResponseBytes = 4_000_000;
+const maximumResponseBytes = 8_000_000;
 
 function errorFromRpc(method: string, error: RpcMessage["error"]): Error {
   const code = error?.code === undefined ? "unknown" : String(error.code);
   return new Error(`Codex App Server ${method} failed (${code}): ${error?.message ?? "unknown error"}`);
+}
+
+function checkedResponseLimit(value: number | undefined): number {
+  const limit = value ?? defaultResponseBytes;
+  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > maximumResponseBytes) {
+    throw new Error(`Codex App Server response limit must be between 1 and ${maximumResponseBytes} bytes.`);
+  }
+  return limit;
 }
 
 export const createCodexAppServerClient: CodexAppServerFactory = async () => {
@@ -30,7 +52,7 @@ export const createCodexAppServerClient: CodexAppServerFactory = async () => {
     cmd: ["codex", "app-server"],
     stdin: "pipe",
     stdout: "pipe",
-    stderr: "pipe"
+    stderr: "pipe",
   });
   const stdin = proc.stdin as unknown as { write(data: string): unknown; end(): unknown };
   const pending = new Map<number, PendingRequest>();
@@ -47,13 +69,29 @@ export const createCodexAppServerClient: CodexAppServerFactory = async () => {
     stdin.write(`${JSON.stringify(message)}\n`);
   };
 
+  const clearRequest = (request: PendingRequest): void => {
+    clearTimeout(request.timeout);
+    if (request.signal && request.abortHandler) {
+      request.signal.removeEventListener("abort", request.abortHandler);
+    }
+  };
+
   const rejectAll = (error: Error): void => {
     for (const request of pending.values()) {
-      clearTimeout(request.timeout);
+      clearRequest(request);
       request.reject(error);
     }
     pending.clear();
     methodById.clear();
+  };
+
+  const rejectRequest = (id: number, error: Error): void => {
+    const request = pending.get(id);
+    if (!request) return;
+    clearRequest(request);
+    pending.delete(id);
+    methodById.delete(id);
+    request.reject(error);
   };
 
   const acceptMessage = (message: RpcMessage): void => {
@@ -63,9 +101,43 @@ export const createCodexAppServerClient: CodexAppServerFactory = async () => {
     pending.delete(message.id);
     const method = methodById.get(message.id) ?? "request";
     methodById.delete(message.id);
-    clearTimeout(request.timeout);
+    clearRequest(request);
     if (message.error) request.reject(errorFromRpc(method, message.error));
     else request.resolve(message.result);
+  };
+
+  const pendingLineLimit = (): number => {
+    let limit = 0;
+    for (const request of pending.values()) limit = Math.max(limit, request.maxResponseBytes);
+    return limit || defaultResponseBytes;
+  };
+
+  const acceptLine = (line: string): void => {
+    if (!line.trim()) return;
+    const byteCount = Buffer.byteLength(line);
+    const idMatch = line.match(/"id"\s*:\s*(\d+)/);
+    const id = idMatch ? Number(idMatch[1]) : undefined;
+    if (id !== undefined) {
+      const request = pending.get(id);
+      if (request && byteCount > request.maxResponseBytes) {
+        const method = methodById.get(id) ?? "request";
+        rejectRequest(
+          id,
+          new Error(`Codex App Server ${method} response exceeded ${request.maxResponseBytes} bytes.`),
+        );
+        return;
+      }
+    }
+    if (byteCount > pendingLineLimit()) {
+      rejectAll(new Error("Codex App Server response exceeded the bounded response limit."));
+      proc.kill();
+      return;
+    }
+    try {
+      acceptMessage(JSON.parse(line) as RpcMessage);
+    } catch {
+      // Bounded non-JSON diagnostics are ignored; request timeouts still fail safely.
+    }
   };
 
   const stdoutLoop = (async () => {
@@ -76,14 +148,13 @@ export const createCodexAppServerClient: CodexAppServerFactory = async () => {
       while (newline >= 0) {
         const line = buffered.slice(0, newline);
         buffered = buffered.slice(newline + 1);
-        if (line.trim()) {
-          try {
-            acceptMessage(JSON.parse(line) as RpcMessage);
-          } catch {
-            // Non-JSON diagnostics are ignored; request timeouts still fail safely.
-          }
-        }
+        acceptLine(line);
         newline = buffered.indexOf("\n");
+      }
+      if (Buffer.byteLength(buffered) > pendingLineLimit()) {
+        buffered = "";
+        rejectAll(new Error("Codex App Server response exceeded the bounded response limit."));
+        proc.kill();
       }
     }
   })();
@@ -102,21 +173,44 @@ export const createCodexAppServerClient: CodexAppServerFactory = async () => {
     }
   });
 
-  const request = (method: string, params: Record<string, unknown> = {}): Promise<unknown> => {
+  const request = (
+    method: string,
+    params: Record<string, unknown> = {},
+    options: CodexAppServerRequestOptions = {},
+  ): Promise<unknown> => {
+    const maxResponseBytes = checkedResponseLimit(options.maxResponseBytes);
     const id = nextId;
     nextId += 1;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
+        const request = pending.get(id);
+        if (request) clearRequest(request);
         pending.delete(id);
         methodById.delete(id);
         reject(new Error(`Codex App Server ${method} timed out`));
       }, requestTimeoutMs);
-      pending.set(id, { resolve, reject, timeout });
+      const abortHandler = options.signal
+        ? () => rejectRequest(id, new Error(`Codex App Server ${method} was cancelled.`))
+        : undefined;
+      pending.set(id, {
+        resolve,
+        reject,
+        timeout,
+        maxResponseBytes,
+        signal: options.signal,
+        abortHandler,
+      });
       methodById.set(id, method);
+      if (abortHandler) options.signal?.addEventListener("abort", abortHandler, { once: true });
+      if (options.signal?.aborted) {
+        rejectRequest(id, new Error(`Codex App Server ${method} was cancelled.`));
+        return;
+      }
       try {
         write({ method, id, params });
       } catch (error) {
-        clearTimeout(timeout);
+        const request = pending.get(id);
+        if (request) clearRequest(request);
         pending.delete(id);
         methodById.delete(id);
         reject(error instanceof Error ? error : new Error(String(error)));
@@ -125,7 +219,7 @@ export const createCodexAppServerClient: CodexAppServerFactory = async () => {
   };
 
   await request("initialize", {
-    clientInfo: { name: "farrier", title: "Farrier", version: "0.3.0" }
+    clientInfo: { name: "farrier", title: "Farrier", version: "0.3.0" },
   });
   write({ method: "initialized", params: {} });
 
@@ -142,6 +236,6 @@ export const createCodexAppServerClient: CodexAppServerFactory = async () => {
       }
       proc.kill();
       await Promise.allSettled([proc.exited, stdoutLoop, stderrLoop]);
-    }
+    },
   };
 };

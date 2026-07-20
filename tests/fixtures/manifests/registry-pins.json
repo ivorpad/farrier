@@ -1,0 +1,17 @@
+{
+  "packIds": ["generic"],
+  "hookIds": [],
+  "skills": ["@acme/platform-skill"],
+  "learn": { "enabled": false },
+  "registry": {
+    "items": {
+      "@acme/platform-skill": {
+        "type": "skill",
+        "version": "1.2.3",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sourceIdentity": "https://registry.example",
+        "ref": "@acme/platform-skill"
+      }
+    }
+  }
+}

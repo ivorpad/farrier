@@ -3,8 +3,8 @@ import { readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import {
-  backendCommand, backendEnvironmentOverrides, backendEnvironmentPassthrough, defaultBackendRunner,
-  formatBackendStreamActivity, type AgentBackend, type BackendCommandRunner
+  backendCommand, backendEnvironmentOverrides, backendEnvironmentPassthrough, backendFailureMessage,
+  defaultBackendRunner, formatBackendStreamActivity, type AgentBackend, type BackendCommandRunner
 } from "./backend";
 import type { ResolvedModelSettings } from "../config/farrier-config";
 import {
@@ -226,7 +226,7 @@ export async function stageSkill(input: StageSkillInput): Promise<{ stagingRoot:
     signal: input.deps.signal,
     retainWorkspace: true,
     retainWorkspaceOnError: !input.cleanupOnFailure,
-    run: async ({ workspace, environment, signal }) => {
+    run: async ({ workspace, environment, redactValues, signal }) => {
       const stagingRoot = stagingRootBase;
       const before = await snapshotSkillRoot(join(workspace, stagingRoot));
       const prompt = buildAuthoringPrompt({
@@ -247,6 +247,7 @@ export async function stageSkill(input: StageSkillInput): Promise<{ stagingRoot:
         stdin: command.stdin,
         signal,
         env: environment,
+        redactValues,
         onStdoutLine: (line) => {
           const activity = formatBackendStreamActivity(input.agent, line);
           if (activity) input.deps.progress?.("authoring", input.agent, activity);
@@ -254,8 +255,12 @@ export async function stageSkill(input: StageSkillInput): Promise<{ stagingRoot:
       });
       if (signal.aborted) throw new Error(`cancelled — killed the ${input.agent} run`);
       if (output.exitCode !== 0) {
-        const stderr = output.stderr.trim();
-        throw new Error(`${input.agent} backend exited with code ${output.exitCode}${stderr ? `: ${stderr}` : ""}`);
+        throw new Error(backendFailureMessage({
+          backend: input.agent,
+          exitCode: output.exitCode,
+          output,
+          redactValues
+        }));
       }
       input.deps.progress?.("validating", input.agent);
       const validated = await validateCreatedSkill({ targetDir: workspace, root: stagingRoot, before, backend: input.agent, nameOverride: input.nameOverride });

@@ -1,0 +1,9 @@
+{
+  "packIds": ["generic"],
+  "hookIds": [],
+  "skills": [
+    "owner/repository@first-skill",
+    "another/source@second-skill"
+  ],
+  "learn": { "enabled": false }
+}

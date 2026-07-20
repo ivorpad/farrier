@@ -1,11 +1,13 @@
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { createRenderPlan, type FarrierManifestInput, type RenderedFile } from "./render";
-import { inventoryOwnership, readManifest } from "./update";
+import { createRenderPlan, type RenderedFile } from "./render";
+import { inventoryOwnership } from "./update";
+import { manifestToInput, readManifest } from "./manifest";
 import { validateToolPolicyRuleProposal } from "./learn";
 import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 import { normalizeAgents } from "./agent-selection";
 import { readSkillBehaviorEvidence } from "./skill-validate";
+import { inventoryProjectSkills, type SkillInventory } from "./skill-inventory";
 
 export type DoctorGroup =
   | "manifest"
@@ -37,6 +39,7 @@ export type DoctorReport = {
   healthy: boolean;
   problems: DoctorProblem[];
   problemsByGroup: Record<DoctorGroup, DoctorProblem[]>;
+  skillInventory?: SkillInventory;
   notes: string[];
 };
 
@@ -77,6 +80,7 @@ function reportFor(input: {
   targetDir: string;
   manifestPath: string;
   problems: DoctorProblem[];
+  skillInventory?: SkillInventory;
   notes?: string[];
 }): DoctorReport {
   const healthy = !input.problems.some((problem) => problem.severity === "error");
@@ -87,6 +91,7 @@ function reportFor(input: {
     healthy,
     problems: input.problems,
     problemsByGroup: groupedProblems(input.problems),
+    skillInventory: input.skillInventory,
     notes: input.notes ?? []
   };
 }
@@ -167,30 +172,6 @@ async function readJsonFile(path: string): Promise<
       message
     };
   }
-}
-
-function manifestInputFrom(manifest: Awaited<ReturnType<typeof readManifest>>): FarrierManifestInput {
-  return {
-    farrierVersion: manifest.farrierVersion ?? undefined,
-    agents: [...manifest.agents],
-    packIds: [...manifest.packIds],
-    hookIds: [...manifest.hookIds],
-    skills: [...manifest.skills],
-    secondaryAcknowledged: [...manifest.secondaryAcknowledged],
-    learn: {
-      enabled: manifest.learn.enabled
-    },
-    judge: manifest.judge,
-    quality: manifest.quality,
-    versions: {
-      farrierManifest: manifest.versions.farrierManifest ?? undefined,
-      hooks: { ...manifest.versions.hooks },
-      prompts: manifest.versions.prompts
-    },
-    registry: {
-      items: { ...manifest.registry.items }
-    }
-  };
 }
 
 function registryPinsForManifest(
@@ -1040,6 +1021,39 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
     });
   }
 
+  const skillInventory = await inventoryProjectSkills({ targetDir, manifest });
+  for (const item of skillInventory.malformedLocations) {
+    problems.push({
+      group: "skills",
+      severity: "error",
+      path: item.path,
+      message: `Invalid skill location: ${item.reason}`,
+      remediation: "Repair or remove the invalid skill location, then rerun farrier doctor.",
+    });
+  }
+  for (const entry of skillInventory.entries) {
+    const topology = entry.topologies.map((item) => item.kind).join(", ") || "unknown";
+    notes.push(`Skill ${entry.name}: ${topology}; provenance ${entry.provenance.kind}.`);
+    if (entry.topologies.some((item) => item.kind === "divergent")) {
+      problems.push({
+        group: "skills",
+        severity: "warning",
+        path: entry.locations.map((item) => item.path).join(", "),
+        id: entry.name,
+        message: "Claude and Codex copies differ; evaluate them or choose one canonical copy.",
+      });
+    }
+    if (entry.provenance.kind === "unknown") {
+      problems.push({
+        group: "skills",
+        severity: "warning",
+        path: entry.locations[0]?.path,
+        id: entry.name,
+        message: `Skill provenance is unknown (${entry.provenance.evidence.join(", ") || "no trusted metadata"}).`,
+      });
+    }
+  }
+
   const basePack = catalog.resolvePack(manifest.currentPackId);
   const renderPack = {
     ...basePack,
@@ -1052,7 +1066,7 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
     skills: manifest.skills,
     learnEnabled: manifest.learn.enabled,
     secondaryAcknowledged: manifest.secondaryAcknowledged,
-    existingManifest: manifestInputFrom(manifest),
+    existingManifest: manifestToInput(manifest),
     agents: manifest.agents,
     registryPins: registryPinsForManifest(manifest, catalog)
   });
@@ -1088,6 +1102,7 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
     targetDir,
     manifestPath,
     problems,
+    skillInventory,
     notes
   });
 }

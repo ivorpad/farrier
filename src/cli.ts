@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { resolve } from "node:path";
+import { runAuditPanel } from "./cli/audit-panel";
 import { runAdvise } from "./cli/advise";
 import { parseCreateArgs, runCreate } from "./cli/create";
 import { runDoctor } from "./cli/doctor";
@@ -36,7 +37,9 @@ Usage:
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
   farrier doctor --dir <target> [--json]
-  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude,codex] [--only guidance,hooks,skills,subagents,plugins,mcp] [--backend claude|codex] [--model <name>] [--json]
+  farrier audit-panel prepare --manifest <panel.json> --output <new-directory> [--json]
+  farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude|codex] [--only guidance,hooks,skills,subagents,plugins,mcp] [--backend claude|codex] [--model <name>] [--json]
+  farrier advise --dir <target> --mode quick|baseline|deep [--plan] [--max-model-calls <n>] [--max-estimated-input-tokens <n>] [--max-provider-cost-usd-per-call <amount>] [--backend claude|codex] [--model <name>] [--json]
   farrier advise skills [--dir <target>] [--context <path|text>] [--backend claude|codex] [--json]
   farrier skill new "<description>" --yes [--dir <target>] [--agents claude,codex] [--mode author-claude|author-codex|per-agent] [--name <kebab>] [--no-llm] [--json]
   farrier skill eval <skill-name> [--dir <target>] [--backend claude|codex] [--json]
@@ -56,8 +59,13 @@ Options:
   --no-llm            Use deterministic learn proposals without calling claude or codex.
   --sessions <mode>   Advice session evidence: auto or none. Exact project directories only.
   --since <window>    Advice session lookback: 7d (default), 14d, or all.
-  --targets <vendors> Advice target vendors: claude,codex.
+  --targets <vendor>  Advice target provider: claude or codex; it must match --backend.
   --only <categories> Limit advice to guidance,hooks,skills,subagents,plugins,mcp.
+  --mode <name>       Read-only harness audit: quick, baseline, or deep.
+  --plan              Preview harness audit calls and local prompt sizes without resolving a backend.
+  --max-model-calls <n> Reject an audit whose planned model calls exceed n.
+  --max-estimated-input-tokens <n> Reject an audit whose local input estimate exceeds n.
+  --max-provider-cost-usd-per-call <amount> Required for Claude audits that plan model calls.
   --backend <name>    Learn/advise proposal backend: claude or codex. Defaults to claude for learn, auto-detected for advise.
   --model <name>      Learn/advise proposal backend model. Defaults to backend-specific low-cost model.
   --help              Show this help.
@@ -271,6 +279,10 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
 
     if (args[0] === "doctor") {
       return await runDoctor(args.slice(1), usage);
+    }
+
+    if (args[0] === "audit-panel") {
+      return await runAuditPanel(args.slice(1));
     }
 
     if (args[0] === "advise") {

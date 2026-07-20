@@ -13,22 +13,55 @@ function stringArray(value: unknown): string[] | undefined {
   return value as string[];
 }
 
+function boundRecommendationText(value: string, maxCharacters: number): { value: string; truncated: boolean } {
+  const characters = Array.from(value.trim());
+  if (characters.length <= maxCharacters) return { value: characters.join(""), truncated: false };
+  return {
+    value: `${characters.slice(0, maxCharacters - 1).join("").trimEnd()}…`,
+    truncated: true,
+  };
+}
+
+function recommendationIdPart(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/^[a-z]+:/, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72)
+    .replace(/-+$/g, "");
+}
+
+type RecommendationValidation = {
+  recommendation?: AdviceRecommendation;
+  notes: string[];
+  rejection?: string;
+  normalized: boolean;
+};
+
+function rejectRecommendation(message: string): RecommendationValidation {
+  return { notes: [], rejection: message, normalized: false };
+}
+
 export function buildAdvicePrompt(input: {
   profile: ProjectProfile;
   evidence: AdviceEvidence[];
   episodes: AdviceSessionEpisode[];
   categories: AdviceCategory[];
+  focused: boolean;
   policy: AdviceProviderPolicy;
   registry: AdviceRegistryEntry[];
   queries: Array<{ query: string; evidence: string[]; matches: string[] }>;
 }): string {
-  const focused = input.categories.length === 1;
   const selectedCategories = input.policy.categories.filter((item) => input.categories.includes(item.category));
   const selectedRoutes = input.policy.routes.filter((route) => input.categories.includes(route.category));
   const evidence = input.evidence.map((item) => ({
     id: item.id, source: item.source, kind: item.kind, path: item.path, summary: item.summary,
     occurrences: item.occurrences, distinctSessionCount: item.distinctSessions,
-    allowedCategories: item.allowedCategories, selectedProvider: item.selectedProvider
+    targetVendors: item.targetVendors,
+    selectedProvider: item.selectedProvider,
+    line: item.line, extractor: item.extractor, factConfidence: item.factConfidence,
+    contentDigest: item.contentDigest,
   }));
   const profile = {
     summary: {
@@ -38,10 +71,24 @@ export function buildAdvicePrompt(input: {
     },
     capabilities: input.profile.capabilities ?? [],
     workflows: input.profile.workflows ?? [],
-    installedAutomations: input.profile.automations ?? []
+    installedAutomations: input.profile.automations ?? [],
+    installedSkills: input.profile.skillInventory?.entries ?? [],
+    repositoryCoverage: input.profile.repositoryCoverage ? {
+      complete: input.profile.repositoryCoverage.complete,
+      skippedPaths: input.profile.repositoryCoverage.skippedPaths.slice(0, 30),
+      readErrors: input.profile.repositoryCoverage.readErrors.slice(0, 30),
+      truncatedPaths: input.profile.repositoryCoverage.truncatedPaths.slice(0, 30),
+    } : undefined,
+    skillInventoryCoverage: input.profile.skillInventory ? {
+      complete: input.profile.skillInventory.complete,
+      roots: input.profile.skillInventory.roots,
+      malformedLocations: input.profile.skillInventory.malformedLocations.slice(0, 30),
+    } : undefined,
   };
   return `You are Farrier's ${input.policy.provider}-native automation recommender. Return JSON only:
-{"recommendations":[{"id":"<category>:<stable-kebab-id>","category":"guidance|hooks|skills|subagents|plugins|mcp","targetVendors":["${input.policy.provider}"],"reason":"evidence-backed reason","benefit":"concrete outcome","evidence":["exact-evidence-id"],"confidence":"high|medium|low","routeId":"exact-policy-route","registryRef":"optional exact verified ref"}],"coverage":[{"category":"requested-category","reason":"why useful recommendations were or were not returned"}]}
+{"recommendations":[{"id":"<category>:<stable-kebab-id>","category":"guidance|hooks|skills|subagents|plugins|mcp","evidence":["exact-evidence-id"],"routeId":"exact-policy-route","reason":"optional evidence-backed reason, at most 320 characters","benefit":"optional concrete outcome, at most 240 characters","confidence":"optional high|medium|low","registryRef":"optional exact verified ref"}],"coverage":[{"category":"requested-category","reason":"why useful recommendations were or were not returned"}]}
+
+Only category, evidence, and routeId are required. Farrier binds the selected provider and can derive missing ids, reasons, benefits, and confidence locally without another model call.
 
 Decision order for each opportunity:
 1. Decide whether ordinary project tooling, durable guidance, or an installed automation already covers it.
@@ -55,11 +102,12 @@ Rules:
 - Inspect dependencies, workflows, testing, CI, external systems, and installed automation before recommending.
 - Preserve actual user tasks. A single useful episode can justify a recommendation; repetition strengthens confidence but is not required.
 - URLs and generic tool calls are not workflow evidence. Never infer a workflow verb from a domain name.
-- Consider every distinct skill opportunity even after finding another skill.
-- ${focused ? "This is a focused report. Return up to five useful recommendations in the requested category." : "Return only the top one or two applicable recommendations per category. Skip irrelevant categories."}
+- Evaluate every session episode independently against every requested category. Do not collapse different reusable tasks into one candidate.
+- Consider every distinct opportunity even after finding another recommendation in that category.
+- ${input.focused ? "The user selected only this category. Return up to five useful recommendations." : "This is one category worker in a multi-category report. Return up to five useful candidates so a later coordinator can resolve overlap and presentation limits."}
 - Never add filler or target a global recommendation count.
 - Use only requested categories (${input.categories.join(", ")}) and ${input.policy.provider}-supported routes shown below.
-- Use exactly one target vendor: ${input.policy.provider}. Never mention or create the other provider's artifacts.
+- Do not return targetVendors. Farrier binds every accepted candidate to ${input.policy.provider}. Never mention or create the other provider's artifacts.
 - Every recommendation must cite exact evidence IDs. Evidence summaries are the complete factual boundary.
 - A path proves existence only. Do not claim file contents unless the summary states them.
 - registryRef is optional. If present, copy an exact compatible ref from the verified catalog. Never invent installable plugins, skills, or MCP packages.
@@ -94,43 +142,63 @@ function validateRecommendation(input: {
   categories: AdviceCategory[];
   policy: AdviceProviderPolicy;
   registryByRef: Map<string, AdviceRegistryEntry>;
-}): { recommendation?: AdviceRecommendation; note?: string } {
-  if (!isRecord(input.raw)) return { note: "Dropped recommendation: record must be an object." };
+}): RecommendationValidation {
+  if (!isRecord(input.raw)) return rejectRecommendation("Dropped recommendation: record must be an object.");
   const raw = input.raw as RawRecommendation;
-  const id = typeof raw.id === "string" ? raw.id : undefined;
-  const category = typeof raw.category === "string" && isAdviceCategory(raw.category) ? raw.category : undefined;
-  if (!category || !input.categories.includes(category)) return { note: `Dropped recommendation '${id ?? "unknown"}': unsupported category.` };
-  if (!id || !new RegExp(`^${category}:[a-z0-9]+(?:-[a-z0-9]+)*$`).test(id)) return { note: `Dropped recommendation '${id ?? "unknown"}': id must be stable and category-prefixed.` };
-  const vendors = stringArray(raw.targetVendors);
-  if (!vendors || vendors.length !== 1 || vendors[0] !== input.policy.provider) return { note: `Dropped recommendation '${id}': invalid target vendors.` };
-  const reason = typeof raw.reason === "string" && raw.reason.trim() ? raw.reason.trim() : undefined;
-  if (!reason || reason.length > 320) return { note: `Dropped recommendation '${id}': reason is missing or too long.` };
-  const rawBenefit = typeof raw.benefit === "string" && raw.benefit.trim() ? raw.benefit.trim() : undefined;
-  if (raw.benefit !== undefined && (!rawBenefit || rawBenefit.length > 240)) return { note: `Dropped recommendation '${id}': benefit is invalid or too long.` };
+  const rawId = typeof raw.id === "string" ? raw.id.trim() : undefined;
+  const idCategory = rawId?.split(":", 1)[0];
+  const suppliedCategory = typeof raw.category === "string" && isAdviceCategory(raw.category) ? raw.category : undefined;
+  const category = suppliedCategory ?? (idCategory && isAdviceCategory(idCategory) ? idCategory : undefined);
+  if (!category || !input.categories.includes(category)) return rejectRecommendation(`Dropped recommendation '${rawId || "unknown"}': unsupported category.`);
   const cited = stringArray(raw.evidence);
-  if (!cited?.length || cited.some((evidenceId) => !input.evidenceById.has(evidenceId))) return { note: `Dropped recommendation '${id}': evidence contains an unknown or missing reference.` };
-  if (cited.some((evidenceId) => !["project", input.policy.provider].includes(input.evidenceById.get(evidenceId)!.source))) return { note: `Dropped recommendation '${id}': evidence references a different provider.` };
-  if (!(["high", "medium", "low"] as unknown[]).includes(raw.confidence)) return { note: `Dropped recommendation '${id}': invalid confidence.` };
-  const routeId = typeof raw.routeId === "string" ? raw.routeId : "";
-  const route = input.policy.routes.find((item) => item.id === routeId && item.category === category);
-  if (!route) return { note: `Dropped recommendation '${id}': unsupported implementation route for ${input.policy.provider}.` };
+  if (!cited?.length || cited.some((evidenceId) => !input.evidenceById.has(evidenceId))) return rejectRecommendation(`Dropped recommendation '${rawId || "unknown"}': evidence contains an unknown or missing reference.`);
+  if (cited.some((evidenceId) => !["project", input.policy.provider].includes(input.evidenceById.get(evidenceId)!.source))) return rejectRecommendation(`Dropped recommendation '${rawId || "unknown"}': evidence references a different provider.`);
+  if (cited.some((evidenceId) => {
+    const evidence = input.evidenceById.get(evidenceId)!;
+    return (evidence.targetVendors !== undefined && !evidence.targetVendors.includes(input.policy.provider))
+      || (evidence.selectedProvider !== undefined && evidence.selectedProvider !== input.policy.provider);
+  })) return rejectRecommendation(`Dropped recommendation '${rawId || "unknown"}': cited evidence excludes the selected provider.`);
+  const suppliedReason = typeof raw.reason === "string" && raw.reason.trim() ? raw.reason.trim() : undefined;
+  const suppliedBenefit = typeof raw.benefit === "string" && raw.benefit.trim() ? raw.benefit.trim() : undefined;
+  const idSeed = rawId || suppliedReason || suppliedBenefit || input.evidenceById.get(cited[0]!)!.summary;
+  const idPart = recommendationIdPart(idSeed);
+  if (!idPart) return rejectRecommendation(`Dropped recommendation '${rawId || "unknown"}': no stable identifier could be recovered.`);
+  const expectedId = `${category}:${idPart}`;
+  const id = rawId && new RegExp(`^${category}:[a-z0-9]+(?:-[a-z0-9]+)*$`).test(rawId) ? rawId : expectedId;
+  const notes: string[] = [];
+  if (!suppliedCategory) notes.push(`Recovered category '${category}' for recommendation '${id}' from its id.`);
+  if (id !== rawId) notes.push(`Normalized recommendation id '${rawId || "missing"}' to '${id}'.`);
+  const vendors = stringArray(raw.targetVendors);
+  if (!vendors || vendors.length !== 1 || vendors[0] !== input.policy.provider) notes.push(`Normalized recommendation '${id}' target vendor to ${input.policy.provider}.`);
+  const fullReason = suppliedReason ?? `Cited evidence: ${cited.map((evidenceId) => input.evidenceById.get(evidenceId)!.summary).join(" ")}`;
+  const reason = boundRecommendationText(fullReason, 320);
+  const confidence = (["high", "medium", "low"] as unknown[]).includes(raw.confidence)
+    ? raw.confidence as AdviceRecommendation["confidence"]
+    : "medium";
+  if (confidence !== raw.confidence) notes.push(`Normalized recommendation '${id}' confidence to medium.`);
+  const suppliedRouteId = typeof raw.routeId === "string" && raw.routeId.trim() ? raw.routeId.trim() : undefined;
+  const route = suppliedRouteId
+    ? input.policy.routes.find((item) => item.id === suppliedRouteId && item.category === category)
+    : input.policy.routes.find((item) => item.category === category);
+  if (!route) return rejectRecommendation(`Dropped recommendation '${id}': unsupported implementation route for ${input.policy.provider}.`);
+  if (!suppliedRouteId) notes.push(`Filled missing route for recommendation '${id}' with '${route.id}'.`);
   const registryRef = typeof raw.registryRef === "string" ? raw.registryRef : undefined;
   if (registryRef) {
     const entry = input.registryByRef.get(registryRef);
-    if (!entry || entry.category !== category || !entry.vendors.includes(input.policy.provider)) return { note: `Dropped recommendation '${id}': registry ref '${registryRef}' is unsupported.` };
+    if (!entry || entry.category !== category || !entry.vendors.includes(input.policy.provider)) return rejectRecommendation(`Dropped recommendation '${id}': registry ref '${registryRef}' is unsupported.`);
   }
-  if (Object.keys(raw).some((key) => /(?:code|script|payload|command)/i.test(key))) return { note: `Dropped recommendation '${id}': executable payloads are not accepted.` };
-  const benefit = rawBenefit ?? adviceCategoryBenefit(category);
-  if (category === "hooks" && (/```|#!|[{}]|(?:^|\s)(?:bash|node|python(?:3)?)\s+-/i.test(`${reason}\n${benefit}`) || /\b(?:commit|push|publish|deploy)\b/i.test(`${reason}\n${benefit}`))) {
-    return { note: `Dropped recommendation '${id}': unsafe or executable hook behavior is not accepted.` };
-  }
+  const unboundedBenefit = suppliedBenefit ?? adviceCategoryBenefit(category);
+  const benefit = boundRecommendationText(unboundedBenefit, 240);
   const origins = new Set(cited.map((evidenceId) => input.evidenceById.get(evidenceId)!.source === "project" ? "codebase" : "sessions"));
   const evidenceOrigin = origins.size === 2 ? "both" : origins.has("codebase") ? "codebase" : "sessions";
+  if (!suppliedReason) notes.push(`Filled missing reason for recommendation '${id}' from cited evidence.`);
+  if (!suppliedBenefit) notes.push(`Filled missing benefit for recommendation '${id}' from the ${category} default.`);
+  if (reason.truncated || benefit.truncated) notes.push(`Bounded recommendation '${id}' text to the report limits (${reason.truncated ? "reason" : ""}${reason.truncated && benefit.truncated ? " and " : ""}${benefit.truncated ? "benefit" : ""}).`);
   return { recommendation: {
-    id, category, targetVendors: [input.policy.provider], reason, benefit, evidence: Array.from(new Set(cited)),
-    confidence: raw.confidence as AdviceRecommendation["confidence"], implementationRoute: { id: route.id, description: route.description },
+    id, category, targetVendors: [input.policy.provider], reason: reason.value, benefit: benefit.value, evidence: Array.from(new Set(cited)),
+    confidence, implementationRoute: { id: route.id, description: route.description },
     creates: adviceRouteArtifacts(route, [input.policy.provider]), evidenceOrigin, ...(registryRef ? { registryRef } : {})
-  } };
+  }, notes, normalized: notes.length > 0 };
 }
 
 export function validateAdviceResponse(input: {
@@ -144,11 +212,15 @@ export function validateAdviceResponse(input: {
   weakLeads: AdviceRecommendation[];
   omitted: AdviceOmittedRecommendation[];
   notes: string[];
+  rejectionReasons: string[];
+  localRecoveries: number;
   rejectedCategories: Set<AdviceCategory>;
   returned: number;
 } {
   if (!isRecord(input.parsed) || !Array.isArray(input.parsed.recommendations)) throw new Error('advice backend JSON must have shape {"recommendations":[...]}');
   const notes: string[] = [];
+  const rejectionReasons: string[] = [];
+  let localRecoveries = 0;
   const valid: AdviceRecommendation[] = [];
   const rejectedCategories = new Set<AdviceCategory>();
   const seenIds = new Set<string>();
@@ -159,14 +231,24 @@ export function validateAdviceResponse(input: {
   };
   for (const raw of input.parsed.recommendations) {
     const result = validateRecommendation({ raw, ...context });
+    notes.push(...result.notes);
     if (!result.recommendation) {
-      if (result.note) notes.push(result.note);
+      if (result.rejection) {
+        notes.push(result.rejection);
+        rejectionReasons.push(result.rejection);
+      }
       if (isRecord(raw) && typeof raw.category === "string" && isAdviceCategory(raw.category)) rejectedCategories.add(raw.category);
       continue;
     }
     const item = result.recommendation;
     const signature = `${item.category}:${item.reason.toLowerCase()}:${item.targetVendors.join(",")}`;
-    if (seenIds.has(item.id) || seenSignatures.has(signature)) { notes.push(`Dropped duplicate recommendation '${item.id}'.`); continue; }
+    if (seenIds.has(item.id) || seenSignatures.has(signature)) {
+      const rejection = `Dropped duplicate recommendation '${item.id}'.`;
+      notes.push(rejection);
+      rejectionReasons.push(rejection);
+      continue;
+    }
+    if (result.normalized) localRecoveries += 1;
     seenIds.add(item.id);
     seenSignatures.add(signature);
     valid.push(item);
@@ -175,14 +257,20 @@ export function validateAdviceResponse(input: {
   const weakLeads: AdviceRecommendation[] = [];
   const omitted: AdviceOmittedRecommendation[] = [];
   for (const item of valid) {
-    if (item.confidence === "low") { weakLeads.push(item); continue; }
     const categoryPolicy = input.policy.categories.find((candidate) => candidate.category === item.category)!;
     const limit = input.categories.length === 1 ? categoryPolicy.focusedLimit : categoryPolicy.defaultLimit;
+    if (item.confidence === "low") {
+      const weakCount = weakLeads.filter((candidate) => candidate.category === item.category).length;
+      if (weakCount >= categoryPolicy.focusedLimit) {
+        omitted.push({ recommendation: item, reason: `Ranked after the top ${categoryPolicy.focusedLimit} low-confidence ${item.category} leads retained for review.` });
+      } else weakLeads.push(item);
+      continue;
+    }
     const accepted = recommendations.filter((candidate) => candidate.category === item.category).length;
     if (accepted >= limit) omitted.push({ recommendation: item, reason: `Ranked after the top ${limit} ${item.category} recommendations allowed in this report.` });
     else recommendations.push(item);
   }
-  return { recommendations, weakLeads, omitted, notes, rejectedCategories, returned: input.parsed.recommendations.length };
+  return { recommendations, weakLeads, omitted, notes, rejectionReasons, localRecoveries, rejectedCategories, returned: input.parsed.recommendations.length };
 }
 
 export function validateAdviceCoverage(input: {
@@ -204,7 +292,7 @@ export function validateAdviceCoverage(input: {
     if (count) return { category, status: "accepted", reason: reasons.get(category) ?? `${count} recommendation${count === 1 ? "" : "s"} passed validation.` };
     if (input.omitted.some((item) => item.recommendation.category === category)) return { category, status: "presentation-omission", reason: reasons.get(category) ?? "Valid opportunities were omitted by the category presentation bound." };
     if (input.weakLeads.some((item) => item.category === category)) return { category, status: "weak-evidence", reason: reasons.get(category) ?? "The backend returned only low-confidence candidates." };
-    if (input.rejectedCategories.has(category)) return { category, status: "validation-rejection", reason: "The backend returned this category, but every candidate failed evidence, provider, route, registry, duplicate, or safety validation." };
+    if (input.rejectedCategories.has(category)) return { category, status: "validation-rejection", reason: "The backend returned this category, but every candidate failed evidence, provider, route, registry, or duplicate validation." };
     return { category, status: "no-evidence", reason: reasons.get(category) ?? "No applicable codebase or session opportunity was identified for this category." };
   });
 }

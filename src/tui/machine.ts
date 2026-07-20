@@ -113,7 +113,6 @@ export type CreateInitialWizardStateInput = {
   contextText?: string;
   contextSource?: string;
   adviseBackend?: AdviseBackend;
-  adviseAutoStart?: boolean;
 };
 
 function packDefaultFor(input: CreateInitialWizardStateInput, packId: string): { skills: SkillRef[]; hooks: PackHookRef[] } {
@@ -165,7 +164,7 @@ export function createInitialWizardState(input: CreateInitialWizardStateInput): 
     contextText: input.contextText,
     contextSource: input.contextSource,
     adviseBackend: input.adviseBackend,
-    adviseEnabled: Boolean(input.adviseAutoStart && input.contextText && input.adviseBackend),
+    adviseEnabled: false,
     adviseStatus: "idle",
     adviseError: undefined,
     recommendations: [],

@@ -37,10 +37,10 @@
     "access": "public"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "bun test --max-concurrency=1",
     "typecheck": "tsc --noEmit",
     "test:hooks": "uvx pytest src/templates/hooks",
-    "check": "bun test && tsc --noEmit && uvx pytest src/templates/hooks",
+    "check": "bun test --max-concurrency=1 && tsc --noEmit && uvx pytest src/templates/hooks",
     "konsistent": "konsistent check --error-on-warnings"
   },
   "dependencies": {

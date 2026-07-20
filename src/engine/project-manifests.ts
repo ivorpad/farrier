@@ -1,18 +1,38 @@
-import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
 import { redactEvidence } from "./behavior-evidence";
 import type { ProjectDependency, ProjectWorkflow } from "./advice-types";
+import {
+  openContainedRepository,
+  readContainedFile,
+  type ContainedReadResult,
+  type ContainedRepository,
+} from "./repository-paths";
 
 const maxReadChars = 80_000;
+const maxReadBytes = maxReadChars * 4;
 
-export async function readProjectFile(root: string, path: string): Promise<string | undefined> {
+type RepositoryInput = string | ContainedRepository;
+
+async function repositoryFor(root: RepositoryInput): Promise<ContainedRepository> {
+  return typeof root === "string" ? openContainedRepository(root) : root;
+}
+
+export async function readProjectFileDetailed(
+  root: RepositoryInput,
+  path: string,
+): Promise<ContainedReadResult> {
   try {
-    const absolute = join(root, path);
-    if (!(await stat(absolute)).isFile()) return undefined;
-    return (await readFile(absolute, "utf8")).slice(0, maxReadChars);
+    return await readContainedFile(await repositoryFor(root), path, maxReadBytes);
   } catch {
-    return undefined;
+    return { status: "unreadable", path };
   }
+}
+
+export async function readProjectFile(
+  root: RepositoryInput,
+  path: string,
+): Promise<string | undefined> {
+  const result = await readProjectFileDetailed(root, path);
+  return result.status === "read" ? result.text.slice(0, maxReadChars) : undefined;
 }
 
 type ManifestInventory = {
@@ -139,15 +159,16 @@ function parseGemfile(text: string): ManifestInventory {
   };
 }
 
-export async function inspectProjectManifests(root: string, paths: string[]): Promise<ManifestInventory> {
+export async function inspectProjectManifests(root: RepositoryInput, paths: string[]): Promise<ManifestInventory> {
+  const repository = await repositoryFor(root);
   const inventories: ManifestInventory[] = [];
-  const packageText = await readProjectFile(root, "package.json");
+  const packageText = await readProjectFile(repository, "package.json");
   if (packageText) {
     try { inventories.push(parsePackageJson(packageText, paths)); } catch { /* profile the remaining manifests */ }
   }
-  const pyprojectText = await readProjectFile(root, "pyproject.toml");
+  const pyprojectText = await readProjectFile(repository, "pyproject.toml");
   if (pyprojectText) inventories.push(parsePyproject(pyprojectText));
-  const gemfileText = await readProjectFile(root, "Gemfile");
+  const gemfileText = await readProjectFile(repository, "Gemfile");
   if (gemfileText) inventories.push(parseGemfile(gemfileText));
   return {
     dependencies: inventories.flatMap((item) => item.dependencies).slice(0, 200),

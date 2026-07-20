@@ -1,0 +1,6 @@
+{
+  "packIds": ["generic"],
+  "hookIds": ["not-a-hook"],
+  "skills": [],
+  "learn": { "enabled": false }
+}

@@ -1,8 +1,13 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
 import { builtinDetectionOrder, getPack } from "../packs/index";
 import type { PackDetect, ResolvedPack, SecondaryDetectionFinding } from "../packs/types";
 import type { PackCatalog } from "../registry/catalog";
+import {
+  openContainedRepository,
+  readContainedDirectory,
+  readContainedFile,
+  type ContainedReadResult,
+  type ContainedRepository,
+} from "./repository-paths";
 
 type PackageJsonSignals = {
   dependencies: Set<string>;
@@ -32,6 +37,13 @@ type DetectRequirements = {
 
 const ignoredWalkDirectories = new Set([".git", ".venv", "node_modules", "vendor"]);
 const maxGlobEvidencePaths = 20;
+const maxDetectionReadBytes = 320_000;
+
+type RepositoryInput = string | ContainedRepository;
+
+async function repositoryFor(input: RepositoryInput): Promise<ContainedRepository> {
+  return typeof input === "string" ? openContainedRepository(input) : input;
+}
 
 function normalizeRelativePath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "");
@@ -90,23 +102,6 @@ function collectRequirements(detects: PackDetect[]): DetectRequirements {
   return requirements;
 }
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readOptionalText(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
 function dependencySet(value: unknown): Set<string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return new Set();
@@ -132,17 +127,13 @@ function parsePackageJson(text: string | undefined): PackageJsonSignals | undefi
   }
 }
 
-async function walkProject(dir: string, prefix = ""): Promise<string[]> {
-  let entries;
-  try {
-    entries = await readdir(join(dir, prefix), { withFileTypes: true });
-  } catch {
-    return [];
-  }
+async function walkProject(repository: ContainedRepository, prefix = ""): Promise<string[]> {
+  const directory = await readContainedDirectory(repository, prefix);
+  if (directory.status !== "read") return [];
 
   const paths: string[] = [];
 
-  for (const entry of entries) {
+  for (const entry of directory.entries) {
     const relativePath = normalizeRelativePath(prefix ? `${prefix}/${entry.name}` : entry.name);
 
     if (entry.isDirectory()) {
@@ -151,11 +142,11 @@ async function walkProject(dir: string, prefix = ""): Promise<string[]> {
       }
 
       paths.push(`${relativePath}/`);
-      paths.push(...(await walkProject(dir, relativePath)));
+      paths.push(...(await walkProject(repository, relativePath)));
       continue;
     }
 
-    if (entry.isFile() || entry.isSymbolicLink()) {
+    if (entry.isFile()) {
       paths.push(relativePath);
     }
   }
@@ -163,29 +154,30 @@ async function walkProject(dir: string, prefix = ""): Promise<string[]> {
   return paths;
 }
 
-async function scanProject(dir: string, detects: PackDetect[]): Promise<ProjectSignals> {
+async function scanProject(input: RepositoryInput, detects: PackDetect[]): Promise<ProjectSignals> {
+  const repository = await repositoryFor(input);
   const requirements = collectRequirements(detects);
-  const existingFiles = new Set<string>();
+  const reads = new Map<string, ContainedReadResult>();
 
-  for (const file of requirements.files) {
-    if (await exists(join(dir, file))) {
-      existingFiles.add(file);
-    }
-  }
+  await Promise.all(Array.from(requirements.files, async (file) => {
+    reads.set(file, await readContainedFile(repository, file, maxDetectionReadBytes));
+  }));
 
-  const [pyprojectText, packageJsonText, gemfileText, allRelativeFiles] = await Promise.all([
-    requirements.needsPyproject || requirements.files.has("pyproject.toml") ? readOptionalText(join(dir, "pyproject.toml")) : Promise.resolve(undefined),
-    requirements.needsPackageJson || requirements.files.has("package.json") ? readOptionalText(join(dir, "package.json")) : Promise.resolve(undefined),
-    requirements.needsGemfile || requirements.files.has("Gemfile") ? readOptionalText(join(dir, "Gemfile")) : Promise.resolve(undefined),
-    requirements.globs.size > 0 ? walkProject(dir) : Promise.resolve([]),
-  ]);
+  const existingFiles = new Set(Array.from(reads)
+    .filter(([, result]) => result.status === "read" || result.status === "oversized")
+    .map(([file]) => file));
+  const text = (path: string): string | undefined => {
+    const result = reads.get(path);
+    return result?.status === "read" ? result.text : undefined;
+  };
+  const allRelativeFiles = requirements.globs.size > 0 ? await walkProject(repository) : [];
 
   return {
     existingFiles,
     allRelativeFiles,
-    pyprojectText,
-    packageJson: parsePackageJson(packageJsonText),
-    gemfileText,
+    pyprojectText: text("pyproject.toml"),
+    packageJson: parsePackageJson(text("package.json")),
+    gemfileText: text("Gemfile"),
   };
 }
 
@@ -373,7 +365,7 @@ function matchesDetect(signals: ProjectSignals, detect: PackDetect): boolean {
   return matchedDetectEvidence(signals, detect) !== undefined;
 }
 
-export async function detectPacksWithEvidence(dir: string, catalog?: PackCatalog): Promise<DetectedPackEvidence[]> {
+export async function detectPacksWithEvidence(dir: RepositoryInput, catalog?: PackCatalog): Promise<DetectedPackEvidence[]> {
   const packIds = catalog ? catalog.detectablePackIds() : builtinDetectionOrder();
   const packs = packIds.map((id) => (catalog ? catalog.getPack(id) : getPack(id))).filter((pack): pack is NonNullable<typeof pack> => pack !== undefined);
 
@@ -388,12 +380,12 @@ export async function detectPacksWithEvidence(dir: string, catalog?: PackCatalog
   });
 }
 
-export async function detectPacks(dir: string, catalog?: PackCatalog): Promise<string[]> {
+export async function detectPacks(dir: RepositoryInput, catalog?: PackCatalog): Promise<string[]> {
   const detected = await detectPacksWithEvidence(dir, catalog);
   return detected.map((pack) => pack.packId);
 }
 
-export async function detectSecondary(dir: string, pack: Pick<ResolvedPack, "secondaryDetectors">): Promise<SecondaryDetectionFinding[]> {
+export async function detectSecondary(dir: RepositoryInput, pack: Pick<ResolvedPack, "secondaryDetectors">): Promise<SecondaryDetectionFinding[]> {
   const detectors = pack.secondaryDetectors ?? [];
 
   if (detectors.length === 0) {

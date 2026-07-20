@@ -1,14 +1,14 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { adviseSkills, detectAgentBackend, resolveContext, type AdviseBackend } from "../engine/advise";
+import { adviseSkills, type AdviseBackend } from "../engine/advise";
 import { probeAgents, type AgentAvailability } from "../engine/backend";
-import { detectPacksWithEvidence, type DetectedPackEvidence } from "../engine/detect";
+import type { DetectedPackEvidence } from "../engine/detect";
 import { agentsHardRules } from "../engine/render";
 import { HarnessApplyError } from "../engine/create-plan";
 import { searchSkills, type SkillSearchResult } from "../engine/skills";
-import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
-import { builtinCatalog, loadPackCatalog, type PackCatalog } from "../registry/catalog";
+import { resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
+import type { PackCatalog } from "../registry/catalog";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
 import { nextEvalPolicy, type SkillEvalPolicy } from "./create-eval";
 import { runHarnessWrite } from "./harness-write";
@@ -23,6 +23,7 @@ import { LearnStep } from "./LearnStep";
 import { ReviewStep, WritingStep } from "./ReviewStep";
 import { useHarnessReview } from "./use-harness-review";
 import { idleExitBindings, resolveIntent } from "./keymap";
+import { loadWizardBootstrap } from "./wizard-bootstrap";
 
 type WizardAppProps = {
   targetDir: string;
@@ -30,7 +31,7 @@ type WizardAppProps = {
   contextText?: string;
   contextSource?: string;
   adviseBackend?: AdviseBackend;
-  adviseAutoStart?: boolean;
+  skillQueries: string[];
   catalog: PackCatalog;
   registryWarnings: string[];
   models: ModelsConfig;
@@ -68,9 +69,8 @@ function WizardApp(props: WizardAppProps) {
         contextText: props.contextText,
         contextSource: props.contextSource,
         adviseBackend: props.adviseBackend,
-        adviseAutoStart: props.adviseAutoStart,
       }),
-    [defaultPackId, packDefaults, packIds, props.adviseAutoStart, props.adviseBackend, props.contextSource, props.contextText, props.detectedPacks],
+    [defaultPackId, packDefaults, packIds, props.adviseBackend, props.contextSource, props.contextText, props.detectedPacks],
   );
 
   const [state, dispatch] = useReducer(wizardReducer, initialState);
@@ -146,12 +146,10 @@ function WizardApp(props: WizardAppProps) {
 
     const query = state.skillQuery;
     const trimmed = query.trim();
-
-    if (trimmed.length === 0) {
-      return;
-    }
-
-    const cached = searchCache.current.get(trimmed);
+    const queries = trimmed ? [trimmed] : props.skillQueries;
+    if (queries.length === 0) return;
+    const cacheKey = queries.join("\0");
+    const cached = searchCache.current.get(cacheKey);
 
     if (cached) {
       dispatch({ type: "SKILL_SEARCH_SUCCEEDED", query, results: cached });
@@ -163,9 +161,19 @@ function WizardApp(props: WizardAppProps) {
     const timeout = setTimeout(() => {
       dispatch({ type: "SKILL_SEARCH_STARTED", query });
 
-      searchSkills(query, { signal: controller.signal })
-        .then((results) => {
-          searchCache.current.set(trimmed, results);
+      Promise.allSettled(queries.map((item) => searchSkills(item, { signal: controller.signal })))
+        .then((outcomes) => {
+          if (controller.signal.aborted) return;
+          const results = Array.from(new Map(outcomes.flatMap((outcome) =>
+            outcome.status === "fulfilled"
+              ? outcome.value.map((item) => [`${item.source}@${item.skillId}`, item] as const)
+              : [])).values()).sort((left, right) => right.installs - left.installs);
+          const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+          if (results.length === 0 && failures.length === outcomes.length) {
+            const first = failures[0] as PromiseRejectedResult | undefined;
+            throw first?.reason ?? new Error("skills.sh search failed");
+          }
+          searchCache.current.set(cacheKey, results);
           dispatch({ type: "SKILL_SEARCH_SUCCEEDED", query, results });
         })
         .catch((error) => {
@@ -185,16 +193,16 @@ function WizardApp(props: WizardAppProps) {
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [state.skillQuery, state.step]);
+  }, [props.skillQueries, state.skillQuery, state.step]);
 
   useEffect(() => {
     // adviseStatus stays out of the deps: ADVISE_STARTED flips it to "running",
     // and re-running the effect on that change would cancel its own request.
-    // No step gate: research starts at launch so results are ready by the Skills step.
-    if (!state.adviseEnabled || state.adviseStatus === "ready" || state.adviseStatus === "error") {
+    if (state.step !== "Skills" || !state.adviseEnabled || state.adviseStatus === "ready" || state.adviseStatus === "error") {
       return;
     }
 
+    const controller = new AbortController();
     let cancelled = false;
 
     dispatch({ type: "ADVISE_STARTED" });
@@ -213,6 +221,7 @@ function WizardApp(props: WizardAppProps) {
       backend: adviseBackend,
       model: adviseSettings.model,
       reasoningEffort: adviseSettings.reasoningEffort,
+      signal: controller.signal,
     })
       .then((result) => {
         if (!cancelled) {
@@ -230,8 +239,9 @@ function WizardApp(props: WizardAppProps) {
 
     return () => {
       cancelled = true;
+      controller.abort(new Error("Skill research was cancelled."));
     };
-  }, [props.targetDir, state.adviseBackend, state.adviseEnabled, state.contextText, state.packId]);
+  }, [props.targetDir, state.adviseBackend, state.adviseEnabled, state.contextText, state.packId, state.step]);
 
   function selectPack(packId: string): void {
     const pack = props.catalog.resolvePack(packId);
@@ -334,6 +344,7 @@ function WizardApp(props: WizardAppProps) {
           onBack={() => dispatch({ type: "BACK" })}
           onQuit={() => props.onExit(1)}
           adviseAvailable={Boolean(state.contextText && state.adviseBackend)}
+          adviseContextSource={state.contextSource}
           adviseBackend={state.adviseBackend}
           adviseEnabled={state.adviseEnabled}
           adviseStatus={state.adviseStatus}
@@ -442,36 +453,7 @@ function WizardApp(props: WizardAppProps) {
 
 export async function runWizard(targetDir: string, options?: { context?: string }): Promise<number> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
-  let catalog: PackCatalog = builtinCatalog();
-  let registryWarnings: string[] = [];
-  let models: ModelsConfig = {};
-
-  try {
-    const config = await loadFarrierConfig({ projectDir: targetDir });
-    models = config.config.models;
-    if (Object.keys(config.config.registries).length > 0) {
-      console.error("Loading registries...");
-    }
-    catalog = await loadPackCatalog({ config: config.config });
-    registryWarnings = catalog.warnings.map((warning) => `${warning.namespace}: ${warning.message}`);
-  } catch (error) {
-    catalog = builtinCatalog();
-    registryWarnings = [`Registry loading failed; showing built-in packs only: ${errorMessage(error)}`];
-  }
-
-  const detectedPacks = await detectPacksWithEvidence(targetDir, catalog).catch(() => []);
-
-  const resolvedContext = await resolveContext({
-    targetDir,
-    context: options?.context,
-  }).catch(() => undefined);
-  const adviseBackend = (() => {
-    try {
-      return detectAgentBackend();
-    } catch {
-      return undefined;
-    }
-  })();
+  const bootstrap = await loadWizardBootstrap(targetDir, options?.context);
 
   try {
     // Default ctrl+c would destroy the renderer and orphan spawned agent
@@ -495,14 +477,14 @@ export async function runWizard(targetDir: string, options?: { context?: string 
       createRoot(cliRenderer).render(
         <WizardApp
           targetDir={targetDir}
-          detectedPacks={detectedPacks}
-          contextText={resolvedContext?.text}
-          contextSource={resolvedContext?.source}
-          adviseBackend={adviseBackend}
-          adviseAutoStart={options?.context !== undefined}
-          catalog={catalog}
-          registryWarnings={registryWarnings}
-          models={models}
+          detectedPacks={bootstrap.detectedPacks}
+          contextText={bootstrap.context?.text}
+          contextSource={bootstrap.context?.source}
+          adviseBackend={bootstrap.adviseBackend}
+          skillQueries={bootstrap.skillQueries}
+          catalog={bootstrap.catalog}
+          registryWarnings={bootstrap.registryWarnings}
+          models={bootstrap.models}
           onExit={finish}
         />,
       );

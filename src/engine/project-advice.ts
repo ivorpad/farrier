@@ -1,16 +1,20 @@
 import { resolve } from "node:path";
 import type { ReasoningEffort } from "../config/farrier-config";
-import { invokeBackend, defaultBackendRunner, type BackendCommandRunner } from "./backend";
+import { defaultBackendRunner, type BackendCommandRunner } from "./backend";
 import { compareEvidence, createEvidenceSet, redactEvidence } from "./behavior-evidence";
 import { builtinAdviceRegistry, type AdviceRegistryEntry } from "./advice-catalog";
+import { defaultAdviceWorkerConcurrency, orchestrateAdvice } from "./advice-orchestrator";
 import { advicePolicyFor } from "./advice-policy";
-import { buildAdvicePrompt, validateAdviceCoverage, validateAdviceResponse } from "./advice-recommender";
 import { collectSkillRegistry } from "./advice-registry";
-import { boundSessionText, episodeEvidence, episodePatternKey, extractUserRequest, requestCategories, selectFairEpisodes, stripSessionAmbient } from "./advice-patterns";
-import { collectProjectSessionEvidence } from "./advice-sessions";
+import { boundSessionText, episodeEvidence, episodePatternKey, extractUserRequest, selectFairEpisodes, stripSessionAmbient } from "./advice-patterns";
+import {
+  collectProjectSessionEvidence,
+  sessionProjectRootDigest,
+  validateSessionConsent,
+  type SessionConsent
+} from "./advice-sessions";
 import {
   adviceCategories,
-  adviceSessionLookbackLabel,
   type AdviceCategory,
   type AdviceEvidence,
   type AdviceEvidenceFunnel,
@@ -34,17 +38,20 @@ export type ProjectAdviceInput = {
   targets?: AdviceVendor[];
   sessionSources?: AdviceVendor[];
   only?: AdviceCategory[];
+  concurrency?: number;
   runner?: BackendCommandRunner;
   signal?: AbortSignal;
   search?: (query: string) => Promise<SkillSearchResult[]>;
   codexClientFactory?: CodexAppServerFactory;
+  sessionConsent?: SessionConsent;
   sessionEvidence?: AdviceSessionEvidence;
   onProgress?: (event: AdviceProgressEvent) => void;
 };
 
 export type AdviceProgressEvent = {
-  stage: "profile" | "sessions" | "catalog" | "backend" | "validation" | "complete";
+  stage: "profile" | "sessions" | "catalog" | "backend" | "coordination" | "validation" | "complete";
   message: string;
+  work?: { total: number; queued: number; running: number; completed: number; failed: number };
 };
 
 function emptyEvidenceFunnel(targets: AdviceVendor[]): AdviceEvidenceFunnel {
@@ -70,7 +77,6 @@ function isolateSessionEvidence(evidence: AdviceSessionEvidence, provider: Advic
       actions: item.actions.slice(0, 12).map((value) => ({ ...value, summary: boundSessionText(stripSessionAmbient(value.summary), 600).text })).filter((value) => value.summary),
       ...(item.outcome ? { outcome: boundSessionText(stripSessionAmbient(item.outcome), 1_000).text } : {}),
       truncated: item.truncated || boundedRequest.truncated,
-      allowedCategories: Array.from(new Set([...item.allowedCategories, ...requestCategories(boundedRequest.text)]))
     }];
   });
   const selected = selectFairEpisodes(cleanedEpisodes);
@@ -115,29 +121,65 @@ function registryFor(input: {
 
 export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceReport> {
   const targetDir = resolve(input.targetDir);
-  const sessions = input.sessions ?? "auto";
+  const sessions = input.sessions ?? "none";
   const lookback = input.lookback ?? "7d";
   if (input.targets && (input.targets.length !== 1 || input.targets[0] !== input.backend)) throw new Error(`Advice targets must equal the selected backend (${input.backend}); choose --targets ${input.backend} or omit --targets.`);
   if (input.sessionSources && (input.sessionSources.length !== 1 || input.sessionSources[0] !== input.backend)) throw new Error(`Advice session sources must equal the selected backend (${input.backend}).`);
+  if (sessions === "auto" && !input.sessionConsent) {
+    throw new Error("Automatic session selection is disabled. Session bodies require explicit version-1 consent.");
+  }
+  if (sessions === "none" && (input.sessionConsent || input.sessionEvidence)) {
+    throw new Error("Session consent or evidence requires sessions mode auto.");
+  }
+  let sessionConsent: SessionConsent | undefined;
+  if (input.sessionConsent) {
+    sessionConsent = validateSessionConsent(
+      input.sessionConsent,
+      await sessionProjectRootDigest(targetDir)
+    );
+    if (!sessionConsent.selected.some((selection) => selection.provider === input.backend)) {
+      throw new Error(`Session consent must select at least one ${input.backend} session for this report.`);
+    }
+    if (input.sessionEvidence
+      && input.sessionEvidence.consentDigest !== sessionConsent.selectionDigest) {
+      throw new Error("Supplied session evidence does not match the reviewed consent.");
+    }
+  }
   const targets: AdviceVendor[] = [input.backend];
-  const categories = input.only?.length ? input.only : [...adviceCategories];
+  const requested = input.only?.length ? input.only : adviceCategories;
+  const categories = adviceCategories.filter((category) => requested.includes(category));
   const policy = advicePolicyFor(input.backend);
-  const progress = (stage: AdviceProgressEvent["stage"], message: string): void => {
-    try { input.onProgress?.({ stage, message }); } catch { /* display callbacks do not control analysis */ }
+  const progress = (stage: AdviceProgressEvent["stage"], message: string, work?: AdviceProgressEvent["work"]): void => {
+    try { input.onProgress?.({ stage, message, ...(work ? { work } : {}) }); } catch { /* display callbacks do not control analysis */ }
   };
 
   progress("profile", "Profiling dependencies, workflows, services, and installed automation…");
-  progress("sessions", sessions === "auto" ? `Finding exact-project ${input.backend} sessions from the ${adviceSessionLookbackLabel(lookback)}…` : "Skipping project sessions; using codebase evidence only…");
+  progress(
+    "sessions",
+    sessions === "auto" && sessionConsent
+      ? `Reading and redacting ${sessionConsent.selected.length} consented ${input.backend} session(s) locally…`
+      : "Skipping project sessions; using codebase evidence only…",
+  );
   const [rawProfile, collected] = await Promise.all([
     profileProject(targetDir),
-    sessions === "auto"
-      ? input.sessionEvidence ?? collectProjectSessionEvidence({ targetDir, targets, lookback, codexClientFactory: input.codexClientFactory })
+    sessions === "auto" && sessionConsent
+      ? input.sessionEvidence ?? collectProjectSessionEvidence({
+          targetDir,
+          consent: sessionConsent,
+          codexClientFactory: input.codexClientFactory,
+          signal: input.signal
+        })
       : Promise.resolve<AdviceSessionEvidence>({ sources: [{ source: input.backend, count: 0 }], episodes: [], signals: [], notes: [], funnel: emptyEvidenceFunnel(targets) })
   ]);
   const profile = redactEvidence(rawProfile);
   const sessionEvidence = redactEvidence(isolateSessionEvidence(collected, input.backend));
   const sessionCount = sessionEvidence.sources.reduce((sum, source) => sum + source.count, 0);
-  progress("sessions", sessions === "auto" ? `Found ${sessionCount} matching session(s); retained ${sessionEvidence.episodes?.length ?? 0} bounded episode(s).` : "Session enrichment disabled; codebase analysis remains enabled.");
+  progress(
+    "sessions",
+    sessions === "auto"
+      ? `Read ${sessionCount} stable session(s) locally; retained ${sessionEvidence.episodes?.length ?? 0} bounded problem pattern(s).`
+      : "Session enrichment disabled; codebase analysis remains enabled.",
+  );
 
   progress("catalog", categories.includes("skills") ? "Planning capability-based skill searches and verifying exact matches…" : "Building provider-native implementation routes…");
   const skills = await collectSkillRegistry({ categories, profile, search: input.search ?? searchSkills });
@@ -152,21 +194,35 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
   sessionEvidence.signals = sessionEvidence.signals.filter((item) => evidenceIds.has(item.id));
   sessionEvidence.episodes = (sessionEvidence.episodes ?? []).filter((item) => evidenceIds.has(item.id));
 
-  progress("backend", `Asking the ${policy.id} recommender for bounded recommendations…`);
-  const parsed = await invokeBackend({
-    backend: input.backend, model: input.model, reasoningEffort: input.reasoningEffort, targetDir,
-    prompt: buildAdvicePrompt({ profile, evidence, episodes: sessionEvidence.episodes ?? [], categories, policy, registry, queries: skills.queries }),
-    ephemeral: true, runner: input.runner ?? defaultBackendRunner, signal: input.signal
+  const concurrency = Math.max(1, Math.min(input.concurrency ?? defaultAdviceWorkerConcurrency, categories.length));
+  progress("backend", categories.length === 1
+    ? `Running one focused ${policy.id} recommendation call…`
+    : `Running ${categories.length} focused ${policy.id} recommendation workers with concurrency ${concurrency}…`);
+  const runner = input.runner ?? defaultBackendRunner;
+  const orchestration = await orchestrateAdvice({
+    targetDir,
+    backend: input.backend,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    runner,
+    signal: input.signal,
+    categories,
+    concurrency,
+    profile,
+    evidence,
+    episodes: sessionEvidence.episodes ?? [],
+    policy,
+    registry,
+    queries: skills.queries,
+    onProgress: (event) => progress(event.stage, event.message, event.work),
   });
-  progress("validation", "Validating provider routes, evidence, registry references, safety, duplicates, and presentation bounds…");
-  const validated = validateAdviceResponse({ parsed, evidence, categories, policy, registry });
-  const coverage = validateAdviceCoverage({ parsed, categories, ...validated });
-  const notes = [...sessionEvidence.notes, ...skills.notes, ...validated.notes];
+  const notes = [...sessionEvidence.notes, ...skills.notes, ...orchestration.notes];
   if (bounded.truncated) notes.push(`Advice evidence was bounded: retained ${bounded.itemCount}/${bounded.inputItemCount} items; ${bounded.truncatedItemCount} truncated and ${bounded.omittedItemCount} omitted.`);
   if (sessions === "none") notes.unshift("Project sessions were disabled; recommendations use codebase evidence only.");
   else if (!sessionCount) notes.unshift("No matching project sessions were found; recommendations use codebase evidence only.");
-  if (validated.omitted.length) notes.push(`${validated.omitted.length} valid opportunity or opportunities were omitted by per-category presentation bounds and remain in omittedRecommendations.`);
-  if (validated.weakLeads.length) notes.push(`${validated.weakLeads.length} low-confidence item(s) are shown as weak leads.`);
+  else if (!sessionEvidence.episodes?.length) notes.unshift("No reusable problem patterns were extracted from project sessions; recommendations use codebase evidence only.");
+  if (orchestration.omitted.length) notes.push(`${orchestration.omitted.length} valid opportunity or opportunities were omitted by overlap or presentation bounds and remain in omittedRecommendations.`);
+  if (orchestration.weakLeads.length) notes.push(`${orchestration.weakLeads.length} low-confidence item(s) are shown as weak leads.`);
   notes.push("Report only: Farrier did not install recommendations or change project configuration.");
 
   const evidenceCases = evidence.map((item) => ({ id: item.id, outcome: "inconclusive" as const }));
@@ -174,25 +230,30 @@ export async function adviseProject(input: ProjectAdviceInput): Promise<AdviceRe
   const funnel = sessionEvidence.funnel ?? emptyEvidenceFunnel(targets);
   funnel.recommendation = {
     patternsSent: sessionEvidence.episodes?.length ?? sessionEvidence.signals.length,
-    returned: validated.returned,
-    accepted: validated.recommendations.length + validated.weakLeads.length + validated.omitted.length,
-    merged: 0,
-    rejected: Math.max(validated.returned - validated.recommendations.length - validated.weakLeads.length - validated.omitted.length, 0),
-    rejectionReasons: validated.notes,
-    recoveryCalls: 0
+    returned: orchestration.returned,
+    accepted: orchestration.accepted,
+    merged: orchestration.merged,
+    rejected: Math.max(orchestration.returned - orchestration.accepted, 0),
+    rejectionReasons: orchestration.rejectionReasons,
+    localRecoveries: orchestration.localRecoveries,
+    modelCalls: orchestration.workerCalls + orchestration.coordinatorCalls + orchestration.recoveryCalls,
+    successfulModelCalls: orchestration.successfulWorkerCalls + orchestration.coordinatorCalls + orchestration.recoveryCalls,
+    failedModelCalls: orchestration.failedWorkerCalls,
+    recoveryCalls: orchestration.recoveryCalls
   };
-  progress("complete", `Report ready with ${validated.recommendations.length} supported recommendation(s), ${validated.omitted.length} bounded omission(s), and ${validated.weakLeads.length} weak lead(s).`);
+  progress("complete", `Report ready with ${orchestration.recommendations.length} supported recommendation(s), ${orchestration.omitted.length} bounded omission(s), and ${orchestration.weakLeads.length} weak lead(s).`);
 
   return {
     schemaVersion: 1, targetDir, backend: input.backend, ...(input.model ? { model: input.model } : {}), reportOnly: true, targets,
     sessions: {
-      mode: sessions, lookback, included: sessions === "auto" && sessionCount > 0, requestedSources: targets,
+      mode: sessions, lookback, included: sessions === "auto" && Boolean(sessionEvidence.episodes?.length), requestedSources: targets,
       sources: sessionEvidence.sources, evidence: sessions === "auto" ? sessionEvidence.signals : [],
       episodes: sessions === "auto" ? sessionEvidence.episodes : [], funnel
     },
     profile, policy: { provider: policy.provider, id: policy.id },
     registry: { queries: skills.queries, verifiedMatches: registry.map((item) => item.ref) },
-    recommendations: validated.recommendations, omittedRecommendations: validated.omitted,
-    weakLeads: validated.weakLeads, coverage, evidence: comparison, notes
+    analysis: orchestration.analysis,
+    recommendations: orchestration.recommendations, omittedRecommendations: orchestration.omitted,
+    weakLeads: orchestration.weakLeads, coverage: orchestration.coverage, evidence: comparison, notes
   };
 }

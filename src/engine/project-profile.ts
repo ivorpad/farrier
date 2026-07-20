@@ -1,7 +1,12 @@
-import { readdir } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename } from "node:path";
 import { detectPacksWithEvidence } from "./detect";
 import { inspectProjectManifests, readProjectFile } from "./project-manifests";
+import { inspectRepositoryFacts } from "./repository-facts";
+import {
+  openContainedRepository,
+  readContainedDirectory,
+  type ContainedRepository,
+} from "./repository-paths";
 import type {
   AdviceCategory,
   AdviceEvidence,
@@ -10,6 +15,7 @@ import type {
   ProjectProfile,
   ProjectWorkflow
 } from "./advice-types";
+import { inventoryProjectSkills } from "./skill-inventory";
 
 const ignoredDirectories = new Set([
   ".git", ".cache", ".farrier-staging", ".mypy_cache", ".next", ".pytest_cache", ".ruff_cache",
@@ -17,20 +23,20 @@ const ignoredDirectories = new Set([
 ]);
 const maxWalkEntries = 4_000;
 
-async function walk(root: string): Promise<string[]> {
+async function walk(repository: ContainedRepository): Promise<string[]> {
   const paths: string[] = [];
   async function visit(relativeDir: string): Promise<void> {
     if (paths.length >= maxWalkEntries) return;
-    let entries;
-    try { entries = await readdir(join(root, relativeDir), { withFileTypes: true }); } catch { return; }
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const directory = await readContainedDirectory(repository, relativeDir);
+    if (directory.status !== "read") return;
+    for (const entry of directory.entries.sort((left, right) => left.name.localeCompare(right.name))) {
       if (paths.length >= maxWalkEntries) break;
       const path = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (ignoredDirectories.has(entry.name)) continue;
         paths.push(`${path}/`);
         await visit(path);
-      } else if (entry.isFile() || entry.isSymbolicLink()) paths.push(path);
+      } else if (entry.isFile()) paths.push(path);
     }
   }
   await visit("");
@@ -42,7 +48,16 @@ function evidenceId(prefix: string, value: string): string {
 }
 
 function addEvidence(evidence: AdviceEvidence[], input: Omit<AdviceEvidence, "source">): void {
-  if (!evidence.some((entry) => entry.id === input.id)) evidence.push({ ...input, source: "project" });
+  const existing = evidence.find((entry) => entry.id === input.id);
+  if (!existing) {
+    evidence.push({ ...input, source: "project" });
+    return;
+  }
+  existing.path ??= input.path;
+  existing.line ??= input.line;
+  existing.extractor ??= input.extractor;
+  existing.factConfidence ??= input.factConfidence;
+  existing.contentDigest ??= input.contentDigest;
 }
 
 function matchingPaths(paths: string[], patterns: RegExp[], limit = 30): string[] {
@@ -148,7 +163,7 @@ function automationInventory(configuration: Record<string, string[]>): ProjectAu
   })));
 }
 
-async function ciWorkflows(root: string, paths: string[], evidence: AdviceEvidence[]): Promise<ProjectWorkflow[]> {
+async function ciWorkflows(root: ContainedRepository, paths: string[], evidence: AdviceEvidence[]): Promise<ProjectWorkflow[]> {
   const workflows: ProjectWorkflow[] = [];
   for (const path of paths) {
     const text = await readProjectFile(root, path);
@@ -184,13 +199,28 @@ function artifactWorkflows(paths: string[], evidence: AdviceEvidence[]): Project
 }
 
 export async function profileProject(targetDirInput: string): Promise<ProjectProfile> {
-  const targetDir = resolve(targetDirInput);
-  const paths = await walk(targetDir);
+  const repository = await openContainedRepository(targetDirInput);
+  const targetDir = repository.root;
+  const [paths, factCollection, rawSkillInventory] = await Promise.all([
+    walk(repository),
+    inspectRepositoryFacts(targetDir).catch(() => undefined),
+    inventoryProjectSkills({ targetDir }).catch(() => undefined),
+  ]);
   const [packEvidence, manifests] = await Promise.all([
-    detectPacksWithEvidence(targetDir).catch(() => []), inspectProjectManifests(targetDir, paths)
+    detectPacksWithEvidence(repository).catch(() => []), inspectProjectManifests(repository, paths)
   ]);
   const evidence: AdviceEvidence[] = [];
   addEvidence(evidence, { id: "project:root", kind: "structure", summary: `Resolved project root: ${targetDir}`, path: "." });
+  for (const fact of factCollection?.facts ?? []) addEvidence(evidence, {
+    id: fact.id,
+    kind: fact.kind,
+    summary: fact.summary,
+    path: fact.path,
+    line: fact.line,
+    extractor: fact.extractor,
+    factConfidence: fact.confidence,
+    contentDigest: fact.contentDigest,
+  });
   for (const pack of packEvidence) addEvidence(evidence, {
     id: `project:stack:${pack.packId}`, kind: "stack", summary: `${pack.packId}: ${pack.evidence.join(", ")}`,
     path: pack.evidence.find((item) => !item.includes(" dependency:"))?.replace(/\/$/, "")
@@ -213,11 +243,11 @@ export async function profileProject(targetDirInput: string): Promise<ProjectPro
   for (const path of services) addEvidence(evidence, { id: evidenceId("service", path), kind: "service", summary: path, path });
   for (const [name, configPaths] of Object.entries(configuration)) {
     for (const path of configPaths.slice(0, 8)) {
-      const text = path.endsWith("/") ? undefined : await readProjectFile(targetDir, path);
+      const text = path.endsWith("/") ? undefined : await readProjectFile(repository, path);
       addEvidence(evidence, { id: evidenceId(`config:${name}`, path), kind: `config:${name}`, summary: `${name} configuration at ${path}${text ? `; ${summarizeConfiguration(path, text)}` : ""}`, path });
     }
   }
-  const ciInventory = await ciWorkflows(targetDir, ci, evidence);
+  const ciInventory = await ciWorkflows(repository, ci, evidence);
   const artifactInventory = artifactWorkflows(paths, evidence);
   const languages = detectedLanguages(paths);
   for (const language of languages) addEvidence(evidence, { id: evidenceId("language", language), kind: "language", summary: `${language} source files detected.` });
@@ -230,10 +260,46 @@ export async function profileProject(targetDirInput: string): Promise<ProjectPro
     id: `project:capability:${item.id}`, kind: `capability:${item.group}`,
     summary: `${item.name} capability from ${item.evidence.join(", ") || "project structure"}`
   });
+  const installedSkills = (rawSkillInventory?.entries ?? []).map((entry) => ({
+    name: entry.name,
+    paths: entry.locations.map((location) => location.path),
+    topologies: entry.topologies.map((topology) => topology.kind),
+    provenance: entry.provenance.kind,
+    provenanceEvidence: entry.provenance.evidence,
+  }));
+  for (const skill of installedSkills) addEvidence(evidence, {
+    id: evidenceId("installed-skill", skill.name),
+    kind: "installed-skill",
+    summary: `${skill.name}: ${skill.topologies.join(", ") || "unknown topology"}; ${skill.provenance} provenance`,
+    path: skill.paths[0],
+  });
+  const skillAutomations: ProjectAutomation[] = installedSkills.map((skill) => ({
+    category: "skills",
+    path: skill.paths[0] ?? ".",
+    summary: `${skill.name}: ${skill.topologies.join(", ") || "unknown topology"}; ${skill.provenance} provenance`,
+  }));
   return {
     targetDir, stacks: packEvidence.map((entry) => entry.packId), languages, tests, ci, services, structure, configuration,
     dependencies: manifests.dependencies, packageManagers: manifests.packageManagers, workspaces: manifests.workspaces,
-    workflows, capabilities, automations: automationInventory(configuration), evidence
+    workflows,
+    capabilities,
+    automations: [...automationInventory(configuration), ...skillAutomations],
+    repositoryFacts: factCollection?.facts,
+    repositoryCoverage: factCollection ? {
+      visitedPaths: factCollection.coverage.visitedPaths,
+      skippedPaths: factCollection.coverage.skippedPaths,
+      readErrors: factCollection.coverage.readErrors,
+      truncatedPaths: factCollection.coverage.truncatedPaths,
+      complete: factCollection.coverage.complete,
+    } : undefined,
+    skillInventory: rawSkillInventory ? {
+      entries: installedSkills,
+      malformedLocations: rawSkillInventory.malformedLocations,
+      roots: rawSkillInventory.coverage.roots,
+      complete: rawSkillInventory.coverage.complete,
+      notes: rawSkillInventory.notes,
+    } : undefined,
+    evidence
   };
 }
 
@@ -251,6 +317,7 @@ export function projectProfileSummary(profile: ProjectProfile): string {
     `CI: ${profile.ci.join(", ") || "none detected"}`,
     `Services: ${profile.services.join(", ") || "none detected"}`,
     `Top-level structure: ${profile.structure.join(", ") || "none"}`,
-    `Agent configuration: ${config || "none detected"}`
+    `Agent configuration: ${config || "none detected"}`,
+    `Installed skills: ${profile.skillInventory?.entries.map((item) => `${item.name} (${item.topologies.join("+")}; ${item.provenance})`).join(", ") || "none detected"}`,
   ].join("\n");
 }

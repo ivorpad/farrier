@@ -96,8 +96,9 @@ test("advice batch starts five jobs with bounded genuine concurrency", async () 
 test("manual routes are explained and one backend failure preserves sibling plans", async () => {
   const failed = recommendation(1);
   const manual = recommendation(2, "plugins");
+  const inspect = { ...recommendation(3), registryRef: "acme/registry@existing-skill" };
   const state = await planAdviceBatch({
-    report: report([recommendation(0), failed, manual]),
+    report: report([recommendation(0), failed, manual, inspect]),
     signal: new AbortController().signal,
     dependencies: {
       planFiles: async (item) => {
@@ -110,9 +111,10 @@ test("manual routes are explained and one backend failure preserves sibling plan
   });
 
   expect(state.phase).toBe("review");
-  expect(state.items.map((item) => item.status)).toEqual(["planned", "failed", "skipped"]);
+  expect(state.items.map((item) => item.status)).toEqual(["planned", "failed", "skipped", "skipped"]);
   expect(state.items[1]?.detail).toContain("Codex planning failed");
   expect(state.items[2]?.detail).toContain("verified marketplace command");
+  expect(state.items[3]?.detail).toContain("creating a replacement is disabled");
   expect(state.plan?.files.map((file) => file.path)).toEqual(["guidance:item-0.md"]);
 });
 

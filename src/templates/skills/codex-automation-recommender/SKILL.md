@@ -8,7 +8,7 @@ description: Analyze a repository and optional matching Codex sessions, then rec
 Run Farrier's Codex policy from the repository root:
 
 ```bash
-farrier advise --dir . --sessions auto --since 7d --targets codex
+farrier advise --dir . --sessions auto --since 7d --backend codex
 ```
 
 Use `bunx farrier` or `npx farrier` if `farrier` is not on `PATH`. Sessions enrich the report but are not required. Use `--sessions none` for codebase-only advice, `--since 14d` for a wider recent window, and `--json` for the validated report model.

@@ -183,8 +183,10 @@ describe("render engine", () => {
     const codexRecommender = byPath.get(".agents/skills/codex-automation-recommender/SKILL.md") ?? "";
     const provenance = byPath.get(".claude/skills/claude-automation-recommender/UPSTREAM.md") ?? "";
 
-    expect(claude).toContain("farrier advise --dir . --sessions auto --since 7d --targets claude");
-    expect(codex).toContain("farrier advise --dir . --sessions auto --since 7d --targets codex");
+    expect(claude).toContain("farrier advise --dir . --sessions auto --since 7d --backend claude");
+    expect(codex).toContain("farrier advise --dir . --sessions auto --since 7d --backend codex");
+    expect(claude).not.toContain("--targets claude");
+    expect(codex).not.toContain("--targets codex");
     expect(codex).toContain("$codex-automation-recommender");
     expect(codexRecommender).toContain(".agents/skills");
     expect(codexRecommender).toContain(".codex/agents");

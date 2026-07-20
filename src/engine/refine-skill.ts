@@ -126,7 +126,7 @@ export async function generateNextGrillQuestion(input: {
     environmentOverrides: backendEnvironmentOverrides(input.backend),
     readOnlyWorkspace: true,
     signal: input.signal,
-    run: ({ workspace, environment, signal }) => invokeBackend({
+    run: ({ workspace, environment, redactValues, signal }) => invokeBackend({
       backend: input.backend,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
@@ -139,7 +139,8 @@ export async function generateNextGrillQuestion(input: {
       targetDir: workspace,
       runner: input.runner ?? defaultBackendRunner,
       signal,
-      env: environment
+      env: environment,
+      redactValues
     })
   });
 

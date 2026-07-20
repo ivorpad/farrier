@@ -559,11 +559,10 @@ describe("wizard machine", () => {
     expect(adviseRunningState().contextSource).toBe("detected:PRP.md");
   });
 
-  test("advise auto-start enables the toggle only when context and backend are both present", () => {
-    expect(createInitialWizardState({ ...adviseInput, adviseAutoStart: true }).adviseEnabled).toBe(true);
-    expect(createInitialWizardState({ ...adviseInput, adviseAutoStart: true, adviseBackend: undefined }).adviseEnabled).toBe(false);
-    expect(createInitialWizardState({ ...adviseInput, adviseAutoStart: true, contextText: undefined }).adviseEnabled).toBe(false);
+  test("advise never starts until the user explicitly enables it", () => {
     expect(createInitialWizardState(adviseInput).adviseEnabled).toBe(false);
+    expect(createInitialWizardState({ ...adviseInput, adviseBackend: undefined }).adviseEnabled).toBe(false);
+    expect(createInitialWizardState({ ...adviseInput, contextText: undefined }).adviseEnabled).toBe(false);
   });
 
   test("advise events are ignored unless enabled and running", () => {

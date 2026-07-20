@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "repositories": {
+    "known-defects": {
+      "issues": [
+        { "id": "kd-guidance-missing-policy", "layer": "guidance", "severity": "high", "locations": [{ "path": "AGENTS.md", "line": 7 }] },
+        { "id": "kd-verification-missing-target", "layer": "verification", "severity": "high", "locations": [{ "path": "AGENTS.md", "line": 5 }] },
+        { "id": "kd-toolchain-wrong-manager", "layer": "toolchain", "severity": "high", "locations": [{ "path": "AGENTS.md", "line": 5 }, { "path": "package.json", "line": 4 }] }
+      ]
+    },
+    "clean": { "issues": [] },
+    "seeded": {
+      "issues": [
+        { "id": "seed-guidance-missing-policy", "layer": "guidance", "severity": "high", "locations": [{ "path": "AGENTS.md", "line": 3 }] },
+        { "id": "seed-verification-missing-target", "layer": "verification", "severity": "high", "locations": [{ "path": "AGENTS.md", "line": 11 }] },
+        { "id": "seed-verification-bypassed-tests", "layer": "verification", "severity": "high", "locations": [{ "path": "AGENTS.md", "line": 9 }, { "path": "AGENTS.md", "line": 13 }, { "path": "package.json", "line": 6 }] },
+        { "id": "seed-skill-frontmatter", "layer": "skill", "severity": "high", "locations": [{ "path": ".agents/skills/release/SKILL.md", "line": 1 }] },
+        { "id": "seed-skill-missing-script", "layer": "skill", "severity": "high", "locations": [{ "path": ".agents/skills/release/SKILL.md", "line": 5 }] },
+        { "id": "seed-hook-missing-command", "layer": "hook", "severity": "blocking", "locations": [{ "path": ".claude/settings.json", "line": 6 }] },
+        { "id": "seed-toolchain-uv-bypass", "layer": "toolchain", "severity": "high", "locations": [{ "path": "AGENTS.md", "line": 5 }, { "path": "AGENTS.md", "line": 7 }] },
+        { "id": "seed-toolchain-floating-manager", "layer": "toolchain", "severity": "high", "locations": [{ "path": "package.json", "line": 4 }] }
+      ]
+    }
+  }
+}

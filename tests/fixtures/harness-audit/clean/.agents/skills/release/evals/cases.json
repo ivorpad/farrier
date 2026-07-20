@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "release-request",
+      "kind": "positive",
+      "prompt": "Prepare release notes for the current version.",
+      "expectedBehavior": "Use the release skill after checks pass."
+    },
+    {
+      "id": "ordinary-change",
+      "kind": "negative",
+      "prompt": "Fix the parser test.",
+      "expectedBehavior": "Do not invoke the release skill."
+    }
+  ]
+}

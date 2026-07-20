@@ -1,6 +1,7 @@
 import { resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
 import { planAdviceBatch, type AdviceBatchState } from "../engine/advice-batch";
 import {
+  adviceCreationSupport,
   inspectAdviceCreationPlan,
   planAdviceRecommendation,
   planAdviceSkillRecommendation
@@ -14,6 +15,7 @@ import type {
 import { probeAgent, type AgentBackend } from "../engine/backend";
 import { ensureCreatorInstalled, type SkillCreationRequest } from "../engine/create-skill";
 import { adviseProject, type AdviceProgressEvent, type ProjectAdviceInput } from "../engine/project-advice";
+import type { SessionConsent } from "../engine/advice-sessions";
 import type { AdviceTuiScope } from "./advise-machine";
 
 function backendName(backend: AgentBackend): "Claude" | "Codex" {
@@ -62,7 +64,7 @@ export function createAdviceWizardActions(
   return {
     onRun: async (
       backend: AgentBackend,
-      includeSessions: boolean,
+      sessionConsent: SessionConsent | undefined,
       lookback: AdviceSessionLookback,
       scope: AdviceTuiScope,
       onProgress: (event: AdviceProgressEvent) => void
@@ -74,7 +76,8 @@ export function createAdviceWizardActions(
         backend,
         model: settings.model,
         reasoningEffort: settings.reasoningEffort,
-        sessions: includeSessions ? "auto" : "none",
+        sessions: sessionConsent ? "auto" : "none",
+        sessionConsent,
         lookback,
         targets: [backend],
         only: scope === "all" ? undefined : [scope as AdviceCategory],
@@ -87,6 +90,8 @@ export function createAdviceWizardActions(
       return report;
     },
     onPlan: async (report: AdviceReport, recommendation: AdviceRecommendation) => {
+      const support = adviceCreationSupport(recommendation);
+      if (support.kind === "inspect") throw new Error(support.description);
       const backend = report.backend;
       await requireBackend(backend);
       const settings = resolveModelSettings({ models: await loadModels(), backend, role: "advise" });

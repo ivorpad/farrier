@@ -12,6 +12,7 @@ import { LauncherApp } from "../src/tui/launcher";
 import { AdviceApp } from "../src/tui/advise-app";
 import { AdviceBatchFlow } from "../src/tui/AdviceBatchFlow";
 import { createInitialAdviceBatchState } from "../src/engine/advice-batch";
+import type { SessionConsent } from "../src/engine/advice-sessions";
 import type { AdviceReport } from "../src/engine/advice-types";
 import type { AgentAvailability } from "../src/engine/backend";
 
@@ -73,6 +74,12 @@ function adviceAppProps(
 ): Parameters<typeof AdviceApp>[0] {
   return {
     sessionCounts: { "7d": [], "14d": [], all: [] },
+    sessionInventory: {
+      entries: [],
+      notes: [],
+      limits: [],
+      projectRootDigest: "project-digest"
+    },
     availability,
     onBack: () => undefined,
     onCancel: () => undefined,
@@ -130,7 +137,7 @@ describe("TUI keyboard interactions", () => {
       await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Codex ›"));
 
       await interact(view, () => view.mockInput.pressTab());
-      await view.waitForFrame((frame) => frame.includes("▸ [ ] Include project sessions"));
+      await view.waitForFrame((frame) => frame.includes("▸ [ ] Use recent Codex sessions"));
       await interact(view, () => view.mockInput.pressTab());
       await view.waitForFrame((frame) => frame.includes("▸ Session window:"));
       await interact(view, () => view.mockInput.pressTab());
@@ -142,7 +149,70 @@ describe("TUI keyboard interactions", () => {
 
       expect(backends).toEqual(["codex"]);
       await interact(view, () => finishRun?.());
-      expect(await view.waitForFrame((frame) => frame.includes("Codex · 0 validated recommendation(s)"))).toContain("Codex · 0 validated recommendation(s)");
+      const emptyReport = await view.waitForFrame((frame) => frame.includes("Codex · 0 validated recommendation(s)"));
+      expect(emptyReport).toContain("No supported recommendation passed");
+      expect(emptyReport).toContain("Codebase profile");
+      expect(emptyReport).not.toContain("Create selected");
+      expect(emptyReport).not.toContain("Create all (0)");
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("advice session control enables a bounded sample and focuses Analyze", async () => {
+    const consents: Array<SessionConsent | undefined> = [];
+    const props = adviceAppProps(async (backend, consent) => {
+      consents.push(consent);
+      return emptyAdviceReport(backend);
+    });
+    props.sessionCounts = {
+      "7d": [{ source: "claude", count: 21 }, { source: "codex", count: 1 }],
+      "14d": [{ source: "claude", count: 21 }, { source: "codex", count: 1 }],
+      all: [{ source: "claude", count: 21 }, { source: "codex", count: 1 }]
+    };
+    const now = Date.now();
+    props.sessionInventory = {
+      entries: [
+        ...Array.from({ length: 21 }, (_, index) => ({
+          opaqueId: `claude-session-${index + 1}`,
+          provider: "claude" as const,
+          updatedAt: new Date(now - index).toISOString(),
+          projectMatch: "directory" as const,
+          sourceFingerprint: `claude-fingerprint-${index + 1}`
+        })),
+        {
+          opaqueId: "codex-session-1",
+          provider: "codex" as const,
+          updatedAt: new Date(now).toISOString(),
+          projectMatch: "provider-index" as const,
+          sourceFingerprint: "codex-fingerprint-1"
+        }
+      ],
+      notes: [],
+      limits: [
+        { provider: "claude", discovered: 21, retained: 21, omitted: 0, invalid: 0 },
+        { provider: "codex", discovered: 1, retained: 1, omitted: 0, invalid: 0 }
+      ],
+      projectRootDigest: "project-digest"
+    };
+    const view = await testRender(<AdviceApp {...props} />, renderOptions);
+    try {
+      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      await interact(view, () => view.mockInput.pressTab());
+      await interact(view, () => view.mockInput.pressEnter());
+      const enabled = await view.waitForFrame((frame) =>
+        frame.includes("▸ Analyze project") && frame.includes("[x] Use 20 recent Claude sessions"));
+      expect(enabled).toContain("Session context enabled: 20 recent Claude session(s). Press Enter to analyze; local parsing runs first.");
+      expect(enabled).not.toContain("Review locally extracted requests");
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() => consents.length === 1);
+
+      expect(consents[0]?.selected).toHaveLength(20);
+      expect(consents[0]?.selected.every((selection) => selection.provider === "claude")).toBe(true);
+      expect(consents[0]?.selected.map((selection) => selection.opaqueId)).not.toContain("claude-session-21");
+      expect(consents[0]?.selected.every((selection) =>
+        selection.maxBytes === 250_000 && selection.maxTurns === 20)).toBe(true);
+      expect(consents[0]?.categories).toEqual(["requests", "corrections", "commands", "files", "outcomes"]);
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -200,6 +270,61 @@ describe("TUI keyboard interactions", () => {
       expect(frame).toContain("VALUE-END");
       expect(frame).toContain("EVIDENCE-END");
       expect(frame).toContain("CREATES-END");
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("verified registry recommendations open a useful read-only inspection", async () => {
+    const report = emptyAdviceReport("claude");
+    const registryRef = "anthropics/claude-plugins-official@hookify";
+    report.profile.evidence = [{
+      id: "project:registry-fit",
+      source: "project",
+      kind: "capability",
+      summary: "The project needs a reviewed Claude hook workflow.",
+      path: "package.json"
+    }];
+    report.registry = { queries: [], verifiedMatches: [registryRef] };
+    report.recommendations = [{
+      id: "plugins:hookify",
+      category: "plugins",
+      targetVendors: ["claude"],
+      reason: "This exact plugin matches the observed hook workflow.",
+      benefit: "It avoids rebuilding an existing plugin inside the project.",
+      evidence: ["project:registry-fit"],
+      confidence: "high",
+      registryRef,
+      implementationRoute: {
+        id: "plugins:claude-install",
+        description: "Review the verified Claude plugin before installing it separately."
+      }
+    }];
+    let finishRun: (() => void) | undefined;
+    const view = await testRender(
+      <AdviceApp {...adviceAppProps(async () => new Promise<AdviceReport>((resolve) => {
+        finishRun = () => resolve(report);
+      }))} />,
+      { width: 120, height: 50 }
+    );
+    try {
+      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() => finishRun !== undefined);
+      await interact(view, () => finishRun?.());
+      await view.waitForFrame((frame) => frame.includes("▸ Inspect registry item"));
+
+      await interact(view, () => view.mockInput.pressEnter());
+      const inspection = await view.waitForFrame((frame) => frame.includes("Registry inspection"));
+      expect(inspection).toContain(registryRef);
+      expect(inspection).toContain("verified for this report");
+      expect(inspection).toContain("This exact plugin matches the observed hook workflow.");
+      expect(inspection).toContain("project:registry-fit: The project needs a reviewed Claude hook workflow.");
+      expect(inspection).toContain("Inspection is read-only");
+
+      await interact(view, () => view.mockInput.pressEnter());
+      expect(await view.waitForFrame((frame) => frame.includes("▸ Inspect registry item"))).toContain("Advice report");
     } finally {
       await interact(view, () => view.renderer.destroy());
     }

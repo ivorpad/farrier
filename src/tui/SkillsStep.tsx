@@ -21,6 +21,7 @@ type SkillsStepProps = {
   onBack: () => void;
   onQuit: () => void;
   adviseAvailable: boolean;
+  adviseContextSource?: string;
   adviseBackend?: AdviseBackend;
   adviseEnabled: boolean;
   adviseStatus: AdviseStatus;
@@ -75,6 +76,13 @@ function adjacentZone(current: Zone, adviseAvailable: boolean, delta: -1 | 1): Z
   const zones: Zone[] = adviseAvailable ? ["input", "advise", "list"] : ["input", "list"];
   const index = zones.indexOf(current);
   return zones[(index + delta + zones.length) % zones.length] ?? "input";
+}
+
+function contextLabel(source?: string): string {
+  if (source === "deterministic-project-profile") return "package.json + project files";
+  if (source?.startsWith("detected:")) return `${source.slice("detected:".length)} + package.json`;
+  if (source?.startsWith("file:")) return `${source.slice("file:".length)} + package.json`;
+  return source === "text" ? "provided context + package.json" : "project context";
 }
 
 export function SkillsStep(props: SkillsStepProps) {
@@ -181,7 +189,9 @@ export function SkillsStep(props: SkillsStepProps) {
       : props.status === "error"
         ? `✗ Search failed: ${props.error ?? "unknown error"}`
         : props.query.trim().length === 0
-          ? "Pack defaults are preselected — receipts below. Type to search skills.sh."
+          ? props.results.length > 0
+            ? `${props.results.length} skills.sh result(s) from detected project capabilities. Type to search directly.`
+            : "Pack defaults are preselected. Type to search skills.sh."
           : `${props.results.length} result(s) for “${props.query.trim()}”`;
 
   const adviseStateBadge = props.adviseEnabled
@@ -264,14 +274,19 @@ export function SkillsStep(props: SkillsStepProps) {
       {props.adviseAvailable ? (
         <box style={{ flexDirection: "row", gap: 1 }}>
           <text fg={focus === "advise" ? palette.accentText : palette.agent} bg={focus === "advise" ? palette.agent : undefined}>
-            {` ★ Agent advise `}
+            {` ★ Research with ${props.adviseBackend === "claude" ? "Claude" : "Codex"} `}
           </text>
-          <text fg={palette.muted}>{`· ${props.adviseBackend}`}</text>
+          <text fg={palette.faint}>{`· ${contextLabel(props.adviseContextSource)}`}</text>
+          <text fg={palette.faint}>· 2 LLM calls, only when activated</text>
           <text fg={adviseBadgeColor}>{`[${adviseStateBadge}]`}</text>
-          {adviseRunning ? <text fg={palette.agent}>{`${spinner} researching your context…`}</text> : null}
+          {adviseRunning ? <text fg={palette.agent}>{`${spinner} researching detected libraries…`}</text> : null}
         </box>
       ) : (
-        <text fg={palette.faint}>★ Agent advise unavailable — pass --context or add PRP.md</text>
+        <text fg={palette.faint}>
+          {props.adviseContextSource
+            ? "★ Agent advise unavailable — install Claude or Codex"
+            : "★ Agent advise unavailable — pass --context or add PRP.md"}
+        </text>
       )}
       {props.adviseEnabled && props.adviseStatus === "error" ? (
         <text fg={palette.warn}>✗ Agent advise failed: {props.adviseError ?? "unknown error"} — search still works</text>

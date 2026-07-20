@@ -1,5 +1,6 @@
 import { adviceCategories, adviceSessionLookbacks, type AdviceCategory, type AdviceReport, type AdviceSessionLookback } from "../engine/advice-types";
 import type { AgentAvailability, AgentBackend } from "../engine/backend";
+import type { SessionConsent } from "../engine/advice-sessions";
 
 export type AdviceTuiScope = "all" | AdviceCategory;
 export const adviceTuiScopes: AdviceTuiScope[] = ["all", ...adviceCategories];
@@ -8,6 +9,7 @@ export type AdviceTuiState = {
   availability: AgentAvailability;
   backend: AgentBackend;
   includeSessions: boolean;
+  sessionConsent?: SessionConsent;
   lookback: AdviceSessionLookback;
   scope: AdviceTuiScope;
   status: "ready" | "running" | "done" | "error";
@@ -20,6 +22,7 @@ export type AdviceTuiState = {
 export type AdviceTuiEvent =
   | { type: "SET_BACKEND"; backend: AgentBackend }
   | { type: "TOGGLE_SESSIONS" }
+  | { type: "SET_SESSION_CONSENT"; consent: SessionConsent }
   | { type: "SET_LOOKBACK"; lookback: AdviceSessionLookback }
   | { type: "SET_SCOPE"; scope: AdviceTuiScope }
   | { type: "CYCLE_SCOPE" }
@@ -47,10 +50,10 @@ export function adjacentAvailableAdviceBackend(
   return available[(currentIndex + direction + available.length) % available.length];
 }
 
-export function createInitialAdviceTuiState(sessionCount: number, availability: AgentAvailability): AdviceTuiState {
+export function createInitialAdviceTuiState(_sessionCount: number, availability: AgentAvailability): AdviceTuiState {
   const backend = initialAdviceBackend(availability);
   if (!backend) throw new Error("No reasoning backend is available.");
-  return { availability, backend, includeSessions: sessionCount > 0, lookback: "7d", scope: "all", status: "ready", progressHistory: [] };
+  return { availability, backend, includeSessions: false, lookback: "7d", scope: "all", status: "ready", progressHistory: [] };
 }
 
 export function adjacentAdviceLookback(current: AdviceSessionLookback, direction: -1 | 1): AdviceSessionLookback {
@@ -60,10 +63,27 @@ export function adjacentAdviceLookback(current: AdviceSessionLookback, direction
 
 export function adviceTuiReducer(state: AdviceTuiState, event: AdviceTuiEvent): AdviceTuiState {
   if (event.type === "SET_BACKEND" && state.status === "ready" && state.availability[event.backend]) {
-    return { ...state, backend: event.backend };
+    return {
+      ...state,
+      backend: event.backend,
+      includeSessions: false,
+      sessionConsent: undefined,
+    };
   }
-  if (event.type === "TOGGLE_SESSIONS" && state.status === "ready") return { ...state, includeSessions: !state.includeSessions };
-  if (event.type === "SET_LOOKBACK" && state.status === "ready") return { ...state, lookback: event.lookback };
+  if (event.type === "TOGGLE_SESSIONS" && state.status === "ready" && state.sessionConsent) {
+    return { ...state, includeSessions: !state.includeSessions };
+  }
+  if (event.type === "SET_SESSION_CONSENT" && state.status === "ready") {
+    return { ...state, sessionConsent: event.consent, includeSessions: true };
+  }
+  if (event.type === "SET_LOOKBACK" && state.status === "ready") {
+    return {
+      ...state,
+      lookback: event.lookback,
+      includeSessions: false,
+      sessionConsent: undefined,
+    };
+  }
   if (event.type === "SET_SCOPE" && state.status === "ready") return { ...state, scope: event.scope };
   if (event.type === "CYCLE_SCOPE" && state.status === "ready") {
     const index = adviceTuiScopes.indexOf(state.scope);

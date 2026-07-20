@@ -10,7 +10,7 @@ Use `$codex-automation-recommender` for codebase-first, provider-native advice. 
 The underlying report command is:
 
 ```bash
-farrier advise --dir . --sessions auto --since 7d --targets codex
+farrier advise --dir . --sessions auto --since 7d --backend codex
 ```
 
 Sessions are optional enrichment. Use `--sessions none` for codebase-only analysis and `--only <category>` for a focused provider-native report. `farrier advise skills` is the separate legacy registry-only command.

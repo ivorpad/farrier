@@ -104,6 +104,7 @@ export type AdviseSkillsInput = {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   maxRecommendations?: number;
+  signal?: AbortSignal;
   runner?: AdviseCommandRunner;
   search?: (query: string) => Promise<SkillSearchResult[]>;
 };
@@ -171,9 +172,12 @@ function extractRawRecommendations(parsed: unknown, backend: AdviseBackend): unk
 
 async function collectCandidates(
   queries: string[],
-  search: (query: string) => Promise<SkillSearchResult[]>
+  search: (query: string) => Promise<SkillSearchResult[]>,
+  signal?: AbortSignal,
 ): Promise<{ candidates: CandidateSkill[]; notes: string[] }> {
+  if (signal?.aborted) throw signal.reason ?? new Error("Skill research was cancelled.");
   const settled = await Promise.allSettled(queries.map((query) => search(query)));
+  if (signal?.aborted) throw signal.reason ?? new Error("Skill research was cancelled.");
   const byRef = new Map<string, CandidateSkill>();
   const notes: string[] = [];
 
@@ -256,7 +260,7 @@ function validateRecommendation(
 
 export async function adviseSkills(input: AdviseSkillsInput): Promise<AdviseResult> {
   const runner = input.runner ?? defaultBackendRunner;
-  const search = input.search ?? searchSkills;
+  const search = input.search ?? ((query: string) => searchSkills(query, { signal: input.signal }));
   const maxRecommendations = input.maxRecommendations ?? defaultMaxRecommendations;
   const notes: string[] = [];
 
@@ -267,11 +271,12 @@ export async function adviseSkills(input: AdviseSkillsInput): Promise<AdviseResu
     prompt: buildQueriesPrompt({ packId: input.packId, contextText: input.contextText }),
     targetDir: input.targetDir,
     runner,
-    ephemeral: true
+    ephemeral: true,
+    signal: input.signal,
   });
 
   const queries = extractQueries(queriesJson, input.backend);
-  const collected = await collectCandidates(queries, search);
+  const collected = await collectCandidates(queries, search, input.signal);
   const candidates = collected.candidates;
   notes.push(...collected.notes);
 
@@ -292,7 +297,8 @@ export async function adviseSkills(input: AdviseSkillsInput): Promise<AdviseResu
     }),
     targetDir: input.targetDir,
     runner,
-    ephemeral: true
+    ephemeral: true,
+    signal: input.signal,
   });
 
   const rawRecommendations = extractRawRecommendations(recommendationsJson, input.backend);

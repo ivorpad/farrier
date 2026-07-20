@@ -1,0 +1,5 @@
+{
+  "packIds": ["generic"],
+  "hookIds": [],
+  "learn": { "enabled": false }
+}

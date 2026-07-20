@@ -7,7 +7,7 @@ export type AdviceBatchItemStatus = "queued" | "running" | "planned" | "created"
 
 export type AdviceBatchItem = {
   recommendation: AdviceRecommendation;
-  route: "files" | "skill" | "unsupported";
+  route: "files" | "skill" | "inspect" | "unsupported";
   status: AdviceBatchItemStatus;
   detail: string;
   plan?: AdviceCreationPlan;
@@ -57,8 +57,8 @@ export function createInitialAdviceBatchState(report: AdviceReport): AdviceBatch
       return {
         recommendation,
         route: support.kind,
-        status: support.kind === "unsupported" ? "skipped" : "queued",
-        detail: support.kind === "unsupported" ? support.description : "Queued"
+        status: support.kind === "unsupported" || support.kind === "inspect" ? "skipped" : "queued",
+        detail: support.kind === "unsupported" || support.kind === "inspect" ? support.description : "Queued"
       };
     })
   };

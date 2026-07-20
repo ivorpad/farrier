@@ -138,16 +138,37 @@ describe("adviseSkills", () => {
     expect(result.notes).toEqual([]);
   });
 
+  test("passes one cancellation signal through both explicit research calls", async () => {
+    const controller = new AbortController();
+    const { runner: queued, calls } = queuedRunner([
+      { stdout: queriesJson },
+      { stdout: recommendationsJson([]) }
+    ]);
+    const runner: AdviseCommandRunner = async (input) => queued(input);
+
+    await adviseSkills({
+      ...baseInput,
+      backend: "claude",
+      signal: controller.signal,
+      runner,
+      search: async () => [candidate("o/r", "s")]
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.signal === controller.signal)).toBe(true);
+  });
+
   test("runs codex via exec with read-only sandbox flags and the prompt as trailing argument", async () => {
     const { runner, calls } = queuedRunner([{ stdout: queriesJson }, { stdout: recommendationsJson([]) }]);
 
     await adviseSkills({ ...baseInput, backend: "codex", model: "gpt-x", runner, search: async () => [candidate("o/r", "s")] });
 
     for (const call of calls) {
-      expect(call.cmd.slice(0, 9)).toEqual([
+      expect(call.cmd.slice(0, 10)).toEqual([
         "codex",
         "exec",
         "--ephemeral",
+        "--skip-git-repo-check",
         "--model",
         "gpt-x",
         "-s",
@@ -155,7 +176,7 @@ describe("adviseSkills", () => {
         "-c",
         "skills.include_instructions=false"
       ]);
-      expect(call.cmd[9]).toContain("Return JSON only");
+      expect(call.cmd[10]).toContain("Return JSON only");
       expect(call.stdin).toBeUndefined();
     }
   });
@@ -165,7 +186,14 @@ describe("adviseSkills", () => {
 
     await adviseSkills({ ...baseInput, backend: "codex", runner, search: async () => [candidate("o/r", "s")] });
 
-    expect(calls[0]?.cmd.slice(0, 5)).toEqual(["codex", "exec", "--ephemeral", "-s", "read-only"]);
+    expect(calls[0]?.cmd.slice(0, 6)).toEqual([
+      "codex",
+      "exec",
+      "--ephemeral",
+      "--skip-git-repo-check",
+      "-s",
+      "read-only"
+    ]);
     expect(calls[0]?.cmd).not.toContain("--model");
   });
 
