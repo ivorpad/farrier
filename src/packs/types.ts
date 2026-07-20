@@ -133,6 +133,12 @@ export type KonsistentTemplate = {
 
 export type PackVerbs = {
   check: string;
+  /**
+   * Fast task-scoped gate run after every edit (format/lint/typecheck level).
+   * Targeted tests are appended by the generated `check-fast` recipe from the
+   * `test` verb when the caller passes test files.
+   */
+  checkFast: string;
   test: string;
   fmt: string;
   konsistent?: string;

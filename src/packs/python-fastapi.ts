@@ -38,6 +38,7 @@ export const pythonFastapiPack: Pack = {
   },
   verbs: {
     check: "uv run ruff check . && uv run pytest",
+    checkFast: "uv run ruff check .",
     test: "uv run pytest",
     fmt: "uv run ruff format .",
     konsistent: `uv run --with ${PYTHON_KONSISTENT_PATH} konpy check`

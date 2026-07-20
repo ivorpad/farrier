@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -131,6 +132,126 @@ def bounded_output(output: str) -> str:
     return redact_text(output).encode("utf-8")[:MAX_OUTPUT_BYTES].decode("utf-8", errors="ignore")
 
 
+RUNTIME_DIR = os.path.join(".farrier", "runtime")
+VERIFY_STATE_NAME = "verify-state.json"
+MAX_STATE_BYTES = 16 * 1024
+TEST_SUFFIX_STYLES = (".test", ".spec", "_test", "_spec")
+MAX_TARGETED_TESTS = 10
+
+ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+DURATION_PATTERN = re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds)\b")
+CLOCK_PATTERN = re.compile(r"\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b")
+TEMP_PATH_PATTERN = re.compile(r"(?:/private)?/(?:var/folders|tmp)/[^\s\"']*")
+
+
+def normalize_failure(output: str, cwd: str) -> str:
+    normalized = ANSI_PATTERN.sub("", output)
+    normalized = normalized.replace(cwd, "<project>")
+    normalized = TEMP_PATH_PATTERN.sub("<tmp>", normalized)
+    normalized = DURATION_PATTERN.sub("<duration>", normalized)
+    normalized = CLOCK_PATTERN.sub("<time>", normalized)
+    return re.sub(r"[ \t]+", " ", normalized).strip()
+
+
+def failure_fingerprint(output: str, cwd: str) -> str:
+    return hashlib.sha256(normalize_failure(output, cwd).encode("utf-8")).hexdigest()
+
+
+def read_verify_state(cwd: str) -> dict:
+    text, error = read_project_text(cwd, f"{RUNTIME_DIR}/{VERIFY_STATE_NAME}".replace(os.sep, "/"), MAX_STATE_BYTES)
+    if error is not None or text is None:
+        return {}
+    try:
+        state = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def write_verify_state(cwd: str, state: dict) -> None:
+    try:
+        directory = os.path.join(cwd, RUNTIME_DIR)
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, VERIFY_STATE_NAME), "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
+    except OSError:
+        # Losing verification state degrades to blocking again, never to
+        # skipping a real failure.
+        pass
+
+
+def is_test_file(path: str) -> bool:
+    name = os.path.basename(path)
+    stem, _ = os.path.splitext(name)
+    if name.startswith("test_") or stem.endswith(TEST_SUFFIX_STYLES):
+        return True
+    return False
+
+
+def edited_project_paths(payload: dict[str, Any]) -> list[str]:
+    tool_input = payload.get("tool_input", {})
+    paths: list[str] = []
+
+    if isinstance(tool_input, dict):
+        for key in ("file_path", "notebook_path", "path"):
+            value = tool_input.get(key)
+            if isinstance(value, str) and value.strip():
+                paths.append(value.strip())
+
+    # Codex apply_patch payloads carry paths inside the patch text.
+    for text in iter_strings(tool_input):
+        for match in re.finditer(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", text, re.MULTILINE):
+            paths.append(match.group(1).strip())
+
+    return paths
+
+
+def targeted_test_files(payload: dict[str, Any], cwd: str) -> list[str]:
+    """Existing test files related to the edited paths, deduped and bounded."""
+    candidates: list[str] = []
+
+    for raw in edited_project_paths(payload):
+        relative = raw.replace("\\", "/")
+        if os.path.isabs(relative):
+            try:
+                relative = os.path.relpath(relative, cwd).replace(os.sep, "/")
+            except ValueError:
+                continue
+        if relative.startswith("../"):
+            continue
+
+        if is_test_file(relative):
+            candidates.append(relative)
+            continue
+
+        directory = os.path.dirname(relative)
+        stem, extension = os.path.splitext(os.path.basename(relative))
+        for candidate_dir in (directory, "tests", "test"):
+            candidates.extend(
+                f"{candidate_dir}/{name}" if candidate_dir else name
+                for name in (
+                    f"test_{stem}.py",
+                    f"{stem}_test{extension}",
+                    f"{stem}.test{extension}",
+                    f"{stem}.spec{extension}",
+                )
+            )
+
+    existing: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen or len(existing) >= MAX_TARGETED_TESTS:
+            continue
+        seen.add(candidate)
+        normalized = os.path.normpath(candidate)
+        if normalized.startswith(".."):
+            continue
+        if os.path.isfile(os.path.join(cwd, normalized)) and not os.path.islink(os.path.join(cwd, normalized)):
+            existing.append(candidate)
+
+    return existing
+
+
 def emit_posttool_failure(output: str) -> None:
     output = bounded_output(output)
     print(
@@ -138,7 +259,7 @@ def emit_posttool_failure(output: str) -> None:
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PostToolUse",
-                    "additionalContext": f"just check failed:\n{output}",
+                    "additionalContext": f"just check-fast failed:\n{output}",
                 }
             }
         )
@@ -174,7 +295,7 @@ def main() -> int:
         if edited_hook_file(payload):
             return 0
 
-        ok, output = run_command(["just", "check"], cwd)
+        ok, output = run_command(["just", "check-fast", *targeted_test_files(payload, cwd)], cwd)
         if not ok:
             emit_posttool_failure(output)
         return 0
@@ -185,6 +306,26 @@ def main() -> int:
         if payload.get("stop_hook_active") not in {None, False}:
             emit_stop_block("stop", "Malformed stop_hook_active value; retry Stop after correcting the hook payload.")
             return 0
+
+        ok, output = run_command(["just", "check-full"], cwd)
+        if ok:
+            state = read_verify_state(cwd)
+            if "checkFullFailure" in state:
+                state.pop("checkFullFailure", None)
+                write_verify_state(cwd, state)
+        else:
+            fingerprint = failure_fingerprint(output, cwd)
+            state = read_verify_state(cwd)
+            if state.get("checkFullFailure") != fingerprint:
+                state["checkFullFailure"] = fingerprint
+                write_verify_state(cwd, state)
+                emit_stop_block(
+                    "check-full",
+                    f"{output}\n\nIf this failure predates your changes, state it in your final summary and stop; "
+                    "an identical failure will not block again.",
+                )
+                return 0
+            # Known baseline failure already reported once: allow the stop.
 
         recipes, discovery_error = find_just_recipes(cwd)
         if discovery_error is not None:

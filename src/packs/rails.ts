@@ -34,6 +34,7 @@ export const railsPack: Pack = {
   ],
   verbs: {
     check: "bundle exec rails test && bundle exec rubocop",
+    checkFast: "bundle exec rubocop",
     test: "bundle exec rails test",
     fmt: "bundle exec rubocop -A"
   },

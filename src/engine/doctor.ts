@@ -932,9 +932,14 @@ async function addGeneratedRecipeProblems(targetDir: string, expectedJustfile: R
   } catch {
     return;
   }
-  const expectedRecipes = Array.from(expectedJustfile.content.matchAll(/^([a-z][a-z0-9_-]*):/gm), (match) => match[1]!);
+  // Recipes may declare parameters ("check-fast *tests:"), so match the name
+  // followed by optional parameters before the colon.
+  const expectedRecipes = Array.from(
+    expectedJustfile.content.matchAll(/^([a-z][a-z0-9_-]*)(?:\s+[^:\n]*)?:/gm),
+    (match) => match[1]!
+  );
   for (const recipe of expectedRecipes) {
-    if (!new RegExp(`^${recipe.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}:`, "m").test(actual)) {
+    if (!new RegExp(`^${recipe.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}(?:\\s+[^:\\n]*)?:`, "m").test(actual)) {
       problems.push({
         group: "inventory",
         severity: "error",
@@ -943,15 +948,6 @@ async function addGeneratedRecipeProblems(targetDir: string, expectedJustfile: R
         remediation: "Run farrier update --yes to restore the generated aggregate and local/CI check definitions."
       });
     }
-  }
-  if (expectedJustfile.content.includes(`pytest ${hooksDirectory}`) && !/^[ \t]+.*pytest \.farrier\/hooks/m.test(actual)) {
-    problems.push({
-      group: "hooks",
-      severity: "error",
-      path: "justfile",
-      message: "The generated check aggregate does not invoke the generated hook test suite",
-      remediation: "Run farrier update --yes, then run just check."
-    });
   }
 }
 

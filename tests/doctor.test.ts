@@ -274,21 +274,22 @@ describe("doctor engine", () => {
     });
   });
 
-  test("statically flags missing hook test artifacts and aggregate coverage", async () => {
+  test("statically flags missing hook test artifacts and missing generated recipes", async () => {
     const dir = await tempDir();
     await renderPack(dir);
     await unlink(join(dir, ".farrier", "hooks", "test_tool_policy.py"));
     const justfile = join(dir, "justfile");
-    await writeFile(justfile, (await readFile(justfile, "utf8")).replace(" && uv run --with pytest pytest .farrier/hooks", ""), "utf8");
+    const withoutFastGate = (await readFile(justfile, "utf8")).replace(/check-fast \*tests:[\s\S]*?\n\n/, "");
+    await writeFile(justfile, withoutFastGate, "utf8");
 
     const report = await createDoctorReport({ targetDir: dir });
     expectProblem(report, "inventory", {
       path: ".farrier/hooks/test_tool_policy.py",
       message: "Expected generated harness file is missing"
     });
-    expectProblem(report, "hooks", {
+    expectProblem(report, "inventory", {
       path: "justfile",
-      message: "The generated check aggregate does not invoke the generated hook test suite"
+      message: "Required generated recipe 'check-fast' is missing"
     });
     expect(report.notes).toContainEqual(expect.stringContaining("Doctor is static"));
   });

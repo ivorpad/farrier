@@ -239,6 +239,9 @@ function validateVerbs(value: unknown, path: string): PackVerbs | undefined {
 
   return {
     check: stringField(value.check, `${path}.check`),
+    // Remote packs may predate the fast gate; falling back to the full check
+    // keeps them correct (check-fast at worst runs the full suite).
+    checkFast: optionalStringField(value.checkFast, `${path}.checkFast`) ?? stringField(value.check, `${path}.check`),
     test: stringField(value.test, `${path}.test`),
     fmt: stringField(value.fmt, `${path}.fmt`),
     konsistent: optionalStringField(value.konsistent, `${path}.konsistent`)

@@ -8,6 +8,7 @@ export const genericPack: Pack = {
   toolPolicyRules: [],
   verbs: {
     check: 'echo "farrier generic pack: configure check in justfile"',
+    checkFast: 'echo "farrier generic pack: configure check-fast in justfile"',
     test: 'echo "farrier generic pack: configure test in justfile"',
     fmt: 'echo "farrier generic pack: configure fmt in justfile"'
   },

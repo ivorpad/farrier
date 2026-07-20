@@ -150,8 +150,9 @@ function isBuiltinHookId(value: PackHookRef): value is HookId {
 }
 
 // .farrier-staging/ holds failed skill-authoring runs kept for inspection;
-// they should never be committed.
-const requiredGitignoreLines = [".env", ".env.*", "!.env.example", ".farrier-staging/"];
+// .farrier/runtime/ holds hook event logs and verification state. Neither
+// should be committed.
+const requiredGitignoreLines = [".env", ".env.*", "!.env.example", ".farrier-staging/", ".farrier/runtime/"];
 
 function posixPath(path: string): string {
   return path.replaceAll("\\", "/");
@@ -233,7 +234,9 @@ export function agentsHardRules(
     "Do not read real `.env*` files or private key material; tracked examples such as `.env.example` are allowed.",
     ...rules,
     "Do not directly edit protected generated/owned files: lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`.",
-    "Run `just check` after edits.",
+    "After edits, run `just check-fast`, passing the relevant test files when they exist.",
+    "Before finishing, run `just check-full` once.",
+    "If `just check-full` repeats a failure that predates your changes, report it once in your summary and stop retrying; the Stop gate does not re-block on an identical known failure.",
     ...(pack.verbs.konsistent ? [`Run \`just ${konsistentToolName(pack)}\` before stopping.`] : []),
     "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
     "Keep generated hook scripts and their tests together.",
@@ -243,7 +246,8 @@ export function agentsHardRules(
 
 function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[], packRules: readonly string[]): string {
   const commandLines = [
-    `- Check: \`${pack.verbs.check}\``,
+    "- Fast check (after edits): `just check-fast [test files...]`",
+    `- Full check (before finishing): \`just check-full\` (${pack.verbs.check})`,
     `- Test: \`${pack.verbs.test}\``,
     `- Format: \`${pack.verbs.fmt}\``
   ];
@@ -404,10 +408,15 @@ export function renderCodexHooksJson(pack: ResolvedPack): string {
 }
 
 function renderJustfile(pack: ResolvedPack): string {
-  const hookCheck = pack.hooks.some(isBuiltinHookId) ? ` && uv run --with pytest pytest ${hooksDirectory}` : "";
+  // Hook self-tests are deliberately NOT part of the project gate; they are
+  // farrier's own tests and run under `farrier doctor`.
   const recipes = [
-    `check:
-  ${pack.verbs.check}${hookCheck}`,
+    `check-fast *tests:
+  ${pack.verbs.checkFast}
+  [ -z "{{tests}}" ] || ${pack.verbs.test} {{tests}}`,
+    `check-full:
+  ${pack.verbs.check}`,
+    `check: check-full`,
     `test:
   ${pack.verbs.test}`,
     `fmt:

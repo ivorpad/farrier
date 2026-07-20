@@ -101,12 +101,14 @@ describe("render engine", () => {
       const pack = resolvePack(packId);
       const plan = await createRenderPlan({ targetDir: await tempDir(), pack });
       const justfile = plan.files.find((file) => file.path === "justfile")!.content;
-      expect(justfile).toMatch(/^check:/m);
+      expect(justfile).toMatch(/^check-fast \*tests:/m);
+      expect(justfile).toMatch(/^check-full:/m);
+      expect(justfile).toMatch(/^check: check-full$/m);
       expect(justfile).toMatch(/^test:/m);
       expect(justfile).toMatch(/^fmt:/m);
-      if (pack.hooks.length > 0) {
-        expect(justfile).toContain("uv run --with pytest pytest .farrier/hooks");
-      }
+      // Hook self-tests are farrier's own suite; they run under doctor, never
+      // inside the project gate.
+      expect(justfile).not.toContain("pytest .farrier/hooks");
       if (pack.verbs.konsistent) {
         expect(justfile).toMatch(new RegExp(`^${pack.konsistentTool ?? "konsistent"}:`, "m"));
       }
@@ -739,7 +741,9 @@ describe("render engine", () => {
     expect(agents).not.toContain("/Users/ivor/src/tries/2026-07-02-konsistent-python");
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
-    expect(justfile).toContain("check:\n  bunx tsc --noEmit && bun test");
+    expect(justfile).toContain("check-fast *tests:\n  bunx tsc --noEmit\n  [ -z \"{{tests}}\" ] || bun test {{tests}}");
+    expect(justfile).toContain("check-full:\n  bunx tsc --noEmit && bun test");
+    expect(justfile).toContain("check: check-full");
     expect(justfile).toContain("test:\n  bun test");
     expect(justfile).toContain("fmt:\n  bunx prettier --write .");
     expect(justfile).toContain("konsistent:\n  bunx konsistent@1.0.0-beta.1 check");
@@ -786,7 +790,8 @@ describe("render engine", () => {
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
-    expect(justfile).toContain("check:\n  bundle exec rails test && bundle exec rubocop");
+    expect(justfile).toContain("check-fast *tests:\n  bundle exec rubocop\n  [ -z \"{{tests}}\" ] || bundle exec rails test {{tests}}");
+    expect(justfile).toContain("check-full:\n  bundle exec rails test && bundle exec rubocop");
     expect(justfile).toContain("test:\n  bundle exec rails test");
     expect(justfile).toContain("fmt:\n  bundle exec rubocop -A");
     expect(justfile).not.toContain("konsistent:");
@@ -830,7 +835,8 @@ describe("render engine", () => {
     expect(plan.files.some((file) => file.path.includes("_hook_runtime.py"))).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
-    expect(justfile).toContain('check:\n  echo "farrier generic pack: configure check in justfile"');
+    expect(justfile).toContain('check-full:\n  echo "farrier generic pack: configure check in justfile"');
+    expect(justfile).toContain('check-fast *tests:\n  echo "farrier generic pack: configure check-fast in justfile"');
     expect(justfile).toContain('test:\n  echo "farrier generic pack: configure test in justfile"');
     expect(justfile).toContain('fmt:\n  echo "farrier generic pack: configure fmt in justfile"');
     expect(justfile).not.toContain("konsistent:");

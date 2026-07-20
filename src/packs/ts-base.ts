@@ -57,6 +57,7 @@ export const tsBasePack: Pack = {
   },
   verbs: {
     check: "bunx tsc --noEmit && bun test",
+    checkFast: "bunx tsc --noEmit",
     test: "bun test",
     fmt: "bunx prettier --write .",
     konsistent: "bunx konsistent@1.0.0-beta.1 check"

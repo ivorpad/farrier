@@ -68,9 +68,9 @@ def stop_payload(tmp_path: Path, active: bool = False) -> dict:
     }
 
 
-def test_posttool_runs_just_check_and_is_silent_on_success(tmp_path: Path) -> None:
+def test_posttool_runs_just_check_fast_and_is_silent_on_success(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(
-        post_payload(tmp_path), tmp_path, 'test "$1" = "check" || exit 7\nexit 0'
+        post_payload(tmp_path), tmp_path, 'test "$1" = "check-fast" || exit 7\nexit 0'
     )
 
     assert code == 0
@@ -78,7 +78,41 @@ def test_posttool_runs_just_check_and_is_silent_on_success(tmp_path: Path) -> No
     assert stderr == ""
 
 
-def test_codex_apply_patch_runs_just_check(tmp_path: Path) -> None:
+def test_posttool_passes_related_test_files_to_check_fast(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_app.py").write_text("def test_x(): pass\n", encoding="utf-8")
+
+    code, stdout, stderr = run_hook(
+        post_payload(tmp_path),
+        tmp_path,
+        f'echo "$@" > {tmp_path}/just-args.txt\nexit 0',
+    )
+
+    assert code == 0
+    assert stdout == ""
+    assert stderr == ""
+    recorded = (tmp_path / "just-args.txt").read_text(encoding="utf-8").strip()
+    assert recorded == "check-fast tests/test_app.py"
+
+
+def test_posttool_passes_edited_test_file_itself(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_app.py").write_text("def test_x(): pass\n", encoding="utf-8")
+
+    code, stdout, stderr = run_hook(
+        post_payload(tmp_path, tool_input={"file_path": "tests/test_app.py"}),
+        tmp_path,
+        f'echo "$@" > {tmp_path}/just-args.txt\nexit 0',
+    )
+
+    assert code == 0
+    recorded = (tmp_path / "just-args.txt").read_text(encoding="utf-8").strip()
+    assert recorded == "check-fast tests/test_app.py"
+
+
+def test_codex_apply_patch_runs_just_check_fast(tmp_path: Path) -> None:
     payload = post_payload(
         tmp_path,
         tool_name="apply_patch",
@@ -88,7 +122,7 @@ def test_codex_apply_patch_runs_just_check(tmp_path: Path) -> None:
     )
 
     code, stdout, stderr = run_hook(
-        payload, tmp_path, 'test "$1" = "check" || exit 7\nexit 0'
+        payload, tmp_path, 'test "$1" = "check-fast" || exit 7\nexit 0'
     )
 
     assert code == 0
@@ -100,7 +134,7 @@ def test_posttool_emits_context_when_check_fails(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(
         post_payload(tmp_path),
         tmp_path,
-        'test "$1" = "check" || exit 7\necho "ruff failed"\nexit 1',
+        'test "$1" = "check-fast" || exit 7\necho "ruff failed"\nexit 1',
     )
 
     assert code == 0
@@ -108,7 +142,7 @@ def test_posttool_emits_context_when_check_fails(tmp_path: Path) -> None:
     data = json.loads(stdout)
     output = data["hookSpecificOutput"]
     assert output["hookEventName"] == "PostToolUse"
-    assert "just check failed" in output["additionalContext"]
+    assert "just check-fast failed" in output["additionalContext"]
     assert "ruff failed" in output["additionalContext"]
 
 
@@ -144,7 +178,7 @@ konsistent:
     code, stdout, stderr = run_hook(
         stop_payload(tmp_path),
         tmp_path,
-        'test "$1" = "konsistent" || exit 7\necho "drift found"\nexit 1',
+        'test "$1" = "check-full" && exit 0\ntest "$1" = "konsistent" || exit 7\necho "drift found"\nexit 1',
     )
 
     assert code == 0
@@ -169,7 +203,7 @@ konpy:
     code, stdout, stderr = run_hook(
         stop_payload(tmp_path),
         tmp_path,
-        'test "$1" = "konpy" || exit 7\necho "drift found"\nexit 1',
+        'test "$1" = "check-full" && exit 0\ntest "$1" = "konpy" || exit 7\necho "drift found"\nexit 1',
     )
 
     assert code == 0
@@ -197,7 +231,7 @@ fmt:
     code, stdout, stderr = run_hook(
         stop_payload(tmp_path),
         tmp_path,
-        'echo "just should not have been called"\nexit 9',
+        'test "$1" = "check-full" && exit 0\necho "structure should not have been called"\nexit 9',
     )
 
     assert code == 0
@@ -299,9 +333,96 @@ def test_oversized_and_symlink_justfiles_block_recipe_discovery(tmp_path: Path) 
             justfile.write_text("x" * (257 * 1024), encoding="utf-8")
         else:
             justfile.symlink_to(outside)
-        code, stdout, stderr = run_hook(stop_payload(case_dir), case_dir, "exit 9")
+        code, stdout, stderr = run_hook(
+            stop_payload(case_dir), case_dir, 'test "$1" = "check-full" && exit 0\nexit 9'
+        )
         assert code == 0
         assert stderr == ""
         data = json.loads(stdout)
         assert data["decision"] == "block"
         assert "safely discover" in data["reason"]
+
+STRUCTURE_OK_JUSTFILE = """check-full:
+  echo full
+
+konsistent:
+  echo konsistent
+"""
+
+
+def stop_with_full_failure(tmp_path: Path, message: str) -> tuple[int, str, str]:
+    return run_hook(
+        stop_payload(tmp_path),
+        tmp_path,
+        f'test "$1" = "check-full" || exit 0\necho "{message}"\nexit 1',
+    )
+
+
+def test_stop_blocks_once_then_allows_identical_check_full_failure(tmp_path: Path) -> None:
+    write_justfile(tmp_path, STRUCTURE_OK_JUSTFILE)
+
+    code, stdout, stderr = stop_with_full_failure(tmp_path, "loopback bind failed")
+    assert code == 0
+    assert stderr == ""
+    data = json.loads(stdout)
+    assert data["decision"] == "block"
+    assert "loopback bind failed" in data["reason"]
+    assert "predates your changes" in data["reason"]
+    assert (tmp_path / ".farrier" / "runtime" / "verify-state.json").is_file()
+
+    code, stdout, stderr = stop_with_full_failure(tmp_path, "loopback bind failed")
+    assert code == 0
+    assert stderr == ""
+    assert stdout == ""
+
+
+def test_stop_blocks_again_when_check_full_failure_changes(tmp_path: Path) -> None:
+    write_justfile(tmp_path, STRUCTURE_OK_JUSTFILE)
+
+    stop_with_full_failure(tmp_path, "first failure")
+    code, stdout, _ = stop_with_full_failure(tmp_path, "second different failure")
+
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["decision"] == "block"
+    assert "second different failure" in data["reason"]
+
+
+def test_check_full_success_clears_recorded_baseline_failure(tmp_path: Path) -> None:
+    write_justfile(tmp_path, STRUCTURE_OK_JUSTFILE)
+
+    stop_with_full_failure(tmp_path, "flaky failure")
+
+    code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path, "exit 0")
+    assert code == 0
+    assert stdout == ""
+    assert stderr == ""
+    state = json.loads((tmp_path / ".farrier" / "runtime" / "verify-state.json").read_text(encoding="utf-8"))
+    assert "checkFullFailure" not in state
+
+    code, stdout, _ = stop_with_full_failure(tmp_path, "flaky failure")
+    data = json.loads(stdout)
+    assert data["decision"] == "block"
+
+
+def test_failure_fingerprint_ignores_paths_durations_and_ansi(tmp_path: Path) -> None:
+    write_justfile(tmp_path, STRUCTURE_OK_JUSTFILE)
+
+    first = f'\x1b[31mFAIL\x1b[0m {tmp_path}/tests/test_app.py took 1.23s at 10:00:01'
+    second = f'FAIL {tmp_path}/tests/test_app.py took 4.56s at 11:22:33'
+
+    code, stdout, _ = run_hook(
+        stop_payload(tmp_path),
+        tmp_path,
+        f'test "$1" = "check-full" || exit 0\nprintf "%s" "{first}"\nexit 1',
+    )
+    assert json.loads(stdout)["decision"] == "block"
+
+    code, stdout, stderr = run_hook(
+        stop_payload(tmp_path),
+        tmp_path,
+        f'test "$1" = "check-full" || exit 0\nprintf "%s" "{second}"\nexit 1',
+    )
+    assert code == 0
+    assert stdout == ""
+    assert stderr == ""

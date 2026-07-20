@@ -204,6 +204,36 @@ function legacyVariant(content: string): string {
   return content.replaceAll(hooksDirectory, legacyHooksDirectory);
 }
 
+const builtinHookIds = new Set(["secret-shield", "tool-policy", "write-guard", "verb-runner", "quality-judge", "stop-judge"]);
+
+/**
+ * Exact reproduction of the v2 renderJustfile output: a single full `check`
+ * aggregate (including the hook self-test suite that has since moved to
+ * `farrier doctor`) and no fast gate.
+ */
+function legacyJustfile(pack: ResolvedPack): string {
+  const hookCheck = pack.hooks.some((hook) => builtinHookIds.has(hook)) ? ` && uv run --with pytest pytest ${legacyHooksDirectory}` : "";
+  const recipes = [
+    `check:
+  ${pack.verbs.check}${hookCheck}`,
+    `test:
+  ${pack.verbs.test}`,
+    `fmt:
+  ${pack.verbs.fmt}`
+  ];
+
+  if (pack.verbs.konsistent) {
+    const comment = pack.packIds.includes("python-uv")
+      ? "  # Temporary local path dependency; upgrade path: git dependency, then PyPI.\n"
+      : "";
+
+    recipes.push(`${pack.konsistentTool ?? "konsistent"}:
+${comment}  ${pack.verbs.konsistent}`);
+  }
+
+  return `${recipes.join("\n\n")}\n`;
+}
+
 async function classifyGeneratedSingletons(
   targetDir: string,
   planFilesByPath: Map<string, RenderedFile>,
@@ -255,7 +285,16 @@ async function classifyGeneratedSingletons(
   const justfile = planFilesByPath.get("justfile");
   if (justfile) {
     const current = await readTextIfExists(targetDir, "justfile");
-    if (current !== undefined && current !== justfile.content && current === legacyVariant(justfile.content)) {
+    const legacyVariants = new Set([
+      legacyVariant(justfile.content),
+      legacyJustfile(pack),
+      legacyJustfile(legacyPack),
+      // Interim layout: hooks already at .farrier/hooks but still a single
+      // full check aggregate including the hook self-tests.
+      legacyJustfile(pack).replaceAll(legacyHooksDirectory, hooksDirectory),
+      legacyJustfile(legacyPack).replaceAll(legacyHooksDirectory, hooksDirectory)
+    ]);
+    if (current !== undefined && current !== justfile.content && legacyVariants.has(current)) {
       report.repairUserFiles.push("justfile");
     }
   }

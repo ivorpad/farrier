@@ -124,6 +124,7 @@ const platformPack: RegistryItem = {
     hooks: [],
     verbs: {
       check: "platform check",
+      checkFast: "platform check",
       test: "platform test",
       fmt: "platform fmt"
     }

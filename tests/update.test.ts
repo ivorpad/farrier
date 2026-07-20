@@ -35,12 +35,32 @@ async function renderLegacyV2Pack(dir: string, packId: string): Promise<void> {
   await rename(hooksDir, legacyHooksDir);
   await rm(join(dir, ".farrier"), { recursive: true, force: true });
 
-  for (const file of ["justfile", ".claude/settings.json", ".codex/hooks.json"]) {
+  for (const file of [".claude/settings.json", ".codex/hooks.json"]) {
     const path = join(dir, file);
     if (!existsSync(path)) continue;
     const content = await readFile(path, "utf8");
     await writeFile(path, content.replaceAll(".farrier/hooks", ".claude/hooks"), "utf8");
   }
+
+  // Byte-exact v2 justfile: one full check aggregate including the hook
+  // self-test suite, and no fast gate.
+  await writeFile(
+    join(dir, "justfile"),
+    `check:
+  uv run ruff check . && uv run pytest && uv run --with pytest pytest .claude/hooks
+
+test:
+  uv run pytest
+
+fmt:
+  uv run ruff format .
+
+konpy:
+  # Temporary local path dependency; upgrade path: git dependency, then PyPI.
+  ${resolvePack(packId).verbs.konsistent}
+`,
+    "utf8"
+  );
 
   for (const agent of ["claude", "codex"] as const) {
     for (const file of await advisorSkillFiles(agent)) {

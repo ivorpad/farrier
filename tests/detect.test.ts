@@ -23,6 +23,7 @@ function catalogForDetect(detect: PackDetect): PackCatalog {
     hooks: [],
     verbs: {
       check: "true",
+      checkFast: "true",
       test: "true",
       fmt: "true",
     },
