@@ -1,12 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-create-cli-"));
+}
+
+async function listFiles(root: string): Promise<string[]> {
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(root, join(entry.parentPath, entry.name)).split(sep).join("/"))
+    .sort();
 }
 
 function repoRoot(): string {
@@ -31,76 +39,43 @@ async function runCli(args: string[], options: { env?: Record<string, string | u
   return { exitCode, stdout, stderr };
 }
 
-const advisorFiles = [
+// Advisor skill trees are opt-in (--with-advisors); they are NOT part of the
+// default inventory. These constants back the --with-advisors coverage below.
+const claudeAdvisorFiles = [
   ".claude/skills/harness-advisor/SKILL.md",
   ".claude/skills/claude-automation-recommender/SKILL.md",
-  ".agents/skills/farrier-project-advisor/SKILL.md",
-  ".agents/skills/codex-automation-recommender/SKILL.md",
-  ".claude/skills/claude-automation-recommender/UPSTREAM.md",
-  ".claude/skills/claude-automation-recommender/upstream/SKILL.md",
-  ".claude/skills/claude-automation-recommender/upstream/LICENSE.txt",
-  ".claude/skills/claude-automation-recommender/upstream/references/hooks-patterns.md",
-  ".claude/skills/claude-automation-recommender/upstream/references/mcp-servers.md",
-  ".claude/skills/claude-automation-recommender/upstream/references/plugins-reference.md",
-  ".claude/skills/claude-automation-recommender/upstream/references/skills-reference.md",
-  ".claude/skills/claude-automation-recommender/upstream/references/subagent-templates.md",
-  ".agents/skills/codex-automation-recommender/references/skills-reference.md",
-  ".agents/skills/codex-automation-recommender/references/plugins-reference.md",
-  ".agents/skills/codex-automation-recommender/references/hooks-patterns.md",
-  ".agents/skills/codex-automation-recommender/references/mcp-servers.md",
-  ".agents/skills/codex-automation-recommender/references/subagent-templates.md"
+  ".claude/skills/claude-automation-recommender/UPSTREAM.md"
 ];
 
+const codexAdvisorFiles = [
+  ".agents/skills/farrier-project-advisor/SKILL.md",
+  ".agents/skills/codex-automation-recommender/SKILL.md"
+];
+
+// The default (no --with-advisors) render inventory. Judge hooks are gone and
+// generated hooks now live under .farrier/hooks. Mirrors render.test.ts.
 const pythonFastapiFiles = [
   "AGENTS.md",
   "CLAUDE.md",
   ".claude/settings.json",
-  ...advisorFiles,
-  ".claude/hooks/secret-shield.py",
-  ".claude/hooks/test_secret_shield.py",
-  ".claude/hooks/tool-policy.py",
-  ".claude/hooks/test_tool_policy.py",
-  ".claude/hooks/write-guard.py",
-  ".claude/hooks/test_write_guard.py",
-  ".claude/hooks/verb-runner.py",
-  ".claude/hooks/test_verb_runner.py",
-  ".claude/hooks/quality-judge.py",
-  ".claude/hooks/test_quality_judge.py",
-  ".claude/hooks/stop-judge.py",
-  ".claude/hooks/test_stop_judge.py",
-  ".claude/hooks/tool-policy-rules.json",
-  ".claude/hooks/prompts/quality-judge-v1.txt",
-  ".claude/hooks/prompts/stop-judge-v1.txt",
+  ".farrier/hooks/_hook_runtime.py",
+  ".farrier/hooks/secret-shield.py",
+  ".farrier/hooks/test_secret_shield.py",
+  ".farrier/hooks/test_hook_contract.py",
+  ".farrier/hooks/tool-policy.py",
+  ".farrier/hooks/test_tool_policy.py",
+  ".farrier/hooks/write-guard.py",
+  ".farrier/hooks/test_write_guard.py",
+  ".farrier/hooks/verb-runner.py",
+  ".farrier/hooks/test_verb_runner.py",
+  ".farrier/hooks/tool-policy-rules.json",
   "justfile",
   "konpy.json",
   ".farrier.json",
   ".gitignore",
 ];
 
-const railsFiles = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  ".claude/settings.json",
-  ...advisorFiles,
-  ".claude/hooks/secret-shield.py",
-  ".claude/hooks/test_secret_shield.py",
-  ".claude/hooks/tool-policy.py",
-  ".claude/hooks/test_tool_policy.py",
-  ".claude/hooks/write-guard.py",
-  ".claude/hooks/test_write_guard.py",
-  ".claude/hooks/verb-runner.py",
-  ".claude/hooks/test_verb_runner.py",
-  ".claude/hooks/quality-judge.py",
-  ".claude/hooks/test_quality_judge.py",
-  ".claude/hooks/stop-judge.py",
-  ".claude/hooks/test_stop_judge.py",
-  ".claude/hooks/tool-policy-rules.json",
-  ".claude/hooks/prompts/quality-judge-v1.txt",
-  ".claude/hooks/prompts/stop-judge-v1.txt",
-  "justfile",
-  ".farrier.json",
-  ".gitignore",
-];
+const railsFiles = pythonFastapiFiles.filter((path) => path !== "konpy.json");
 
 describe("creation CLI e2e", () => {
   test("writes python-fastapi harness into target directory", async () => {
@@ -110,7 +85,7 @@ describe("creation CLI e2e", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Applied 45 file change(s); 0 unchanged.");
+    expect(result.stdout).toContain("Applied 18 file change(s); 0 unchanged.");
     expect(result.stdout).toContain("Skills: installed 3 of 3");
 
     for (const file of pythonFastapiFiles) {
@@ -133,8 +108,9 @@ describe("creation CLI e2e", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 45 create");
+    expect(result.stdout).toContain("File actions: 18 create");
     expect(result.stdout).toContain("Dry run: nothing was written.");
+    expect(result.stdout).toContain("advisor skill trees: not generated (opt in with --with-advisors)");
 
     for (const file of pythonFastapiFiles) {
       expect(result.stdout).toContain(file);
@@ -219,7 +195,7 @@ dependencies = [
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Selected stack: python-fastapi (detected");
-    expect(result.stdout).toContain("Applied 45 file change(s); 0 unchanged.");
+    expect(result.stdout).toContain("Applied 18 file change(s); 0 unchanged.");
 
     for (const file of pythonFastapiFiles) {
       expect(existsSync(join(dir, file))).toBe(true);

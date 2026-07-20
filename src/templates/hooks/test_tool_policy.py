@@ -10,7 +10,7 @@ HOOK = Path(__file__).with_name("tool-policy.py")
 
 
 def write_rules(tmp_path: Path, rules: list[dict]) -> None:
-    rules_dir = tmp_path / ".claude" / "hooks"
+    rules_dir = tmp_path / ".farrier" / "hooks"
     rules_dir.mkdir(parents=True)
     (rules_dir / "tool-policy-rules.json").write_text(
         json.dumps(
@@ -196,7 +196,7 @@ def test_ignores_non_bash_tool(tmp_path: Path) -> None:
 
 
 def test_malformed_rules_file_fails_closed(tmp_path: Path) -> None:
-    rules_dir = tmp_path / ".claude" / "hooks"
+    rules_dir = tmp_path / ".farrier" / "hooks"
     rules_dir.mkdir(parents=True)
     (rules_dir / "tool-policy-rules.json").write_text("{not json", encoding="utf-8")
 
@@ -237,7 +237,7 @@ def test_every_malformed_selected_rule_shape_fails_closed(tmp_path: Path) -> Non
 
     for name, document in malformed_documents:
         case_dir = tmp_path / name
-        rules_dir = case_dir / ".claude" / "hooks"
+        rules_dir = case_dir / ".farrier" / "hooks"
         rules_dir.mkdir(parents=True)
         (rules_dir / "tool-policy-rules.json").write_text(json.dumps(document), encoding="utf-8")
         code, stdout, stderr = run_hook(
@@ -245,7 +245,7 @@ def test_every_malformed_selected_rule_shape_fails_closed(tmp_path: Path) -> Non
         )
         assert code == 0
         assert stderr == ""
-        assert_blocked(stdout, ".claude/hooks/tool-policy-rules.json")
+        assert_blocked(stdout, ".farrier/hooks/tool-policy-rules.json")
 
 
 def test_invalid_regex_rule_fails_closed(tmp_path: Path) -> None:

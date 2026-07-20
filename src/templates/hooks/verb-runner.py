@@ -80,7 +80,7 @@ def edited_hook_file(payload: dict[str, Any]) -> bool:
     tool_input = payload.get("tool_input", {})
     for text in iter_strings(tool_input):
         normalized = text.replace("\\", "/")
-        if ".claude/hooks/" in normalized or normalized.startswith(".claude/hooks/"):
+        if ".farrier/hooks/" in normalized or normalized.startswith(".farrier/hooks/"):
             return True
     return False
 

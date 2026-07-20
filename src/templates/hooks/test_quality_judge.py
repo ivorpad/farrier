@@ -14,7 +14,7 @@ HOOK = Path(__file__).with_name("quality-judge.py")
 def write_manifest(tmp_path: Path, manifest: dict) -> None:
     (tmp_path / ".farrier.json").write_text(json.dumps(manifest), encoding="utf-8")
     prompt = manifest.get("judge", {}).get("perEdit", {}).get("prompt")
-    if prompt == ".claude/hooks/prompts/quality-judge-v1.txt":
+    if prompt == ".farrier/hooks/prompts/quality-judge-v1.txt":
         path = tmp_path / prompt
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("QUALITY PROMPT", encoding="utf-8")
@@ -26,7 +26,7 @@ def manifest(
     backend: str = "claude",
     model: str = "haiku",
     timeout_ms: int = 15000,
-    prompt: str = ".claude/hooks/prompts/quality-judge-v1.txt",
+    prompt: str = ".farrier/hooks/prompts/quality-judge-v1.txt",
     max_lines: int = 500,
 ) -> dict:
     return {
@@ -192,7 +192,7 @@ def test_enabled_fake_claude_advisory_emits_context_and_reads_prompt_from_stdin(
     tmp_path: Path,
 ) -> None:
     write_manifest(tmp_path, manifest(enabled=True, backend="claude", model="haiku"))
-    prompt_dir = tmp_path / ".claude" / "hooks" / "prompts"
+    prompt_dir = tmp_path / ".farrier" / "hooks" / "prompts"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     (prompt_dir / "quality-judge-v1.txt").write_text(
         "CUSTOM QUALITY PROMPT", encoding="utf-8"
@@ -290,7 +290,7 @@ def test_invalid_configured_prompt_emits_actionable_feedback(tmp_path: Path) -> 
     write_manifest(
         tmp_path,
         manifest(
-            enabled=True, backend="claude", prompt=".claude/hooks/prompts/missing.txt"
+            enabled=True, backend="claude", prompt=".farrier/hooks/prompts/missing.txt"
         ),
     )
     source = tmp_path / "src"
@@ -508,12 +508,12 @@ def test_manifest_prompt_and_edited_file_safe_read_failures_emit_bounded_feedbac
 
 def test_skips_hook_files_to_avoid_recursion(tmp_path: Path) -> None:
     write_manifest(tmp_path, manifest(max_lines=1))
-    hooks = tmp_path / ".claude" / "hooks"
+    hooks = tmp_path / ".farrier" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
     (hooks / "quality-judge.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
 
     code, stdout, stderr = run_hook(
-        post_payload(tmp_path, {"file_path": ".claude/hooks/quality-judge.py"}),
+        post_payload(tmp_path, {"file_path": ".farrier/hooks/quality-judge.py"}),
         tmp_path,
     )
 

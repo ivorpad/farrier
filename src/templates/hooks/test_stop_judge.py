@@ -18,12 +18,12 @@ def write_manifest(
     backend: str = "claude",
     model: str = "sonnet",
     timeout_ms: int = 30000,
-    prompt: str = ".claude/hooks/prompts/stop-judge-v1.txt",
+    prompt: str = ".farrier/hooks/prompts/stop-judge-v1.txt",
     max_diff_bytes: int = 120000,
     max_untracked_files: int = 50,
 ) -> None:
     prompt_path = tmp_path / prompt
-    if prompt == ".claude/hooks/prompts/stop-judge-v1.txt":
+    if prompt == ".farrier/hooks/prompts/stop-judge-v1.txt":
         prompt_path.parent.mkdir(parents=True, exist_ok=True)
         prompt_path.write_text("STOP PROMPT", encoding="utf-8")
     (tmp_path / ".farrier.json").write_text(
@@ -330,7 +330,7 @@ def test_final_prompt_redacts_short_and_truncated_diff_prompt_and_untracked_name
         case_dir.mkdir()
         init_repo_with_head(case_dir)
         write_manifest(case_dir, enabled=True)
-        prompt_path = case_dir / ".claude/hooks/prompts/stop-judge-v1.txt"
+        prompt_path = case_dir / ".farrier/hooks/prompts/stop-judge-v1.txt"
         prompt_path.write_text(
             "configured token=prompt-secret prompt@example.com", encoding="utf-8"
         )

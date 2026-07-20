@@ -24,6 +24,12 @@ async function renderPack(dir: string, packId = "python-fastapi"): Promise<void>
   await writeRenderPlan(plan);
 }
 
+// python-uv tool-policy rules are evidence-gated behind `uv.lock`; seed it so the
+// generated tool-policy-rules.json contains the pack's rules at render time.
+async function seedUvLock(dir: string): Promise<void> {
+  await writeFile(join(dir, "uv.lock"), "", "utf8");
+}
+
 async function writeJsonl(path: string, records: Array<unknown | string>): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true }).catch(() => undefined);
 
@@ -69,7 +75,7 @@ function toolResult(id: string, content: string, isError = true): unknown {
 }
 
 async function readRules(dir: string): Promise<{ version: number; rules: ToolPolicyRule[] }> {
-  return JSON.parse(await readFile(join(dir, ".claude", "hooks", "tool-policy-rules.json"), "utf8")) as {
+  return JSON.parse(await readFile(join(dir, ".farrier", "hooks", "tool-policy-rules.json"), "utf8")) as {
     version: number;
     rules: ToolPolicyRule[];
   };
@@ -214,6 +220,7 @@ describe("learn LLM proposal validation", () => {
   test("fake backend proposals keep valid matching ToolPolicyRules and drop duplicate, existing, bad regex, and missing-field rules", async () => {
     const project = await tempDir();
     const transcripts = await tempDir("farrier-learn-transcripts-");
+    await seedUvLock(project);
     await renderPack(project, "python-fastapi");
 
     await writeTranscript(transcripts, [
@@ -385,7 +392,7 @@ describe("learn append behavior", () => {
     const runner: LearnCommandRunner = async () => {
       const document = await readRules(project);
       document.rules.push(concurrent);
-      await writeFile(join(project, ".claude", "hooks", "tool-policy-rules.json"), `${JSON.stringify(document, null, 2)}\n`);
+      await writeFile(join(project, ".farrier", "hooks", "tool-policy-rules.json"), `${JSON.stringify(document, null, 2)}\n`);
       return { exitCode: 0, stdout: JSON.stringify({ rules: [] }), stderr: "" };
     };
 
@@ -396,6 +403,7 @@ describe("learn append behavior", () => {
   test("--yes appends accepted new rules, preserves existing rules, and does not duplicate on a second run", async () => {
     const project = await tempDir();
     const transcripts = await tempDir("farrier-learn-transcripts-");
+    await seedUvLock(project);
     await renderPack(project, "python-fastapi");
 
     await writeTranscript(transcripts, [
@@ -420,7 +428,7 @@ describe("learn append behavior", () => {
     });
 
     expect(result.appendedRules.map((rule) => rule.id)).toEqual(["learn-ban-brew-install"]);
-    expect(result.rulesPath).toBe(join(project, ".claude", "hooks", "tool-policy-rules.json"));
+    expect(result.rulesPath).toBe(join(project, ".farrier", "hooks", "tool-policy-rules.json"));
 
     const after = await readRules(project);
     expect(after.version).toBe(1);
@@ -455,7 +463,7 @@ describe("learn append behavior", () => {
       toolResult("brew-2", "failed with exit code 1")
     ]);
 
-    const beforeText = await readFile(join(project, ".claude", "hooks", "tool-policy-rules.json"), "utf8");
+    const beforeText = await readFile(join(project, ".farrier", "hooks", "tool-policy-rules.json"), "utf8");
 
     const report = await createLearnReport({
       targetDir: project,
@@ -463,7 +471,7 @@ describe("learn append behavior", () => {
       noLlm: true
     });
 
-    const afterText = await readFile(join(project, ".claude", "hooks", "tool-policy-rules.json"), "utf8");
+    const afterText = await readFile(join(project, ".farrier", "hooks", "tool-policy-rules.json"), "utf8");
 
     expect(report.proposedRules.map((rule) => rule.id)).toEqual(["learn-ban-brew-install"]);
     expect(afterText).toBe(beforeText);
@@ -474,7 +482,7 @@ describe("learn append behavior", () => {
     const transcripts = await tempDir("farrier-learn-transcripts-");
     await renderPack(project, "python-fastapi");
 
-    const rulesPath = join(project, ".claude", "hooks", "tool-policy-rules.json");
+    const rulesPath = join(project, ".farrier", "hooks", "tool-policy-rules.json");
     await writeFile(rulesPath, "", "utf8");
     await Bun.$`rm ${rulesPath}`.quiet();
 

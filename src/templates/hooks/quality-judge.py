@@ -145,7 +145,7 @@ def normalize_project_path(path: str) -> str:
 
 def is_hook_path(path: str) -> bool:
     normalized = normalize_project_path(path)
-    return normalized.startswith(".claude/hooks/") or "/.claude/hooks/" in normalized
+    return normalized.startswith(".farrier/hooks/") or "/.farrier/hooks/" in normalized
 
 
 def unique_paths(paths: list[str]) -> list[str]:

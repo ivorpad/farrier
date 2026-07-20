@@ -1,5 +1,5 @@
 import { builtinDetectionOrder, getPack } from "../packs/index";
-import type { PackDetect, ResolvedPack, SecondaryDetectionFinding } from "../packs/types";
+import type { PackDetect, PackRuleBlock, ResolvedPack, SecondaryDetectionFinding, ToolPolicyRule } from "../packs/types";
 import type { PackCatalog } from "../registry/catalog";
 import {
   openContainedRepository,
@@ -383,6 +383,65 @@ export async function detectPacksWithEvidence(dir: RepositoryInput, catalog?: Pa
 export async function detectPacks(dir: RepositoryInput, catalog?: PackCatalog): Promise<string[]> {
   const detected = await detectPacksWithEvidence(dir, catalog);
   return detected.map((pack) => pack.packId);
+}
+
+export type EvaluatedRuleBlock = {
+  id: string;
+  evidence: string;
+  matched: boolean;
+  matchedPaths: string[];
+};
+
+export type EvaluatedPackRules = {
+  /** Base pack detection evidence, or undefined when the stack was selected explicitly and does not match. */
+  packEvidence: string[] | undefined;
+  agentsRules: string[];
+  toolPolicyRules: ToolPolicyRule[];
+  blocks: EvaluatedRuleBlock[];
+};
+
+/**
+ * Evaluate a pack's conditional rule blocks against the target directory.
+ * Rules from non-matching blocks are omitted so generated policy always has
+ * repository evidence behind it.
+ */
+export async function evaluatePackRules(
+  dir: RepositoryInput,
+  pack: Pick<ResolvedPack, "detect" | "agentsRules" | "toolPolicyRules" | "ruleBlocks">
+): Promise<EvaluatedPackRules> {
+  const blocks: PackRuleBlock[] = pack.ruleBlocks ?? [];
+
+  let signals: ProjectSignals;
+  try {
+    signals = await scanProject(dir, [pack.detect, ...blocks.map((block) => block.when)]);
+  } catch {
+    // Unreadable or not-yet-created target directory: no evidence, so no
+    // conditional rules. Base pack rules still apply.
+    return {
+      packEvidence: undefined,
+      agentsRules: [...pack.agentsRules],
+      toolPolicyRules: [...pack.toolPolicyRules],
+      blocks: blocks.map((block) => ({ id: block.id, evidence: block.evidence, matched: false, matchedPaths: [] })),
+    };
+  }
+
+  const evaluated = blocks.map((block) => {
+    const matchedPaths = matchedDetectEvidence(signals, block.when);
+    return {
+      id: block.id,
+      evidence: block.evidence,
+      matched: matchedPaths !== undefined,
+      matchedPaths: matchedPaths ?? [],
+    };
+  });
+  const matchedBlocks = blocks.filter((_, index) => evaluated[index].matched);
+
+  return {
+    packEvidence: matchedDetectEvidence(signals, pack.detect),
+    agentsRules: [...pack.agentsRules, ...matchedBlocks.flatMap((block) => block.agentsRules ?? [])],
+    toolPolicyRules: [...pack.toolPolicyRules, ...matchedBlocks.flatMap((block) => block.toolPolicyRules ?? [])],
+    blocks: evaluated,
+  };
 }
 
 export async function detectSecondary(dir: RepositoryInput, pack: Pick<ResolvedPack, "secondaryDetectors">): Promise<SecondaryDetectionFinding[]> {

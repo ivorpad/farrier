@@ -1,12 +1,14 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, rmdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { detectPacks, detectSecondary } from "./detect";
 import {
   createRenderPlan,
   getFarrierVersion,
   hookCatalogVersions,
+  hooksDirectory,
   type RenderedFile
 } from "./render";
+import { classifyStalePaths, type StalePathReport } from "./update-migration";
 import type { HookId, PackHookRef, ResolvedPack, SecondaryDetectionFinding, SkillRef } from "../packs/types";
 import { builtinCatalog, type PackCatalog, type RegistryPin } from "../registry/catalog";
 import type { EnforcementAgent } from "./agent-selection";
@@ -77,6 +79,12 @@ export type UpdateReport = {
   missingInventoryFiles: string[];
   outdatedOwnedFiles: string[];
   outdatedUserFiles: string[];
+  /** Legacy generated files/trees that apply will remove (backups kept). */
+  stalePaths: string[];
+  /** Legacy paths with local edits; never removed automatically. */
+  staleBlockedPaths: string[];
+  /** User-mutable files whose content is exactly legacy-generated; apply rewrites them. */
+  migratableUserFiles: string[];
   suggestedSkills: SkillRef[];
   notes: string[];
 };
@@ -84,6 +92,7 @@ export type UpdateReport = {
 export type UpdateApplyResult = {
   report: UpdateReport;
   repairedFiles: string[];
+  prunedPaths: string[];
   acknowledgedSecondaryIds: string[];
   suggestedSkillsNotInstalled: SkillRef[];
 };
@@ -97,7 +106,7 @@ const userMutableFiles = new Set([
   ".gitignore",
   ".claude/settings.json",
   ".codex/hooks.json",
-  ".claude/hooks/tool-policy-rules.json"
+  `${hooksDirectory}/tool-policy-rules.json`
 ]);
 
 const hookIds = Object.keys(hookCatalogVersions) as HookId[];
@@ -111,12 +120,40 @@ function isHookId(value: string): value is HookId {
   return hookIdSet.has(value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function judgeConfigEnabled(judge: unknown): boolean {
+  if (!isRecord(judge)) {
+    return false;
+  }
+
+  return (
+    (isRecord(judge.perEdit) && judge.perEdit.enabled === true) ||
+    (isRecord(judge.stop) && judge.stop.enabled === true)
+  );
+}
+
+/**
+ * v2 manifests listed the judge hooks by default while the judge config
+ * shipped disabled. Disabled judges now emit zero files, so migration drops
+ * them from the hook set unless the user actually enabled a judge.
+ */
+function migratedHookIds(manifest: NormalizedManifest): PackHookRef[] {
+  if (judgeConfigEnabled(manifest.judge)) {
+    return [...manifest.hookIds];
+  }
+
+  return manifest.hookIds.filter((hookId) => hookId !== "quality-judge" && hookId !== "stop-judge");
+}
+
 function packForManifest(manifest: NormalizedManifest, catalog: PackCatalog): ResolvedPack {
   const pack = catalog.resolvePack(manifest.currentPackId);
 
   return {
     ...pack,
-    hooks: [...manifest.hookIds]
+    hooks: migratedHookIds(manifest)
   };
 }
 
@@ -200,33 +237,52 @@ function suggestedSkillsFromFindings(findings: SecondaryDetectionFinding[]): Ski
   return unique(findings.flatMap((finding) => finding.suggestSkills));
 }
 
+function hooksTreeOwnership(path: string, hooksRoot: string): InventoryOwnership | undefined {
+  const prefix = `${hooksRoot}/`;
+
+  if (!path.startsWith(prefix)) {
+    return undefined;
+  }
+
+  if (path === `${prefix}tool-policy-rules.json`) {
+    return "user-mutable";
+  }
+
+  if (path.startsWith(`${prefix}prompts/`) && path.endsWith(".txt")) {
+    return "farrier-owned";
+  }
+
+  if (path.startsWith(`${prefix}@`)) {
+    return "farrier-owned";
+  }
+
+  const relative = path.slice(prefix.length);
+  if (!relative.includes("/") && relative.endsWith(".py")) {
+    return "farrier-owned";
+  }
+
+  return undefined;
+}
+
 export function inventoryOwnership(path: string): InventoryOwnership {
   if (path === ".farrier.json") {
     return "manifest";
   }
 
   if (
-    path === ".claude/skills/harness-advisor/SKILL.md" ||
+    path.startsWith(".claude/skills/harness-advisor/") ||
     path.startsWith(".claude/skills/claude-automation-recommender/") ||
     path.startsWith(".agents/skills/codex-automation-recommender/") ||
-    path === ".agents/skills/farrier-project-advisor/SKILL.md"
+    path.startsWith(".agents/skills/farrier-project-advisor/")
   ) {
     return "farrier-owned";
   }
 
-  if (path.startsWith(".claude/hooks/prompts/") && path.endsWith(".txt")) {
-    return "farrier-owned";
-  }
-
-  if (path.startsWith(".claude/hooks/@")) {
-    return "farrier-owned";
-  }
-
-  if (path.startsWith(".claude/hooks/")) {
-    const relative = path.slice(".claude/hooks/".length);
-    if (!relative.includes("/") && relative.endsWith(".py")) {
-      return "farrier-owned";
-    }
+  // Current provider-neutral location plus the pre-v3 layout, so migration can
+  // classify files it is about to prune.
+  const owned = hooksTreeOwnership(path, hooksDirectory) ?? hooksTreeOwnership(path, ".claude/hooks");
+  if (owned) {
+    return owned;
   }
 
   if (userMutableFiles.has(path)) {
@@ -391,6 +447,15 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
   });
 
   const inventoryDrift = await classifyInventoryDrift(targetDir, expectedPlan.files);
+  const stale = await classifyStalePaths({
+    targetDir,
+    planFiles: expectedPlan.files,
+    pack: renderPack,
+    legacyPack: { ...renderPack, hooks: [...manifest.hookIds] }
+  });
+  const outdatedUserFiles = inventoryDrift.outdatedUserFiles.filter(
+    (path) => !stale.repairUserFiles.includes(path) && !stale.pruneFiles.includes(path)
+  );
 
   const farrierVersion: FarrierVersionDrift = {
     manifest: manifest.farrierVersion,
@@ -405,9 +470,16 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     registryPinDrift,
     missingInventoryFiles: inventoryDrift.missingInventoryFiles,
     outdatedOwnedFiles: inventoryDrift.outdatedOwnedFiles,
-    outdatedUserFiles: inventoryDrift.outdatedUserFiles,
+    outdatedUserFiles,
     suggestedSkills
   });
+  if (stale.pruneFiles.length > 0 || stale.pruneTrees.length > 0) {
+    notes.push("Stale legacy files from an earlier layout were found; update with --yes removes them and keeps backups.");
+  }
+  if (stale.blockedPaths.length > 0) {
+    notes.push("Some legacy paths have local edits and were left in place; review them manually.");
+  }
+  notes.push(...stale.notes);
   notes.push(...catalog.warnings.map((warning) => `${warning.namespace}: ${warning.message}`));
 
   return {
@@ -423,7 +495,10 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
     registryPinDrift,
     missingInventoryFiles: inventoryDrift.missingInventoryFiles,
     outdatedOwnedFiles: inventoryDrift.outdatedOwnedFiles,
-    outdatedUserFiles: inventoryDrift.outdatedUserFiles,
+    outdatedUserFiles,
+    stalePaths: [...stale.pruneFiles, ...stale.pruneTrees],
+    staleBlockedPaths: stale.blockedPaths,
+    migratableUserFiles: stale.repairUserFiles,
     suggestedSkills,
     notes
   };
@@ -438,12 +513,52 @@ async function manifestContentDiffers(targetDir: string, expectedManifestContent
   }
 }
 
+async function removeEmptyDirectories(targetDir: string, roots: string[]): Promise<void> {
+  const removeEmpty = async (path: string): Promise<boolean> => {
+    let entries;
+    try {
+      entries = await readdir(path, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+
+    let empty = true;
+    for (const entry of entries) {
+      if (entry.isDirectory() && (await removeEmpty(join(path, entry.name)))) {
+        continue;
+      }
+      empty = false;
+    }
+
+    if (!empty) {
+      return false;
+    }
+
+    try {
+      await rmdir(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  for (const root of roots) {
+    await removeEmpty(join(targetDir, root));
+  }
+}
+
 export async function applyUpdate(input: UpdateInput | string, deps: UpdateApplyDeps = {}): Promise<UpdateApplyResult> {
   const targetDir = targetDirFromInput(input);
   const catalog = typeof input === "string" ? builtinCatalog() : input.catalog ?? builtinCatalog();
   const report = await createUpdateReport({ targetDir, catalog });
   const reviewedFingerprints = new Map<string, PathFingerprint>();
-  const initiallyRepairable = new Set([...report.missingInventoryFiles, ...report.outdatedOwnedFiles, ".farrier.json"]);
+  const initiallyRepairable = new Set([
+    ...report.missingInventoryFiles,
+    ...report.outdatedOwnedFiles,
+    ...report.migratableUserFiles,
+    ...report.stalePaths,
+    ".farrier.json"
+  ]);
   await Promise.all([...initiallyRepairable].map(async (path) => {
     reviewedFingerprints.set(path, await fingerprintPath(join(targetDir, path)));
   }));
@@ -465,10 +580,17 @@ export async function applyUpdate(input: UpdateInput | string, deps: UpdateApply
     agents: manifest.agents,
     registryPins: registryPinsForManifest(manifest, catalog)
   });
+  const stale = await classifyStalePaths({
+    targetDir,
+    planFiles: plan.files,
+    pack: renderPack,
+    legacyPack: { ...renderPack, hooks: [...manifest.hookIds] }
+  });
 
   const repairPaths = new Set<string>([
     ...report.missingInventoryFiles,
-    ...report.outdatedOwnedFiles
+    ...report.outdatedOwnedFiles,
+    ...stale.repairUserFiles
   ]);
 
   const manifestFile = plan.files.find((file) => file.path === ".farrier.json");
@@ -480,9 +602,24 @@ export async function applyUpdate(input: UpdateInput | string, deps: UpdateApply
     repairPaths.add(".farrier.json");
   }
 
-  const operations: MutationOperation[] = plan.files
-    .filter((file) => repairPaths.has(file.path))
-    .map((file) => ({ kind: "write-file", path: file.path, content: file.content, mode: file.mode }));
+  const override = stale.toolPolicyRulesOverride;
+  if (override) {
+    repairPaths.add(override.path);
+  }
+
+  const pruneSet = new Set([...stale.pruneFiles, ...stale.pruneTrees]);
+  const operations: MutationOperation[] = [
+    ...plan.files
+      .filter((file) => repairPaths.has(file.path))
+      .map((file): MutationOperation => ({
+        kind: "write-file",
+        path: file.path,
+        content: override && file.path === override.path ? override.content : file.content,
+        mode: file.mode
+      })),
+    ...stale.pruneFiles.map((path): MutationOperation => ({ kind: "remove-file", path })),
+    ...stale.pruneTrees.map((path): MutationOperation => ({ kind: "remove-tree", path }))
+  ];
   const mutationPlan = await inspectMutationPlan(targetDir, operations);
   for (const operation of mutationPlan.operations) {
     const expected = reviewedFingerprints.get(operation.path);
@@ -490,11 +627,17 @@ export async function applyUpdate(input: UpdateInput | string, deps: UpdateApply
   }
   await deps.beforeTransaction?.();
   const transaction = await applyMutationPlan(mutationPlan);
-  const repairedFiles = transaction.written;
+  const repairedFiles = transaction.written.filter((path) => !pruneSet.has(path));
+  const prunedPaths = transaction.written.filter((path) => pruneSet.has(path));
+
+  if (prunedPaths.length > 0) {
+    await removeEmptyDirectories(targetDir, [".claude", ".agents"]);
+  }
 
   return {
     report,
     repairedFiles,
+    prunedPaths,
     acknowledgedSecondaryIds,
     suggestedSkillsNotInstalled: [...report.suggestedSkills]
   };
@@ -559,6 +702,15 @@ export function formatUpdateReport(report: UpdateReport): string {
     "Outdated user-mutable files (manual review only):",
     ...renderList(report.outdatedUserFiles, "none"),
     "",
+    "Stale legacy files (removed by --yes, backups kept):",
+    ...renderList(report.stalePaths, "none"),
+    "",
+    "Legacy files with local edits (manual review only):",
+    ...renderList(report.staleBlockedPaths, "none"),
+    "",
+    "Legacy-generated files migrated in place by --yes:",
+    ...renderList(report.migratableUserFiles, "none"),
+    "",
     "Suggested skills (not installed):",
     ...renderList(report.suggestedSkills, "none")
   ];
@@ -576,6 +728,9 @@ export function formatUpdateApplyResult(result: UpdateApplyResult): string {
     "",
     "Applied repairs:",
     ...renderList(result.repairedFiles, "none"),
+    "",
+    "Pruned legacy paths:",
+    ...renderList(result.prunedPaths, "none"),
     "",
     "Acknowledged secondary detector ids:",
     ...renderList(result.acknowledgedSecondaryIds, "none"),

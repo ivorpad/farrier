@@ -1,6 +1,6 @@
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { createRenderPlan, type RenderedFile } from "./render";
+import { createRenderPlan, hooksDirectory, type RenderedFile } from "./render";
 import { inventoryOwnership } from "./update";
 import { manifestToInput, readManifest } from "./manifest";
 import { validateToolPolicyRuleProposal } from "./learn";
@@ -57,7 +57,7 @@ const allGroups: DoctorGroup[] = [
   "skills"
 ];
 
-const rulesRelativePath = ".claude/hooks/tool-policy-rules.json";
+const rulesRelativePath = `${hooksDirectory}/tool-policy-rules.json`;
 
 function emptyProblemsByGroup(): Record<DoctorGroup, DoctorProblem[]> {
   return Object.fromEntries(allGroups.map((group) => [group, [] as DoctorProblem[]])) as unknown as Record<
@@ -547,7 +547,7 @@ function collectHookCommands(settings: unknown): { commands: string[]; shapeErro
 
 function referencedHookPath(command: string, targetDir: string): { relativePath: string; absolutePath: string } | undefined {
   const expanded = command.replaceAll("$CLAUDE_PROJECT_DIR", targetDir);
-  const match = expanded.match(/(?:^|["'\s])(?<path>(?:[^"'\s]*\/)?\.claude\/hooks\/[^"'\s]+)(?:$|["'\s])/);
+  const match = expanded.match(/(?:^|["'\s])(?<path>(?:[^"'\s]*\/)?\.(?:claude|farrier)\/hooks\/[^"'\s]+)(?:$|["'\s])/);
 
   if (!match?.groups?.path) {
     return undefined;
@@ -700,9 +700,9 @@ function sameCodexBinding(actual: CodexHookBinding, expected: CodexHookBinding):
 }
 
 function codexHookTarget(command: string, targetDir: string): { relativePath: string; absolutePath: string } | undefined {
-  const match = command.match(/\/\.claude\/hooks\/(?<file>[^"'\s]+)["']?\s*$/);
+  const match = command.match(/\/\.farrier\/hooks\/(?<file>[^"'\s]+)["']?\s*$/);
   if (!match?.groups?.file) return undefined;
-  const relativePath = `.claude/hooks/${match.groups.file}`;
+  const relativePath = `${hooksDirectory}/${match.groups.file}`;
   return { relativePath, absolutePath: join(targetDir, relativePath) };
 }
 
@@ -944,7 +944,7 @@ async function addGeneratedRecipeProblems(targetDir: string, expectedJustfile: R
       });
     }
   }
-  if (expectedJustfile.content.includes("pytest .claude/hooks") && !/^[ \t]+.*pytest \.claude\/hooks/m.test(actual)) {
+  if (expectedJustfile.content.includes(`pytest ${hooksDirectory}`) && !/^[ \t]+.*pytest \.farrier\/hooks/m.test(actual)) {
     problems.push({
       group: "hooks",
       severity: "error",
@@ -955,12 +955,18 @@ async function addGeneratedRecipeProblems(targetDir: string, expectedJustfile: R
   }
 }
 
-async function addBundledSkillCaseProblems(targetDir: string, problems: DoctorProblem[]): Promise<void> {
+async function addBundledSkillCaseProblems(
+  targetDir: string,
+  agents: readonly string[],
+  problems: DoctorProblem[]
+): Promise<void> {
   const paths = [
-    ".claude/skills/harness-advisor",
-    ".claude/skills/claude-automation-recommender",
-    ".agents/skills/codex-automation-recommender",
-    ".agents/skills/farrier-project-advisor"
+    ...(agents.includes("claude")
+      ? [".claude/skills/harness-advisor", ".claude/skills/claude-automation-recommender"]
+      : []),
+    ...(agents.includes("codex")
+      ? [".agents/skills/codex-automation-recommender", ".agents/skills/farrier-project-advisor"]
+      : [])
   ];
   for (const path of paths) {
     const evidence = await readSkillBehaviorEvidence(join(targetDir, path));
@@ -1073,7 +1079,9 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
 
   await addInventoryProblems(targetDir, expectedPlan.files, problems);
   await addGeneratedRecipeProblems(targetDir, expectedPlan.files.find((file) => file.path === "justfile"), problems);
-  await addBundledSkillCaseProblems(targetDir, problems);
+  if (manifest.advisors) {
+    await addBundledSkillCaseProblems(targetDir, manifest.agents, problems);
+  }
   await addHookModeProblems(targetDir, expectedPlan.files, problems);
 
   if (manifest.agents.includes("claude")) {

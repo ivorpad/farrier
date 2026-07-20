@@ -12,24 +12,13 @@ async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-render-"));
 }
 
-const allHooks = [
-  "secret-shield",
-  "tool-policy",
-  "write-guard",
-  "verb-runner",
-  "quality-judge",
-  "stop-judge"
-] as const;
+const defaultHooks = ["secret-shield", "tool-policy", "write-guard", "verb-runner"] as const;
 
 const advisorInventory = [
   ".claude/skills/harness-advisor/SKILL.md",
-  ".claude/skills/claude-automation-recommender/SKILL.md",
-  ".agents/skills/farrier-project-advisor/SKILL.md",
-  ".agents/skills/codex-automation-recommender/SKILL.md",
   ".claude/skills/harness-advisor/evals/cases.json",
+  ".claude/skills/claude-automation-recommender/SKILL.md",
   ".claude/skills/claude-automation-recommender/evals/cases.json",
-  ".agents/skills/farrier-project-advisor/evals/cases.json",
-  ".agents/skills/codex-automation-recommender/evals/cases.json",
   ".claude/skills/claude-automation-recommender/UPSTREAM.md",
   ".claude/skills/claude-automation-recommender/upstream/SKILL.md",
   ".claude/skills/claude-automation-recommender/upstream/LICENSE.txt",
@@ -37,7 +26,14 @@ const advisorInventory = [
   ".claude/skills/claude-automation-recommender/upstream/references/mcp-servers.md",
   ".claude/skills/claude-automation-recommender/upstream/references/plugins-reference.md",
   ".claude/skills/claude-automation-recommender/upstream/references/skills-reference.md",
-  ".claude/skills/claude-automation-recommender/upstream/references/subagent-templates.md",
+  ".claude/skills/claude-automation-recommender/upstream/references/subagent-templates.md"
+];
+
+const codexAdvisorInventory = [
+  ".agents/skills/farrier-project-advisor/SKILL.md",
+  ".agents/skills/farrier-project-advisor/evals/cases.json",
+  ".agents/skills/codex-automation-recommender/SKILL.md",
+  ".agents/skills/codex-automation-recommender/evals/cases.json",
   ".agents/skills/codex-automation-recommender/references/skills-reference.md",
   ".agents/skills/codex-automation-recommender/references/plugins-reference.md",
   ".agents/skills/codex-automation-recommender/references/hooks-patterns.md",
@@ -45,28 +41,25 @@ const advisorInventory = [
   ".agents/skills/codex-automation-recommender/references/subagent-templates.md"
 ];
 
+const defaultHookFiles = [
+  ".farrier/hooks/_hook_runtime.py",
+  ".farrier/hooks/secret-shield.py",
+  ".farrier/hooks/test_secret_shield.py",
+  ".farrier/hooks/test_hook_contract.py",
+  ".farrier/hooks/tool-policy.py",
+  ".farrier/hooks/test_tool_policy.py",
+  ".farrier/hooks/write-guard.py",
+  ".farrier/hooks/test_write_guard.py",
+  ".farrier/hooks/verb-runner.py",
+  ".farrier/hooks/test_verb_runner.py",
+  ".farrier/hooks/tool-policy-rules.json"
+];
+
 const pythonFastapiInventory = [
   "AGENTS.md",
   "CLAUDE.md",
   ".claude/settings.json",
-  ...advisorInventory,
-  ".claude/hooks/_hook_runtime.py",
-  ".claude/hooks/secret-shield.py",
-  ".claude/hooks/test_secret_shield.py",
-  ".claude/hooks/test_hook_contract.py",
-  ".claude/hooks/tool-policy.py",
-  ".claude/hooks/test_tool_policy.py",
-  ".claude/hooks/write-guard.py",
-  ".claude/hooks/test_write_guard.py",
-  ".claude/hooks/verb-runner.py",
-  ".claude/hooks/test_verb_runner.py",
-  ".claude/hooks/quality-judge.py",
-  ".claude/hooks/test_quality_judge.py",
-  ".claude/hooks/stop-judge.py",
-  ".claude/hooks/test_stop_judge.py",
-  ".claude/hooks/tool-policy-rules.json",
-  ".claude/hooks/prompts/quality-judge-v1.txt",
-  ".claude/hooks/prompts/stop-judge-v1.txt",
+  ...defaultHookFiles,
   "justfile",
   "konpy.json",
   ".farrier.json",
@@ -79,50 +72,20 @@ const tsReactViteInventory = pythonFastapiInventory.map((path) =>
   path === "konpy.json" ? "konsistent.json" : path
 );
 
-const railsInventory = [
-  "AGENTS.md",
-  "CLAUDE.md",
-  ".claude/settings.json",
-  ...advisorInventory,
-  ".claude/hooks/_hook_runtime.py",
-  ".claude/hooks/secret-shield.py",
-  ".claude/hooks/test_secret_shield.py",
-  ".claude/hooks/test_hook_contract.py",
-  ".claude/hooks/tool-policy.py",
-  ".claude/hooks/test_tool_policy.py",
-  ".claude/hooks/write-guard.py",
-  ".claude/hooks/test_write_guard.py",
-  ".claude/hooks/verb-runner.py",
-  ".claude/hooks/test_verb_runner.py",
-  ".claude/hooks/quality-judge.py",
-  ".claude/hooks/test_quality_judge.py",
-  ".claude/hooks/stop-judge.py",
-  ".claude/hooks/test_stop_judge.py",
-  ".claude/hooks/tool-policy-rules.json",
-  ".claude/hooks/prompts/quality-judge-v1.txt",
-  ".claude/hooks/prompts/stop-judge-v1.txt",
-  "justfile",
-  ".farrier.json",
-  ".gitignore"
-];
+const railsInventory = pythonFastapiInventory.filter((path) => path !== "konpy.json");
 
 const genericInventory = [
   "AGENTS.md",
   "CLAUDE.md",
   ".claude/settings.json",
-  ...advisorInventory,
-  ".claude/hooks/_hook_runtime.py",
-  ".claude/hooks/secret-shield.py",
-  ".claude/hooks/test_secret_shield.py",
-  ".claude/hooks/test_hook_contract.py",
-  ".claude/hooks/tool-policy.py",
-  ".claude/hooks/test_tool_policy.py",
-  ".claude/hooks/write-guard.py",
-  ".claude/hooks/test_write_guard.py",
-  ".claude/hooks/quality-judge.py",
-  ".claude/hooks/test_quality_judge.py",
-  ".claude/hooks/tool-policy-rules.json",
-  ".claude/hooks/prompts/quality-judge-v1.txt",
+  ".farrier/hooks/secret-shield.py",
+  ".farrier/hooks/test_secret_shield.py",
+  ".farrier/hooks/test_hook_contract.py",
+  ".farrier/hooks/tool-policy.py",
+  ".farrier/hooks/test_tool_policy.py",
+  ".farrier/hooks/write-guard.py",
+  ".farrier/hooks/test_write_guard.py",
+  ".farrier/hooks/tool-policy-rules.json",
   "justfile",
   ".farrier.json",
   ".gitignore"
@@ -142,13 +105,14 @@ describe("render engine", () => {
       expect(justfile).toMatch(/^test:/m);
       expect(justfile).toMatch(/^fmt:/m);
       if (pack.hooks.length > 0) {
-        expect(justfile).toContain("uv run --with pytest pytest .claude/hooks");
+        expect(justfile).toContain("uv run --with pytest pytest .farrier/hooks");
       }
       if (pack.verbs.konsistent) {
         expect(justfile).toMatch(new RegExp(`^${pack.konsistentTool ?? "konsistent"}:`, "m"));
       }
     }
   });
+
   test("creates the complete python-fastapi inventory", async () => {
     const dir = await tempDir();
     const pack = resolvePack("python-fastapi");
@@ -156,13 +120,53 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(pythonFastapiInventory);
-    expect(plan.files).toHaveLength(45);
+    expect(plan.files).toHaveLength(18);
   });
 
-  test("renders harness-advisor skill into every pack inventory", async () => {
+  test("default plan emits no advisor skill trees, judge scripts, or judge prompts", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({ targetDir: dir, pack: resolvePack("python-fastapi") });
+    const paths = plan.files.map((file) => file.path);
+
+    expect(paths.some((path) => path.includes("/skills/"))).toBe(false);
+    expect(paths.some((path) => path.includes("quality-judge"))).toBe(false);
+    expect(paths.some((path) => path.includes("stop-judge"))).toBe(false);
+    expect(paths.some((path) => path.includes("/prompts/"))).toBe(false);
+  });
+
+  test("advisor opt-in renders agent-scoped skill trees", async () => {
+    const dir = await tempDir();
+    const both = await createRenderPlan({
+      targetDir: dir,
+      pack: resolvePack("generic"),
+      agents: ["claude", "codex"],
+      advisors: true
+    });
+    const bothPaths = both.files.map((file) => file.path);
+    for (const path of [...advisorInventory, ...codexAdvisorInventory]) {
+      expect(bothPaths).toContain(path);
+    }
+
+    const codexOnly = await createRenderPlan({
+      targetDir: dir,
+      pack: resolvePack("generic"),
+      agents: ["codex"],
+      advisors: true
+    });
+    const codexPaths = codexOnly.files.map((file) => file.path);
+    for (const path of codexAdvisorInventory) {
+      expect(codexPaths).toContain(path);
+    }
+    expect(codexPaths.some((path) => path.startsWith(".claude/"))).toBe(false);
+
+    const manifest = JSON.parse(both.files.find((file) => file.path === ".farrier.json")!.content);
+    expect(manifest.advisors).toBe(true);
+  });
+
+  test("renders harness-advisor skill content when advisors are enabled", async () => {
     const dir = await tempDir();
     const pack = resolvePack("python-fastapi");
-    const plan = await createRenderPlan({ targetDir: dir, pack });
+    const plan = await createRenderPlan({ targetDir: dir, pack, advisors: true });
 
     const skill = plan.files.find((file) => file.path === ".claude/skills/harness-advisor/SKILL.md");
 
@@ -176,7 +180,12 @@ describe("render engine", () => {
 
   test("renders both advice wrappers and the pinned attributed Anthropic snapshot", async () => {
     const dir = await tempDir();
-    const plan = await createRenderPlan({ targetDir: dir, pack: resolvePack("generic") });
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack: resolvePack("generic"),
+      agents: ["claude", "codex"],
+      advisors: true
+    });
     const byPath = new Map(plan.files.map((file) => [file.path, file.content]));
     const claude = byPath.get(".claude/skills/claude-automation-recommender/SKILL.md") ?? "";
     const codex = byPath.get(".agents/skills/farrier-project-advisor/SKILL.md") ?? "";
@@ -201,8 +210,9 @@ describe("render engine", () => {
     }
   });
 
-  test("renders AGENTS.md with required sections and pack-owned Python hard rules", async () => {
+  test("renders AGENTS.md with required sections and evidence-gated Python hard rules", async () => {
     const dir = await tempDir();
+    await writeFile(join(dir, "uv.lock"), "", "utf8");
     const pack = resolvePack("python-fastapi");
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
@@ -219,10 +229,26 @@ describe("render engine", () => {
     expect(agents).toContain("lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`");
     expect(agents).toContain("Run `just konpy` before stopping");
     expect(agents).toContain("quality.maxFileLines");
-    expect(agents).toContain("LLM semantic judge hooks are present but disabled by default");
+    expect(agents).not.toContain("LLM semantic judge hooks");
     expect(agents).toContain("## Accepted Risks");
     expect(agents).toContain("/Users/ivor/src/tries/2026-07-02-konsistent-python");
     expect(agents).toContain("git dependency, then PyPI");
+  });
+
+  test("omits uv rules when the repository has no uv.lock evidence", async () => {
+    const dir = await tempDir();
+    const pack = resolvePack("python-fastapi");
+    const plan = await createRenderPlan({ targetDir: dir, pack });
+
+    const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";
+    expect(agents).not.toContain("Do not use `pip install`");
+
+    const rules = JSON.parse(plan.files.find((file) => file.path === ".farrier/hooks/tool-policy-rules.json")!.content);
+    expect(rules.rules).toEqual([]);
+
+    expect(plan.rules?.blocks).toEqual([
+      { id: "uv-managed", evidence: "uv.lock exists", matched: false, matchedPaths: [] }
+    ]);
   });
 
   test("renders Claude settings with exact hook commands matchers and ordering", async () => {
@@ -241,26 +267,22 @@ describe("render engine", () => {
       "Edit|Write|MultiEdit|NotebookEdit"
     ]);
     expect(settings.hooks.PreToolUse.map((entry: { hooks: { command: string }[] }) => entry.hooks[0].command)).toEqual([
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/secret-shield.py"',
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/tool-policy.py"',
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/write-guard.py"'
+      'python3 "$CLAUDE_PROJECT_DIR/.farrier/hooks/secret-shield.py"',
+      'python3 "$CLAUDE_PROJECT_DIR/.farrier/hooks/tool-policy.py"',
+      'python3 "$CLAUDE_PROJECT_DIR/.farrier/hooks/write-guard.py"'
     ]);
 
     expect(settings.hooks.PostToolUse.map((entry: { matcher: string }) => entry.matcher)).toEqual([
-      "Edit|Write|MultiEdit|NotebookEdit",
       "Edit|Write|MultiEdit|NotebookEdit"
     ]);
     expect(settings.hooks.PostToolUse.map((entry: { hooks: { command: string }[] }) => entry.hooks[0].command)).toEqual([
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/verb-runner.py"',
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/quality-judge.py"'
+      'python3 "$CLAUDE_PROJECT_DIR/.farrier/hooks/verb-runner.py"'
     ]);
 
     expect(settings.hooks.Stop.map((entry: { hooks: { command: string }[] }) => entry.hooks[0].command)).toEqual([
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/verb-runner.py"',
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/stop-judge.py"'
+      'python3 "$CLAUDE_PROJECT_DIR/.farrier/hooks/verb-runner.py"'
     ]);
     expect(settings.hooks.Stop[0].matcher).toBeUndefined();
-    expect(settings.hooks.Stop[1].matcher).toBeUndefined();
   });
 
   test("renders Claude-only by default and persists the normalized selection", async () => {
@@ -269,9 +291,28 @@ describe("render engine", () => {
     const paths = plan.files.map((file) => file.path);
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
 
+    expect(paths).toContain("CLAUDE.md");
     expect(paths).toContain(".claude/settings.json");
     expect(paths).not.toContain(".codex/hooks.json");
     expect(manifest.agents).toEqual(["claude"]);
+  });
+
+  test("codex-only rendering emits no Claude assets at all", async () => {
+    const dir = await tempDir();
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack: resolvePack("python-fastapi"),
+      agents: ["codex"]
+    });
+    const paths = plan.files.map((file) => file.path);
+
+    expect(paths).not.toContain("CLAUDE.md");
+    expect(paths.some((path) => path.startsWith(".claude/"))).toBe(false);
+    expect(paths).toContain(".codex/hooks.json");
+    expect(paths).toContain(".farrier/hooks/tool-policy-rules.json");
+
+    const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
+    expect(manifest.agents).toEqual(["codex"]);
   });
 
   test("renders the released Codex hook mappings without a second policy system", async () => {
@@ -293,44 +334,34 @@ describe("render engine", () => {
 
     expect(paths).not.toContain(".claude/settings.json");
     expect(paths).toContain(".codex/hooks.json");
-    expect(paths.filter((path) => path === ".claude/hooks/tool-policy-rules.json")).toHaveLength(1);
+    expect(paths.filter((path) => path === ".farrier/hooks/tool-policy-rules.json")).toHaveLength(1);
     expect(paths.some((path) => path.endsWith(".rules"))).toBe(false);
     expect(paths).not.toContain(".codex/config.toml");
     expect(bindings).toEqual([
       {
         event: "PreToolUse",
         matcher: "^Bash$",
-        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/secret-shield.py"' }]
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.farrier/hooks/secret-shield.py"' }]
       },
       {
         event: "PreToolUse",
         matcher: "^Bash$",
-        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/tool-policy.py"' }]
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.farrier/hooks/tool-policy.py"' }]
       },
       {
         event: "PreToolUse",
         matcher: "^apply_patch$",
-        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/write-guard.py"' }]
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.farrier/hooks/write-guard.py"' }]
       },
       {
         event: "PostToolUse",
         matcher: "^apply_patch$",
-        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/verb-runner.py"' }]
-      },
-      {
-        event: "PostToolUse",
-        matcher: "^apply_patch$",
-        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/quality-judge.py"' }]
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.farrier/hooks/verb-runner.py"' }]
       },
       {
         event: "Stop",
         matcher: undefined,
-        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/verb-runner.py"' }]
-      },
-      {
-        event: "Stop",
-        matcher: undefined,
-        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/stop-judge.py"' }]
+        handlers: [{ type: "command", command: 'python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.farrier/hooks/verb-runner.py"' }]
       }
     ]);
 
@@ -351,7 +382,7 @@ describe("render engine", () => {
 
     expect(paths).toContain(".claude/settings.json");
     expect(paths).toContain(".codex/hooks.json");
-    expect(paths.filter((path) => path === ".claude/hooks/tool-policy-rules.json")).toHaveLength(1);
+    expect(paths.filter((path) => path === ".farrier/hooks/tool-policy-rules.json")).toHaveLength(1);
     expect(manifest.agents).toEqual(["claude", "codex"]);
     expect(agents).toContain("project and hook definitions require trust");
     expect(agents).toContain("`/hooks` shows runtime status");
@@ -375,7 +406,7 @@ describe("render engine", () => {
     const settings = JSON.parse(settingsFile!.content);
 
     expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/secret-shield.py"'
+      'python3 "$CLAUDE_PROJECT_DIR/.farrier/hooks/secret-shield.py"'
     );
     expect(settings.hooks.PostToolUse).toBeUndefined();
     expect(settings.hooks.Stop).toBeUndefined();
@@ -388,10 +419,9 @@ describe("render engine", () => {
       "AGENTS.md",
       "CLAUDE.md",
       ".claude/settings.json",
-      ...advisorInventory,
-      ".claude/hooks/secret-shield.py",
-      ".claude/hooks/test_secret_shield.py",
-      ".claude/hooks/test_hook_contract.py",
+      ".farrier/hooks/secret-shield.py",
+      ".farrier/hooks/test_secret_shield.py",
+      ".farrier/hooks/test_hook_contract.py",
       "justfile",
       "konpy.json",
       ".farrier.json",
@@ -399,12 +429,13 @@ describe("render engine", () => {
     ]);
   });
 
-  test("renders tool-policy rules JSON from pack-owned inherited Python rules", async () => {
+  test("renders tool-policy rules JSON from evidence-matched inherited Python rules", async () => {
     const dir = await tempDir();
+    await writeFile(join(dir, "uv.lock"), "", "utf8");
     const pack = resolvePack("python-fastapi");
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
-    const rulesFile = plan.files.find((file) => file.path === ".claude/hooks/tool-policy-rules.json");
+    const rulesFile = plan.files.find((file) => file.path === ".farrier/hooks/tool-policy-rules.json");
     expect(rulesFile).toBeDefined();
 
     const rules = JSON.parse(rulesFile!.content);
@@ -418,21 +449,40 @@ describe("render engine", () => {
     expect(rules.rules[0].tool).toBe("Bash");
     expect(rules.rules[0].redirect).toContain("uv add");
     expect(rules.rules[2].redirect).toContain("uv run python");
+
+    expect(plan.rules?.blocks).toEqual([
+      { id: "uv-managed", evidence: "uv.lock exists", matched: true, matchedPaths: ["uv.lock"] }
+    ]);
   });
 
-  test("renders prompt templates when judge hooks are selected", async () => {
+  test("renders judge scripts, prompts, and manifest config only when judge hooks are selected", async () => {
     const dir = await tempDir();
-    const pack = resolvePack("python-fastapi");
+    const basePack = resolvePack("python-fastapi");
+    const pack: ResolvedPack = {
+      ...basePack,
+      hooks: [...basePack.hooks, "quality-judge", "stop-judge"]
+    };
     const plan = await createRenderPlan({ targetDir: dir, pack });
+    const paths = plan.files.map((file) => file.path);
 
-    const qualityPrompt = plan.files.find((file) => file.path === ".claude/hooks/prompts/quality-judge-v1.txt");
-    const stopPrompt = plan.files.find((file) => file.path === ".claude/hooks/prompts/stop-judge-v1.txt");
+    expect(paths).toContain(".farrier/hooks/quality-judge.py");
+    expect(paths).toContain(".farrier/hooks/stop-judge.py");
+
+    const qualityPrompt = plan.files.find((file) => file.path === ".farrier/hooks/prompts/quality-judge-v1.txt");
+    const stopPrompt = plan.files.find((file) => file.path === ".farrier/hooks/prompts/stop-judge-v1.txt");
 
     expect(qualityPrompt?.content).toContain("Farrier's per-edit semantic quality judge");
     expect(stopPrompt?.content).toContain("Farrier's full-turn semantic stop judge");
+
+    const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
+    expect(manifest.judge.perEdit.enabled).toBe(false);
+    expect(manifest.judge.perEdit.prompt).toBe(".farrier/hooks/prompts/quality-judge-v1.txt");
+    expect(manifest.versions.prompts).toEqual({ qualityJudge: "v1", stopJudge: "v1" });
+    expect(manifest.versions.hooks["quality-judge"]).toBe(4);
+    expect(manifest.versions.hooks["stop-judge"]).toBe(3);
   });
 
-  test("renders manifest with pack hook ids skills judge quality and version defaults", async () => {
+  test("renders manifest with pack hook ids skills quality and version defaults", async () => {
     const dir = await tempDir();
     const pack = resolvePack("python-fastapi");
     const plan = await createRenderPlan({ targetDir: dir, pack });
@@ -445,42 +495,21 @@ describe("render engine", () => {
     expect(manifest.farrierVersion).toBe("0.3.0");
     expect(manifest.agents).toEqual(["claude"]);
     expect(manifest.packIds).toEqual(["python-uv", "python-fastapi"]);
-    expect(manifest.hookIds).toEqual([...allHooks]);
+    expect(manifest.hookIds).toEqual([...defaultHooks]);
     expect(manifest.skills).toEqual(pack.skills);
+    expect(manifest.advisors).toBe(false);
     expect(manifest.secondaryAcknowledged).toEqual([]);
     expect(manifest.learn).toEqual({ enabled: false });
-    expect(manifest.judge).toEqual({
-      perEdit: {
-        enabled: false,
-        backend: "claude",
-        model: "haiku",
-        timeoutMs: 15000,
-        prompt: ".claude/hooks/prompts/quality-judge-v1.txt"
-      },
-      stop: {
-        enabled: false,
-        backend: "claude",
-        model: "sonnet",
-        timeoutMs: 30000,
-        prompt: ".claude/hooks/prompts/stop-judge-v1.txt",
-        maxDiffBytes: 120000,
-        maxUntrackedFiles: 50
-      }
-    });
+    expect(manifest.judge).toBeUndefined();
     expect(manifest.quality).toEqual({ maxFileLines: 500 });
-    expect(manifest.versions.farrierManifest).toBe(2);
+    expect(manifest.versions.farrierManifest).toBe(3);
     expect(manifest.versions.hooks).toEqual({
       "secret-shield": 4,
       "tool-policy": 3,
       "write-guard": 4,
-      "verb-runner": 4,
-      "quality-judge": 4,
-      "stop-judge": 3
+      "verb-runner": 4
     });
-    expect(manifest.versions.prompts).toEqual({
-      qualityJudge: "v1",
-      stopJudge: "v1"
-    });
+    expect(manifest.versions.prompts).toBeUndefined();
     expect(manifest.registry).toBeUndefined();
   });
 
@@ -539,7 +568,7 @@ describe("render engine", () => {
       hooks: [
         {
           type: "command",
-          command: 'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/@acme/guard/guard.sh"'
+          command: 'bash "$CLAUDE_PROJECT_DIR/.farrier/hooks/@acme/guard/guard.sh"'
         }
       ]
     });
@@ -547,7 +576,7 @@ describe("render engine", () => {
       hooks: [
         {
           type: "command",
-          command: 'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/@acme/guard/guard.sh"'
+          command: 'bash "$CLAUDE_PROJECT_DIR/.farrier/hooks/@acme/guard/guard.sh"'
         }
       ]
     });
@@ -555,8 +584,8 @@ describe("render engine", () => {
     expect(codexHooks).not.toContain("@acme/guard");
     expect(codexHooks).not.toContain("guard.sh");
 
-    const remoteEntry = plan.files.find((file) => file.path === ".claude/hooks/@acme/guard/guard.sh");
-    const remoteHelper = plan.files.find((file) => file.path === ".claude/hooks/@acme/guard/lib/helper.sh");
+    const remoteEntry = plan.files.find((file) => file.path === ".farrier/hooks/@acme/guard/guard.sh");
+    const remoteHelper = plan.files.find((file) => file.path === ".farrier/hooks/@acme/guard/lib/helper.sh");
     expect(remoteEntry).toMatchObject({
       content: "#!/usr/bin/env bash\necho guard\n",
       mode: 0o755,
@@ -619,18 +648,21 @@ describe("render engine", () => {
     expect(manifest.skills).toEqual(selectedSkills);
     expect(manifest.secondaryAcknowledged).toEqual([]);
     expect(manifest.learn).toEqual({ enabled: true });
-    expect(manifest.versions.farrierManifest).toBe(2);
+    expect(manifest.versions.farrierManifest).toBe(3);
     expect(manifest.versions.hooks).toEqual({
       "secret-shield": 4
     });
-    expect(manifest.judge.perEdit.enabled).toBe(false);
-    expect(manifest.judge.stop.enabled).toBe(false);
+    expect(manifest.judge).toBeUndefined();
     expect(manifest.quality.maxFileLines).toBe(500);
   });
 
   test("preserves existing manifest judge quality skills learn and secondary acknowledgement inputs", async () => {
     const dir = await tempDir();
-    const pack = resolvePack("rails");
+    const basePack = resolvePack("rails");
+    const pack: ResolvedPack = {
+      ...basePack,
+      hooks: [...basePack.hooks, "quality-judge"]
+    };
     const plan = await createRenderPlan({
       targetDir: dir,
       pack,
@@ -689,13 +721,14 @@ describe("render engine", () => {
     });
   });
 
-  test("renders ts-react-vite full inventory with TypeScript rules and konsistent support", async () => {
+  test("renders ts-react-vite full inventory with evidence-gated TypeScript rules", async () => {
     const dir = await tempDir();
+    await writeFile(join(dir, "bun.lock"), "", "utf8");
     const pack = resolvePack("ts-react-vite");
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(tsReactViteInventory);
-    expect(plan.files).toHaveLength(45);
+    expect(plan.files).toHaveLength(18);
 
     const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";
     expect(agents).toContain("Use Bun for TypeScript package and script execution");
@@ -727,7 +760,7 @@ describe("render engine", () => {
       ]
     });
 
-    const rulesFile = plan.files.find((file) => file.path === ".claude/hooks/tool-policy-rules.json");
+    const rulesFile = plan.files.find((file) => file.path === ".farrier/hooks/tool-policy-rules.json");
     const rules = JSON.parse(rulesFile!.content);
     expect(rules.rules.map((rule: { id: string }) => rule.id)).toEqual([
       "typescript-use-bunx-not-npx",
@@ -738,18 +771,18 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["ts-base", "ts-react-vite"]);
-    expect(manifest.hookIds).toEqual([...allHooks]);
+    expect(manifest.hookIds).toEqual([...defaultHooks]);
     expect(manifest.farrierVersion).toBe("0.3.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
-  test("renders rails without konsistent artifacts while retaining full hook inventory", async () => {
+  test("renders rails without konsistent artifacts while retaining deterministic hooks", async () => {
     const dir = await tempDir();
     const pack = resolvePack("rails");
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(railsInventory);
-    expect(plan.files).toHaveLength(44);
+    expect(plan.files).toHaveLength(17);
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
@@ -768,11 +801,10 @@ describe("render engine", () => {
 
     const settings = JSON.parse(plan.files.find((file) => file.path === ".claude/settings.json")!.content);
     expect(settings.hooks.Stop.map((entry: { hooks: { command: string }[] }) => entry.hooks[0].command)).toEqual([
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/verb-runner.py"',
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/stop-judge.py"'
+      'python3 "$CLAUDE_PROJECT_DIR/.farrier/hooks/verb-runner.py"'
     ]);
 
-    const rules = JSON.parse(plan.files.find((file) => file.path === ".claude/hooks/tool-policy-rules.json")!.content);
+    const rules = JSON.parse(plan.files.find((file) => file.path === ".farrier/hooks/tool-policy-rules.json")!.content);
     expect(rules.rules.map((rule: { id: string }) => rule.id)).toEqual([
       "rails-use-bundle-add-not-gem-install",
       "rails-avoid-npx"
@@ -780,7 +812,7 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["rails"]);
-    expect(manifest.hookIds).toEqual([...allHooks]);
+    expect(manifest.hookIds).toEqual([...defaultHooks]);
     expect(manifest.farrierVersion).toBe("0.3.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
@@ -791,11 +823,11 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(genericInventory);
-    expect(plan.files).toHaveLength(39);
+    expect(plan.files).toHaveLength(14);
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
     expect(plan.files.some((file) => file.path.includes("verb-runner.py"))).toBe(false);
     expect(plan.files.some((file) => file.path.includes("stop-judge.py"))).toBe(false);
-    expect(plan.files.some((file) => file.path === ".claude/hooks/prompts/stop-judge-v1.txt")).toBe(false);
+    expect(plan.files.some((file) => file.path.includes("_hook_runtime.py"))).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
     expect(justfile).toContain('check:\n  echo "farrier generic pack: configure check in justfile"');
@@ -810,11 +842,9 @@ describe("render engine", () => {
 
     const settings = JSON.parse(plan.files.find((file) => file.path === ".claude/settings.json")!.content);
     expect(settings.hooks.Stop).toBeUndefined();
-    expect(settings.hooks.PostToolUse.map((entry: { hooks: { command: string }[] }) => entry.hooks[0].command)).toEqual([
-      'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/quality-judge.py"'
-    ]);
+    expect(settings.hooks.PostToolUse).toBeUndefined();
 
-    const rules = JSON.parse(plan.files.find((file) => file.path === ".claude/hooks/tool-policy-rules.json")!.content);
+    const rules = JSON.parse(plan.files.find((file) => file.path === ".farrier/hooks/tool-policy-rules.json")!.content);
     expect(rules).toEqual({
       version: 1,
       rules: []
@@ -822,7 +852,7 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["generic"]);
-    expect(manifest.hookIds).toEqual(["secret-shield", "tool-policy", "write-guard", "quality-judge"]);
+    expect(manifest.hookIds).toEqual(["secret-shield", "tool-policy", "write-guard"]);
     expect(manifest.farrierVersion).toBe("0.3.0");
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
@@ -835,6 +865,7 @@ describe("render engine", () => {
 
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(dir, ".claude", "settings.json"))).toBe(false);
+    expect(existsSync(join(dir, ".farrier"))).toBe(false);
   });
 
   test("writeRenderPlan writes all files and makes hook scripts executable", async () => {
@@ -849,12 +880,10 @@ describe("render engine", () => {
     }
 
     for (const path of [
-      ".claude/hooks/secret-shield.py",
-      ".claude/hooks/tool-policy.py",
-      ".claude/hooks/write-guard.py",
-      ".claude/hooks/verb-runner.py",
-      ".claude/hooks/quality-judge.py",
-      ".claude/hooks/stop-judge.py"
+      ".farrier/hooks/secret-shield.py",
+      ".farrier/hooks/tool-policy.py",
+      ".farrier/hooks/write-guard.py",
+      ".farrier/hooks/verb-runner.py"
     ]) {
       const mode = (await stat(join(dir, path))).mode;
       expect(mode & 0o111).not.toBe(0);

@@ -20,6 +20,7 @@ export type NormalizedManifest = {
   currentPackId: string;
   hookIds: PackHookRef[];
   skills: SkillRef[];
+  advisors: boolean;
   secondaryAcknowledged: string[];
   learn: {
     enabled: boolean;
@@ -139,6 +140,12 @@ function parseLearn(value: unknown): { enabled: boolean } {
   return { enabled: isRecord(value) && value.enabled === true };
 }
 
+// v2 manifests predate the field and always materialized the advisor skill
+// trees; migration treats them as opt-out so update prunes unmodified trees.
+function parseAdvisors(raw: Record<string, unknown>): boolean {
+  return raw.advisors === true;
+}
+
 export function normalizeManifest(raw: unknown, catalog: PackCatalog = builtinCatalog()): NormalizedManifest {
   if (!isRecord(raw)) throw new Error("invalid .farrier.json: root must be an object");
 
@@ -156,6 +163,7 @@ export function normalizeManifest(raw: unknown, catalog: PackCatalog = builtinCa
     currentPackId,
     hookIds: parseHookIds(raw.hookIds, resolvedPack.hooks, catalog),
     skills: stringArray(raw.skills) ?? [...resolvedPack.skills],
+    advisors: parseAdvisors(raw),
     secondaryAcknowledged: stringArray(raw.secondaryAcknowledged) ?? [],
     learn: parseLearn(raw.learn),
     judge: raw.judge,
@@ -182,6 +190,7 @@ export function manifestToInput(manifest: NormalizedManifest): FarrierManifestIn
     packIds: [...manifest.packIds],
     hookIds: [...manifest.hookIds],
     skills: [...manifest.skills],
+    advisors: manifest.advisors,
     secondaryAcknowledged: [...manifest.secondaryAcknowledged],
     learn: {
       enabled: manifest.learn.enabled,

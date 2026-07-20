@@ -138,6 +138,21 @@ export type PackVerbs = {
   konsistent?: string;
 };
 
+/**
+ * A group of rules that only applies when repository evidence for it exists.
+ * `when` is evaluated against the target directory at plan time; when it does
+ * not match, the block's rules are omitted entirely instead of being emitted
+ * as generic advice. `evidence` is the human-readable justification shown in
+ * previews (e.g. "bun.lock exists").
+ */
+export type PackRuleBlock = {
+  id: string;
+  when: PackDetect;
+  evidence: string;
+  agentsRules?: string[];
+  toolPolicyRules?: ToolPolicyRule[];
+};
+
 export type Pack = {
   id: string;
   extends?: string;
@@ -160,12 +175,14 @@ export type Pack = {
   konsistentTool?: string;
   verbs: PackVerbs;
   agentsRules?: string[];
+  ruleBlocks?: PackRuleBlock[];
   secondaryDetectors?: SecondaryDetector[];
 };
 
-export type ResolvedPack = Omit<Pack, "toolPolicyRules" | "agentsRules" | "secondaryDetectors"> & {
+export type ResolvedPack = Omit<Pack, "toolPolicyRules" | "agentsRules" | "ruleBlocks" | "secondaryDetectors"> & {
   toolPolicyRules: ToolPolicyRule[];
   agentsRules: string[];
+  ruleBlocks: PackRuleBlock[];
   secondaryDetectors: SecondaryDetector[];
   packIds: string[];
   remoteHooks: ResolvedRemoteHook[];

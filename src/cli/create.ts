@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { applyHarnessChangePlan, HarnessApplyError, inspectHarnessChangePlan, type HarnessChangePlan, type HarnessFileAction } from "../engine/create-plan";
-import { detectPacksWithEvidence, type DetectedPackEvidence } from "../engine/detect";
+import { detectPacksWithEvidence, type DetectedPackEvidence, type EvaluatedPackRules } from "../engine/detect";
 import { formatAgents, parseAgents, type EnforcementAgent } from "../engine/agent-selection";
 import { agentsHardRules, createRenderPlan } from "../engine/render";
 import { installSkills, type InstallSkillResult } from "../engine/skills";
@@ -19,6 +19,7 @@ export type CreateCliOptions = {
   force: boolean;
   json: boolean;
   installSkills: boolean;
+  advisors: boolean;
   agents: EnforcementAgent[];
   help: boolean;
 };
@@ -37,6 +38,7 @@ export function parseCreateArgs(args: string[]): CreateCliOptions {
     force: false,
     json: false,
     installSkills: true,
+    advisors: false,
     agents: ["claude"],
     detect: false,
     help: false,
@@ -72,6 +74,11 @@ export function parseCreateArgs(args: string[]): CreateCliOptions {
 
     if (arg === "--no-skills") {
       options.installSkills = false;
+      continue;
+    }
+
+    if (arg === "--with-advisors") {
+      options.advisors = true;
       continue;
     }
 
@@ -233,7 +240,16 @@ function generatorSource(pack: ResolvedPack, catalog: PackCatalog): string | und
   return [...pack.packIds].reverse().find((packId) => catalog.getPack(packId)?.generator !== undefined);
 }
 
-function creationReport(input: { options: CreateCliOptions; resolved: ResolvedRenderStack; pack: ResolvedPack; plan: HarnessChangePlan; catalog: PackCatalog }): Record<string, unknown> {
+type CreationView = {
+  options: CreateCliOptions;
+  resolved: ResolvedRenderStack;
+  pack: ResolvedPack;
+  plan: HarnessChangePlan;
+  catalog: PackCatalog;
+  rules?: EvaluatedPackRules;
+};
+
+function creationReport(input: CreationView): Record<string, unknown> {
   const generator = generatorCommand(input.pack);
 
   return {
@@ -249,7 +265,14 @@ function creationReport(input: { options: CreateCliOptions; resolved: ResolvedRe
     },
     harnessBehavior: {
       agents: input.options.agents,
-      hardRuleCount: agentsHardRules(input.pack, input.options.agents).length,
+      hardRuleCount: agentsHardRules(input.pack, input.options.agents, input.rules?.agentsRules).length,
+      advisors: input.options.advisors,
+      policyEvidence: input.rules
+        ? {
+            packEvidence: input.rules.packEvidence ?? null,
+            ruleBlocks: input.rules.blocks,
+          }
+        : null,
       hooks: input.pack.hooks,
       skills: input.pack.skills,
       skillAction: input.options.installSkills ? "install" : "record-only",
@@ -294,7 +317,27 @@ function printDetectedStacks(resolved: ResolvedRenderStack): void {
   }
 }
 
-function printCreationPlan(input: { options: CreateCliOptions; resolved: ResolvedRenderStack; pack: ResolvedPack; plan: HarnessChangePlan; catalog: PackCatalog }): void {
+function printPolicyEvidence(pack: ResolvedPack, rules: EvaluatedPackRules | undefined): void {
+  if (!rules) {
+    return;
+  }
+
+  console.log("");
+  console.log("Policy evidence:");
+  const packEvidence = rules.packEvidence?.join(", ");
+  console.log(`  - base pack rules: ${packEvidence ? `detected via ${packEvidence}` : "explicitly selected stack"}`);
+  for (const block of rules.blocks) {
+    const packBlock = pack.ruleBlocks.find((candidate) => candidate.id === block.id);
+    const ruleCount = (packBlock?.agentsRules?.length ?? 0) + (packBlock?.toolPolicyRules?.length ?? 0);
+    if (block.matched) {
+      console.log(`  - ${block.id}: ${ruleCount} rule(s) included; evidence: ${block.evidence} (${block.matchedPaths.join(", ")})`);
+    } else {
+      console.log(`  - ${block.id}: ${ruleCount} rule(s) omitted; no evidence that ${block.evidence}`);
+    }
+  }
+}
+
+function printCreationPlan(input: CreationView): void {
   const counts = input.plan.counts;
   const generator = generatorCommand(input.pack);
 
@@ -308,10 +351,12 @@ function printCreationPlan(input: { options: CreateCliOptions; resolved: Resolve
     console.log("Assumption: the stack was explicitly selected; detected signals did not override it.");
   }
 
+  printPolicyEvidence(input.pack, input.rules);
+
   console.log("");
   console.log("Harness behavior:");
   console.log(`  - enforcement targets: ${formatAgents(input.options.agents)}`);
-  console.log(`  - ${agentsHardRules(input.pack, input.options.agents).length} shared agent rules in AGENTS.md`);
+  console.log(`  - ${agentsHardRules(input.pack, input.options.agents, input.rules?.agentsRules).length} shared agent rules in AGENTS.md`);
   console.log(`  - ${input.pack.hooks.length} hook(s): ${input.pack.hooks.join(", ") || "none"}`);
   console.log(`  - check: ${input.pack.verbs.check}`);
   console.log(`  - test: ${input.pack.verbs.test}`);
@@ -320,7 +365,7 @@ function printCreationPlan(input: { options: CreateCliOptions; resolved: Resolve
     console.log(`  - structure: ${input.pack.verbs.konsistent}`);
   }
   console.log(`  - ${input.pack.skills.length} selected skill(s): ${input.options.installSkills ? "install for Claude Code and Codex after files are written" : "record only (--no-skills)"}`);
-  console.log("  - semantic judge hooks are present where selected, but model calls stay disabled by default");
+  console.log(`  - advisor skill trees: ${input.options.advisors ? "included (--with-advisors)" : "not generated (opt in with --with-advisors)"}`);
   if (generator) {
     console.log(`  - declared project generator: ${generator} (from ${generatorSource(input.pack, input.catalog) ?? input.pack.id}); harness creation does not run it`);
   }
@@ -430,17 +475,18 @@ async function executeCreate(args: string[], usage: () => string): Promise<numbe
     targetDir,
     pack,
     agents: options.agents,
+    advisors: options.advisors,
     registryPins: catalog.registryPins(),
   });
   const plan = await inspectHarnessChangePlan(renderPlan, {
     packId: resolved.stack,
     hookCount: pack.hooks.length,
     skillCount: pack.skills.length,
-    ruleCount: agentsHardRules(pack, options.agents).length,
+    ruleCount: agentsHardRules(pack, options.agents, renderPlan.rules?.agentsRules).length,
     verbs: pack.verbs,
     konsistentTool: pack.konsistentTool,
   });
-  const view = { options, resolved, pack, plan, catalog };
+  const view = { options, resolved, pack, plan, catalog, rules: renderPlan.rules };
   const report = creationReport(view);
 
   if (options.dryRun) {

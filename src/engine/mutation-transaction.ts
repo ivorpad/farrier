@@ -21,6 +21,7 @@ export type MutationOperation =
   | { kind: "write-file"; path: string; content: string | Buffer; mode?: number }
   | { kind: "replace-tree"; path: string; sourcePath: string }
   | { kind: "remove-tree"; path: string }
+  | { kind: "remove-file"; path: string }
   | { kind: "link"; path: string; target: string };
 
 type ReviewedLinkTarget = {
@@ -194,6 +195,9 @@ export async function inspectMutationPlan(targetDir: string, operations: Mutatio
     }
     if (operation.kind === "remove-tree") {
       if (expected.kind !== "tree") throw new Error(`Removal target is not a regular tree: ${operation.path}`);
+    }
+    if (operation.kind === "remove-file") {
+      if (expected.kind !== "file") throw new Error(`Removal target is not a regular file: ${operation.path}`);
     }
     if (operation.kind === "link") {
       inspected.push({ ...operation, expected, linkTarget: await inspectLinkTarget(root, absolute, operation.target, operation.path) });

@@ -3,6 +3,7 @@ import { builtinDetectionOrder, getPack as getBuiltinPack, resolvePack as resolv
 import {
   dedupe,
   mergeDetect,
+  mergeRuleBlocks,
   mergeSecondaryDetectors,
   mergeToolPolicyRules
 } from "../packs/merge";
@@ -177,6 +178,7 @@ function mergeResolvedPack(parent: ResolvedPack, pack: Pack, remoteHooks: Resolv
       ...pack.verbs
     },
     agentsRules: dedupe([...parent.agentsRules, ...(pack.agentsRules ?? [])]),
+    ruleBlocks: mergeRuleBlocks(parent.ruleBlocks, pack.ruleBlocks ?? []),
     secondaryDetectors: mergeSecondaryDetectors(parent.secondaryDetectors, pack.secondaryDetectors ?? []),
     packIds: [...parent.packIds, pack.id],
     remoteHooks: dedupe([...parent.remoteHooks, ...remoteHooks])
@@ -233,6 +235,7 @@ function createCatalog(input: {
         skills,
         toolPolicyRules: pack.toolPolicyRules ?? [],
         agentsRules: pack.agentsRules ?? [],
+        ruleBlocks: pack.ruleBlocks ?? [],
         secondaryDetectors: pack.secondaryDetectors ?? [],
         packIds: [pack.id],
         remoteHooks

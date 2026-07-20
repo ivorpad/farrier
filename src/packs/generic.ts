@@ -4,7 +4,7 @@ export const genericPack: Pack = {
   id: "generic",
   detect: {},
   skills: [],
-  hooks: ["secret-shield", "tool-policy", "write-guard", "quality-judge"],
+  hooks: ["secret-shield", "tool-policy", "write-guard"],
   toolPolicyRules: [],
   verbs: {
     check: 'echo "farrier generic pack: configure check in justfile"',

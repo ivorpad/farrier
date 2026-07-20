@@ -3,6 +3,7 @@ import { genericPack } from "./generic";
 import {
   dedupe,
   mergeDetect,
+  mergeRuleBlocks,
   mergeSecondaryDetectors,
   mergeToolPolicyRules
 } from "./merge";
@@ -126,6 +127,7 @@ export function resolvePack(id: string): ResolvedPack {
       ...pack,
       toolPolicyRules: pack.toolPolicyRules ?? [],
       agentsRules: pack.agentsRules ?? [],
+      ruleBlocks: pack.ruleBlocks ?? [],
       secondaryDetectors: pack.secondaryDetectors ?? [],
       packIds: [pack.id],
       remoteHooks: []
@@ -151,6 +153,7 @@ export function resolvePack(id: string): ResolvedPack {
       ...pack.verbs
     },
     agentsRules: dedupe([...parent.agentsRules, ...(pack.agentsRules ?? [])]),
+    ruleBlocks: mergeRuleBlocks(parent.ruleBlocks, pack.ruleBlocks ?? []),
     secondaryDetectors: mergeSecondaryDetectors(parent.secondaryDetectors, pack.secondaryDetectors ?? []),
     packIds: [...parent.packIds, pack.id],
     remoteHooks: [...parent.remoteHooks]

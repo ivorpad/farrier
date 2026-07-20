@@ -11,7 +11,7 @@ export const railsPack: Pack = {
     onlyWhenEmptyDir: true
   },
   skills: [],
-  hooks: ["secret-shield", "tool-policy", "write-guard", "verb-runner", "quality-judge", "stop-judge"],
+  hooks: ["secret-shield", "tool-policy", "write-guard", "verb-runner"],
   toolPolicyRules: [
     {
       id: "rails-use-bundle-add-not-gem-install",

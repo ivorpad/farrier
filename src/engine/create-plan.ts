@@ -92,7 +92,7 @@ export function filePurpose(path: string, context: FilePurposeContext = {}): str
   if (path.startsWith(".claude/skills/claude-automation-recommender/")) return "Pinned Claude project-advice skill and its attributed upstream references.";
   if (path.startsWith(".agents/skills/codex-automation-recommender/")) return "Codex-native automation recommender and official-surface references.";
   if (path === ".agents/skills/farrier-project-advisor/SKILL.md") return "Compatibility wrapper for Farrier's Codex automation recommender.";
-  if (path.startsWith(".claude/hooks/@")) return "Executable hook supplied by a configured registry.";
+  if (path.startsWith(".farrier/hooks/@")) return "Executable hook supplied by a configured registry.";
   if (path.includes("/hooks/prompts/") && base.endsWith(".txt")) return "Versioned semantic-judge prompt.";
   if (base === "tool-policy-rules.json") return "Declarative command-denial rules.";
   if (path.includes("/hooks/test_")) return "Tests the adjacent generated hook.";

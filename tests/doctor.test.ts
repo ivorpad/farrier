@@ -115,6 +115,7 @@ describe("doctor engine", () => {
     const codexDir = await tempDir();
     const codexPlan = await createRenderPlan({ targetDir: codexDir, pack: resolvePack("generic"), agents: ["codex"] });
     await writeRenderPlan(codexPlan);
+    await mkdir(join(codexDir, ".claude"), { recursive: true });
     await writeFile(join(codexDir, ".claude", "settings.json"), "{not json", "utf8");
     const codexReport = await createDoctorReport({ targetDir: codexDir });
     expect(codexReport.healthy).toBe(true);
@@ -250,14 +251,14 @@ describe("doctor engine", () => {
     const dir = await tempDir();
     await renderPack(dir);
 
-    await unlink(join(dir, ".claude", "hooks", "tool-policy.py"));
+    await unlink(join(dir, ".farrier", "hooks", "tool-policy.py"));
 
     const report = await createDoctorReport({ targetDir: dir });
 
     expect(report.healthy).toBe(false);
     expect(doctorExitCode(report)).toBe(1);
     expectProblem(report, "inventory", {
-      path: ".claude/hooks/tool-policy.py",
+      path: ".farrier/hooks/tool-policy.py",
       message: "Expected generated harness file is missing"
     });
     expectProblem(report, "settings", {
@@ -269,13 +270,13 @@ describe("doctor engine", () => {
   test("statically flags missing hook test artifacts and aggregate coverage", async () => {
     const dir = await tempDir();
     await renderPack(dir);
-    await unlink(join(dir, ".claude", "hooks", "test_tool_policy.py"));
+    await unlink(join(dir, ".farrier", "hooks", "test_tool_policy.py"));
     const justfile = join(dir, "justfile");
-    await writeFile(justfile, (await readFile(justfile, "utf8")).replace(" && uv run --with pytest pytest .claude/hooks", ""), "utf8");
+    await writeFile(justfile, (await readFile(justfile, "utf8")).replace(" && uv run --with pytest pytest .farrier/hooks", ""), "utf8");
 
     const report = await createDoctorReport({ targetDir: dir });
     expectProblem(report, "inventory", {
-      path: ".claude/hooks/test_tool_policy.py",
+      path: ".farrier/hooks/test_tool_policy.py",
       message: "Expected generated harness file is missing"
     });
     expectProblem(report, "hooks", {
@@ -287,7 +288,13 @@ describe("doctor engine", () => {
 
   test("statically flags missing bundled skill cases", async () => {
     const dir = await tempDir();
-    await renderPack(dir);
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack: resolvePack("python-fastapi"),
+      agents: ["claude", "codex"],
+      advisors: true
+    });
+    await writeRenderPlan(plan);
     await unlink(join(dir, ".agents", "skills", "farrier-project-advisor", "evals", "cases.json"));
 
     const report = await createDoctorReport({ targetDir: dir });

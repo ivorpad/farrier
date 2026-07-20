@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { readManifest } from "./manifest";
+import { hooksDirectory } from "./render";
 import type { ToolPolicyRule } from "../packs/types";
 import type { ReasoningEffort } from "../config/farrier-config";
 import { applyMutationPlan, fingerprintPath, inspectMutationPlan } from "./mutation-transaction";
@@ -114,7 +115,7 @@ type ReadToolPolicyRulesResult = {
 };
 
 const transcriptEventLimit = 200;
-const rulesRelativePath = ".claude/hooks/tool-policy-rules.json";
+const rulesRelativePath = `${hooksDirectory}/tool-policy-rules.json`;
 const kebabCasePattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const allowedRegexFlagsPattern = /^[ims]*$/;
 

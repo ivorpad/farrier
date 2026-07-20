@@ -24,7 +24,7 @@ import {
   isProspectiveCreationTarget,
   repositoryPathSearchText,
 } from "./harness-audit-path-context";
-import { hookTemplateFiles } from "./render";
+import { hookTemplateFiles, hooksDirectory } from "./render";
 import {
   openContainedRepository,
   readContainedDirectory,
@@ -335,7 +335,7 @@ async function manifestHookChecks(
     });
   }
   for (const id of selected) {
-    const path = `.claude/hooks/${id}.py`;
+    const path = `${hooksDirectory}/${id}.py`;
     checks.push({
       id: `check:manifest-hook-entry:${id}`,
       layers: ["hook"],

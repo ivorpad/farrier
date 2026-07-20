@@ -13,7 +13,7 @@ from typing import Any
 from _hook_runtime import read_project_text
 
 
-RULES_RELATIVE_PATH = Path(".claude") / "hooks" / "tool-policy-rules.json"
+RULES_RELATIVE_PATH = Path(".farrier") / "hooks" / "tool-policy-rules.json"
 MAX_PAYLOAD_BYTES = 256 * 1024
 RULE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 REDACTION_PATTERNS = (

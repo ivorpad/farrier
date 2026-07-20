@@ -243,7 +243,7 @@ def test_ignores_unrelated_tool_event(tmp_path: Path) -> None:
 def test_skips_edits_inside_claude_hooks_to_avoid_recursion(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(
         post_payload(
-            tmp_path, tool_input={"file_path": ".claude/hooks/verb-runner.py"}
+            tmp_path, tool_input={"file_path": ".farrier/hooks/verb-runner.py"}
         ),
         tmp_path,
         'echo "should not run"\nexit 1',

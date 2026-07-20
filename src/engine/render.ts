@@ -1,11 +1,15 @@
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import type { HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef } from "../packs/types";
+import type { HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef, ToolPolicyRule } from "../packs/types";
 import { hookCapabilities, packCapabilityProjection } from "../packs/index";
 import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
 import type { RegistryPin } from "../registry/catalog";
 import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
+import { evaluatePackRules, type EvaluatedPackRules } from "./detect";
+
+/** Provider-neutral home for generated hook implementations and their tests. */
+export const hooksDirectory = ".farrier/hooks";
 
 export type ExecutableProvenance = {
   registryRef: string;
@@ -26,6 +30,8 @@ export type RenderPlan = {
   targetDir: string;
   files: RenderedFile[];
   reviewedDigest?: string;
+  /** Rule evaluation behind the generated policy, for evidence previews. */
+  rules?: EvaluatedPackRules;
 };
 
 function sha256(value: string): string {
@@ -52,6 +58,7 @@ export type RenderOptions = {
   generator?: NativeGenerator;
   skills?: SkillRef[];
   learnEnabled?: boolean;
+  advisors?: boolean;
   secondaryAcknowledged?: string[];
   existingManifest?: FarrierManifestInput;
   registryPins?: Record<string, RegistryPin>;
@@ -63,6 +70,7 @@ export type CreateRenderPlanOptions = {
   pack: ResolvedPack;
   skills?: SkillRef[];
   learnEnabled?: boolean;
+  advisors?: boolean;
   secondaryAcknowledged?: string[];
   existingManifest?: FarrierManifestInput;
   registryPins?: Record<string, RegistryPin>;
@@ -72,7 +80,7 @@ export type CreateRenderPlanOptions = {
 export type FarrierManifestVersions = {
   farrierManifest: number;
   hooks: Record<string, number>;
-  prompts: {
+  prompts?: {
     qualityJudge: string;
     stopJudge: string;
   };
@@ -84,11 +92,12 @@ export type FarrierManifest = {
   packIds: string[];
   hookIds: PackHookRef[];
   skills: SkillRef[];
+  advisors: boolean;
   secondaryAcknowledged: string[];
   learn: {
     enabled: boolean;
   };
-  judge: Record<string, unknown>;
+  judge?: Record<string, unknown>;
   quality: Record<string, unknown>;
   versions: FarrierManifestVersions;
   registry?: {
@@ -116,7 +125,7 @@ type ClaudeHookEntry = {
 
 type ClaudeSettingsHooks = Partial<Record<ClaudeHookEvent, ClaudeHookEntry[]>>;
 
-export const farrierManifestVersion = 2;
+export const farrierManifestVersion = 3;
 
 export const hookCatalogVersions: Record<HookId, number> = {
     "secret-shield": 4,
@@ -206,24 +215,33 @@ function bulletList(values: string[]): string {
 /**
  * The AGENTS.md "Hard Rules" list. Exported so the wizard can honestly count
  * the rules it is about to write ("N rules") without duplicating the list.
+ * `packRules` are the evidence-evaluated pack rules; when omitted (previews
+ * that have not scanned the repository yet), all pack rules are counted.
  */
-export function agentsHardRules(pack: ResolvedPack, agents: readonly EnforcementAgent[] = ["claude"]): string[] {
+export function agentsHardRules(
+  pack: ResolvedPack,
+  agents: readonly EnforcementAgent[] = ["claude"],
+  packRules?: readonly string[]
+): string[] {
   const selectedAgents = normalizeAgents(agents);
   const hookNames = selectedAgents.map((agent) => agent === "claude" ? "Claude" : "Codex").join(" or ");
+  const rules = packRules ?? [
+    ...pack.agentsRules,
+    ...pack.ruleBlocks.flatMap((block) => block.agentsRules ?? [])
+  ];
   return [
     "Do not read real `.env*` files or private key material; tracked examples such as `.env.example` are allowed.",
-    ...pack.agentsRules,
+    ...rules,
     "Do not directly edit protected generated/owned files: lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`.",
     "Run `just check` after edits.",
     ...(pack.verbs.konsistent ? [`Run \`just ${konsistentToolName(pack)}\` before stopping.`] : []),
     "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
     "Keep generated hook scripts and their tests together.",
-    "LLM semantic judge hooks are present but disabled by default in `.farrier.json`; deterministic checks still run where configured.",
     `Do not bypass ${hookNames} hooks; every agent must also follow these rules from AGENTS.md and the justfile.`
   ];
 }
 
-function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[]): string {
+function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[], packRules: readonly string[]): string {
   const commandLines = [
     `- Check: \`${pack.verbs.check}\``,
     `- Test: \`${pack.verbs.test}\``,
@@ -236,7 +254,7 @@ function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[])
 
   const selectedAgents = normalizeAgents(agents);
   const capability = packCapabilityProjection(pack);
-  const hardRules = agentsHardRules(pack, selectedAgents);
+  const hardRules = agentsHardRules(pack, selectedAgents, packRules);
   const targetLines = [
     `- Selected enforcement targets: ${selectedAgents.join(", ")}.`,
     ...(selectedAgents.includes("claude")
@@ -287,7 +305,7 @@ ${bulletList(hardRules)}
 ${acceptedRisksSection}`;
 }
 
-function renderClaudeMd(): string {
+export function renderClaudeMd(): string {
   // `@AGENTS.md` is Claude Code's documented import syntax -- it loads AGENTS.md's
   // full content into context every session, the same way Codex reads AGENTS.md
   // directly. A plain pointer sentence here would only be advisory: Claude would
@@ -309,7 +327,7 @@ function hookEntry(input: { matcher?: string; command: string }): ClaudeHookEntr
   };
 }
 
-function renderClaudeSettingsJson(pack: ResolvedPack): string {
+export function renderClaudeSettingsJson(pack: ResolvedPack): string {
   const preToolUse: ClaudeHookEntry[] = [];
   const postToolUse: ClaudeHookEntry[] = [];
   const stop: ClaudeHookEntry[] = [];
@@ -319,13 +337,13 @@ function renderClaudeSettingsJson(pack: ResolvedPack): string {
       const target = binding.event === "PreToolUse" ? preToolUse : binding.event === "PostToolUse" ? postToolUse : stop;
       target.push(hookEntry({
         matcher: binding.matcher,
-        command: `python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/${binding.fileName}"`
+        command: `python3 "$CLAUDE_PROJECT_DIR/${hooksDirectory}/${binding.fileName}"`
       }));
     }
   }
 
   for (const remoteHook of pack.remoteHooks) {
-    const entryPath = posixPath(join(".claude", "hooks", remoteHook.id, remoteHook.entry));
+    const entryPath = posixPath(join(hooksDirectory, remoteHook.id, remoteHook.entry));
     const command = `${remoteHook.runner} "$CLAUDE_PROJECT_DIR/${entryPath}"`;
 
     for (const event of remoteHook.events) {
@@ -359,10 +377,10 @@ function renderClaudeSettingsJson(pack: ResolvedPack): string {
 }
 
 function codexCommand(fileName: string): string {
-  return `python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/hooks/${fileName}"`;
+  return `python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/${hooksDirectory}/${fileName}"`;
 }
 
-function renderCodexHooksJson(pack: ResolvedPack): string {
+export function renderCodexHooksJson(pack: ResolvedPack): string {
   const preToolUse: ClaudeHookEntry[] = [];
   const postToolUse: ClaudeHookEntry[] = [];
   const stop: ClaudeHookEntry[] = [];
@@ -386,7 +404,7 @@ function renderCodexHooksJson(pack: ResolvedPack): string {
 }
 
 function renderJustfile(pack: ResolvedPack): string {
-  const hookCheck = pack.hooks.some(isBuiltinHookId) ? " && uv run --with pytest pytest .claude/hooks" : "";
+  const hookCheck = pack.hooks.some(isBuiltinHookId) ? ` && uv run --with pytest pytest ${hooksDirectory}` : "";
   const recipes = [
     `check:
   ${pack.verbs.check}${hookCheck}`,
@@ -415,14 +433,14 @@ function defaultJudgeConfig(): Record<string, unknown> {
       backend: "claude",
       model: "haiku",
       timeoutMs: 15000,
-      prompt: ".claude/hooks/prompts/quality-judge-v1.txt"
+      prompt: `${hooksDirectory}/prompts/quality-judge-v1.txt`
     },
     stop: {
       enabled: false,
       backend: "claude",
       model: "sonnet",
       timeoutMs: 30000,
-      prompt: ".claude/hooks/prompts/stop-judge-v1.txt",
+      prompt: `${hooksDirectory}/prompts/stop-judge-v1.txt`,
       maxDiffBytes: 120000,
       maxUntrackedFiles: 50
     }
@@ -468,11 +486,16 @@ export async function getFarrierVersion(): Promise<string> {
   return parsed.version;
 }
 
+export function hasJudgeHooks(hookIds: readonly PackHookRef[]): boolean {
+  return hookIds.includes("quality-judge") || hookIds.includes("stop-judge");
+}
+
 async function renderManifest(
   pack: ResolvedPack,
   options: {
     skills: SkillRef[];
     learnEnabled: boolean;
+    advisors: boolean;
     secondaryAcknowledged: string[];
     existingManifest?: FarrierManifestInput;
     registryPins?: Record<string, RegistryPin>;
@@ -483,17 +506,21 @@ async function renderManifest(
     pack.remoteHooks.map((hook) => [hook.id, hook.hookVersion])
   );
   const registryPins = options.registryPins ?? {};
+  const judgeSelected = hasJudgeHooks(pack.hooks);
   const manifest: FarrierManifest = {
     farrierVersion: await getFarrierVersion(),
     agents: [...options.agents],
     packIds: [...pack.packIds],
     hookIds: [...pack.hooks],
     skills: [...options.skills],
+    advisors: options.advisors,
     secondaryAcknowledged: [...options.secondaryAcknowledged],
     learn: {
       enabled: options.learnEnabled
     },
-    judge: manifestRecord(options.existingManifest?.judge, defaultJudgeConfig()),
+    ...(judgeSelected
+      ? { judge: manifestRecord(options.existingManifest?.judge, defaultJudgeConfig()) }
+      : {}),
     quality: manifestRecord(options.existingManifest?.quality, defaultQualityConfig()),
     versions: {
       farrierManifest: farrierManifestVersion,
@@ -501,10 +528,14 @@ async function renderManifest(
         ...Object.fromEntries(pack.hooks.filter(isBuiltinHookId).map((hook) => [hook, hookCatalogVersions[hook]])),
         ...remoteHookVersions
       },
-      prompts: {
-        qualityJudge: "v1",
-        stopJudge: "v1"
-      }
+      ...(judgeSelected
+        ? {
+            prompts: {
+              qualityJudge: "v1",
+              stopJudge: "v1"
+            }
+          }
+        : {})
     }
   };
 
@@ -517,10 +548,10 @@ async function renderManifest(
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
-function renderToolPolicyRulesJson(pack: ResolvedPack): string {
+function renderToolPolicyRulesJson(toolPolicyRules: readonly ToolPolicyRule[]): string {
   const rules = {
     version: 1,
-    rules: pack.toolPolicyRules
+    rules: toolPolicyRules
   };
 
   return `${JSON.stringify(rules, null, 2)}\n`;
@@ -586,6 +617,70 @@ const codexAutomationReferenceFiles = [
   "references/subagent-templates.md"
 ];
 
+/**
+ * The opt-in advisor skill trees for one agent. Exported so update can
+ * content-match stale advisor files before pruning them.
+ */
+export async function advisorSkillFiles(agent: EnforcementAgent): Promise<RenderedFile[]> {
+  if (agent === "claude") {
+    const files: RenderedFile[] = [
+      {
+        path: ".claude/skills/harness-advisor/SKILL.md",
+        content: await readTemplate("skills", "harness-advisor", "SKILL.md")
+      },
+      {
+        path: ".claude/skills/harness-advisor/evals/cases.json",
+        content: await readTemplate("skills", "harness-advisor", "evals", "cases.json")
+      },
+      {
+        path: ".claude/skills/claude-automation-recommender/SKILL.md",
+        content: await readTemplate("skills", "claude-automation-recommender", "SKILL.md")
+      },
+      {
+        path: ".claude/skills/claude-automation-recommender/evals/cases.json",
+        content: await readTemplate("skills", "claude-automation-recommender", "evals", "cases.json")
+      }
+    ];
+
+    for (const relativePath of claudeAutomationReferenceFiles) {
+      files.push({
+        path: posixPath(join(".claude", "skills", "claude-automation-recommender", relativePath)),
+        content: await readTemplate("skills", "claude-automation-recommender", relativePath)
+      });
+    }
+
+    return files;
+  }
+
+  const files: RenderedFile[] = [
+    {
+      path: ".agents/skills/farrier-project-advisor/SKILL.md",
+      content: await readTemplate("skills", "farrier-project-advisor", "SKILL.md")
+    },
+    {
+      path: ".agents/skills/farrier-project-advisor/evals/cases.json",
+      content: await readTemplate("skills", "farrier-project-advisor", "evals", "cases.json")
+    },
+    {
+      path: ".agents/skills/codex-automation-recommender/SKILL.md",
+      content: await readTemplate("skills", "codex-automation-recommender", "SKILL.md")
+    },
+    {
+      path: ".agents/skills/codex-automation-recommender/evals/cases.json",
+      content: await readTemplate("skills", "codex-automation-recommender", "evals", "cases.json")
+    }
+  ];
+
+  for (const relativePath of codexAutomationReferenceFiles) {
+    files.push({
+      path: posixPath(join(".agents", "skills", "codex-automation-recommender", relativePath)),
+      content: await readTemplate("skills", "codex-automation-recommender", relativePath)
+    });
+  }
+
+  return files;
+}
+
 export async function createRenderPlan(options: CreateRenderPlanOptions): Promise<RenderPlan> {
   const agents = normalizeAgents(options.agents ?? options.existingManifest?.agents);
   const existingSkills = stringArray(options.existingManifest?.skills);
@@ -595,25 +690,31 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
       ? options.existingManifest.learn.enabled
       : undefined;
   const learnEnabled = options.learnEnabled ?? existingLearnEnabled ?? false;
+  const existingAdvisors =
+    typeof options.existingManifest?.advisors === "boolean" ? options.existingManifest.advisors : undefined;
+  const advisors = options.advisors ?? existingAdvisors ?? false;
   const existingSecondaryAcknowledged = stringArray(options.existingManifest?.secondaryAcknowledged);
   const secondaryAcknowledged = options.secondaryAcknowledged ?? existingSecondaryAcknowledged ?? [];
+  const rules = await evaluatePackRules(options.targetDir, options.pack);
 
   const files: RenderedFile[] = [
     {
       path: "AGENTS.md",
-      content: renderAgentsMd(options.pack, agents)
-    },
-    {
-      path: "CLAUDE.md",
-      content: renderClaudeMd()
+      content: renderAgentsMd(options.pack, agents, rules.agentsRules)
     }
   ];
 
   if (agents.includes("claude")) {
-    files.push({
-      path: ".claude/settings.json",
-      content: renderClaudeSettingsJson(options.pack)
-    });
+    files.push(
+      {
+        path: "CLAUDE.md",
+        content: renderClaudeMd()
+      },
+      {
+        path: ".claude/settings.json",
+        content: renderClaudeSettingsJson(options.pack)
+      }
+    );
   }
 
   if (agents.includes("codex")) {
@@ -623,58 +724,15 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     });
   }
 
-  files.push(
-    {
-      path: ".claude/skills/harness-advisor/SKILL.md",
-      content: await readTemplate("skills", "harness-advisor", "SKILL.md")
-    },
-    {
-      path: ".claude/skills/claude-automation-recommender/SKILL.md",
-      content: await readTemplate("skills", "claude-automation-recommender", "SKILL.md")
-    },
-    {
-      path: ".agents/skills/farrier-project-advisor/SKILL.md",
-      content: await readTemplate("skills", "farrier-project-advisor", "SKILL.md")
-    },
-    {
-      path: ".agents/skills/codex-automation-recommender/SKILL.md",
-      content: await readTemplate("skills", "codex-automation-recommender", "SKILL.md")
-    },
-    {
-      path: ".claude/skills/harness-advisor/evals/cases.json",
-      content: await readTemplate("skills", "harness-advisor", "evals", "cases.json")
-    },
-    {
-      path: ".claude/skills/claude-automation-recommender/evals/cases.json",
-      content: await readTemplate("skills", "claude-automation-recommender", "evals", "cases.json")
-    },
-    {
-      path: ".agents/skills/farrier-project-advisor/evals/cases.json",
-      content: await readTemplate("skills", "farrier-project-advisor", "evals", "cases.json")
-    },
-    {
-      path: ".agents/skills/codex-automation-recommender/evals/cases.json",
-      content: await readTemplate("skills", "codex-automation-recommender", "evals", "cases.json")
+  if (advisors) {
+    for (const agent of agents) {
+      files.push(...(await advisorSkillFiles(agent)));
     }
-  );
-
-  for (const relativePath of claudeAutomationReferenceFiles) {
-    files.push({
-      path: posixPath(join(".claude", "skills", "claude-automation-recommender", relativePath)),
-      content: await readTemplate("skills", "claude-automation-recommender", relativePath)
-    });
-  }
-
-  for (const relativePath of codexAutomationReferenceFiles) {
-    files.push({
-      path: posixPath(join(".agents", "skills", "codex-automation-recommender", relativePath)),
-      content: await readTemplate("skills", "codex-automation-recommender", relativePath)
-    });
   }
 
   if (options.pack.hooks.some((hook) => hook === "verb-runner" || hook === "quality-judge" || hook === "stop-judge")) {
     files.push({
-      path: ".claude/hooks/_hook_runtime.py",
+      path: posixPath(join(hooksDirectory, "_hook_runtime.py")),
       content: await readHookTemplate("_hook_runtime.py")
     });
   }
@@ -682,7 +740,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   for (const hookId of options.pack.hooks.filter(isBuiltinHookId)) {
     for (const fileName of hookTemplateFiles[hookId]) {
       files.push({
-        path: posixPath(join(".claude", "hooks", fileName)),
+        path: posixPath(join(hooksDirectory, fileName)),
         content: await readHookTemplate(fileName),
         mode: fileName.endsWith(".py") && !fileName.startsWith("test_") ? 0o755 : undefined
       });
@@ -692,7 +750,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   for (const remoteHook of options.pack.remoteHooks) {
     for (const file of remoteHook.files) {
       files.push({
-        path: posixPath(join(".claude", "hooks", remoteHook.id, file.path)),
+        path: posixPath(join(hooksDirectory, remoteHook.id, file.path)),
         content: file.content,
         mode: file.executable === true || file.path === remoteHook.entry ? 0o755 : undefined,
         executableProvenance: {
@@ -708,21 +766,21 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
 
   if (options.pack.hooks.includes("tool-policy")) {
     files.push({
-      path: ".claude/hooks/tool-policy-rules.json",
-      content: renderToolPolicyRulesJson(options.pack)
+      path: posixPath(join(hooksDirectory, "tool-policy-rules.json")),
+      content: renderToolPolicyRulesJson(rules.toolPolicyRules)
     });
   }
 
   if (options.pack.hooks.includes("quality-judge")) {
     files.push({
-      path: ".claude/hooks/prompts/quality-judge-v1.txt",
+      path: posixPath(join(hooksDirectory, "prompts", "quality-judge-v1.txt")),
       content: await readHookTemplate("prompts/quality-judge-v1.txt")
     });
   }
 
   if (options.pack.hooks.includes("stop-judge")) {
     files.push({
-      path: ".claude/hooks/prompts/stop-judge-v1.txt",
+      path: posixPath(join(hooksDirectory, "prompts", "stop-judge-v1.txt")),
       content: await readHookTemplate("prompts/stop-judge-v1.txt")
     });
   }
@@ -745,6 +803,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
       content: await renderManifest(options.pack, {
         skills: selectedSkills,
         learnEnabled,
+        advisors,
         secondaryAcknowledged,
         existingManifest: options.existingManifest,
         registryPins: options.registryPins,
@@ -760,7 +819,8 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   return {
     targetDir: options.targetDir,
     files,
-    reviewedDigest: renderPlanDigest(files)
+    reviewedDigest: renderPlanDigest(files),
+    rules
   };
 }
 
@@ -792,6 +852,7 @@ export async function renderHarness(options: RenderOptions): Promise<RenderPlan>
     pack: options.pack,
     skills: options.skills,
     learnEnabled: options.learnEnabled,
+    advisors: options.advisors,
     secondaryAcknowledged: options.secondaryAcknowledged,
     existingManifest: options.existingManifest,
     registryPins: options.registryPins,
