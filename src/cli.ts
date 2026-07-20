@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { resolve } from "node:path";
+import { runAbGateCli } from "./cli/ab-gate";
 import { runAuditPanel } from "./cli/audit-panel";
 import { runAdvise } from "./cli/advise";
 import { parseCreateArgs, runCreate } from "./cli/create";
@@ -37,6 +38,7 @@ Usage:
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
   farrier doctor --dir <target> [--json] [--static] [--live]
+  farrier ab-gate --result <result.json> [--json]
   farrier audit-panel prepare --manifest <panel.json> --output <new-directory> [--json]
   farrier advise --dir <target> [--sessions auto|none] [--since 7d|14d|all] [--targets claude|codex] [--only guidance,hooks,skills,subagents,plugins,mcp] [--backend claude|codex] [--model <name>] [--json]
   farrier advise --dir <target> --mode quick|baseline|deep [--plan] [--max-model-calls <n>] [--max-estimated-input-tokens <n>] [--max-provider-cost-usd-per-call <amount>] [--backend claude|codex] [--model <name>] [--json]
@@ -78,6 +80,7 @@ Note:
   --yes approves a conflict-free plan. Replacing existing differing files additionally requires --force.
   farrier registry list shows configured private registries without executing payloads.
   farrier learn is report-only unless --yes is provided; it appends new declarative ToolPolicyRule data only.
+  farrier ab-gate enforces the harness release thresholds against a recorded paired evaluation; it exits 1 listing violated thresholds.
   farrier doctor runs static checks plus runtime hook probes (fixture payloads through the installed bindings). --static skips probes; --live adds one real Codex session that must get blocked. Exits 0 only when every executed layer is healthy.
   Headless farrier advise is report-only. The interactive report can create a selected recommendation only after review and confirmation.`;
 }
@@ -284,6 +287,10 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
 
     if (args[0] === "audit-panel") {
       return await runAuditPanel(args.slice(1));
+    }
+
+    if (args[0] === "ab-gate") {
+      return await runAbGateCli(args.slice(1), usage);
     }
 
     if (args[0] === "advise") {
