@@ -220,9 +220,10 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 45 create");
+    expect(result.stdout).toContain("File actions: 18 create");
     expect(result.stdout).toContain("pyproject.toml dependency: fastapi");
-    expect(result.stdout).toContain(".claude/skills/harness-advisor/SKILL.md");
+    expect(result.stdout).not.toContain(".claude/skills/harness-advisor/SKILL.md");
+    expect(result.stdout).toContain(".farrier/hooks/tool-policy.py");
     expect(result.stdout).toContain("konpy.json");
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
   });
@@ -267,7 +268,7 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 44 create");
+    expect(result.stdout).toContain("File actions: 17 create");
 
     for (const file of railsFiles) {
       expect(result.stdout).toContain(file);
@@ -284,14 +285,14 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 39 create");
+    expect(result.stdout).toContain("File actions: 14 create");
     expect(result.stdout).toContain("AGENTS.md");
-    expect(result.stdout).toContain(".claude/skills/harness-advisor/SKILL.md");
-    expect(result.stdout).toContain(".claude/hooks/quality-judge.py");
-    expect(result.stdout).toContain(".claude/hooks/tool-policy-rules.json");
+    expect(result.stdout).not.toContain(".claude/skills/harness-advisor/SKILL.md");
+    expect(result.stdout).not.toContain("quality-judge.py");
+    expect(result.stdout).toContain(".farrier/hooks/tool-policy-rules.json");
     expect(result.stdout).not.toContain("konsistent.json");
-    expect(result.stdout).not.toContain(".claude/hooks/verb-runner.py");
-    expect(result.stdout).not.toContain(".claude/hooks/stop-judge.py");
+    expect(result.stdout).not.toContain("verb-runner.py");
+    expect(result.stdout).not.toContain("stop-judge.py");
 
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
   });
@@ -391,7 +392,7 @@ dependencies = ["fastapi"]
     expect(report.stack.detected[0].evidence).toContain("pyproject.toml dependency: fastapi");
     expect(report.harnessBehavior.skillAction).toBe("install");
     expect(report.harnessBehavior.agents).toEqual(["claude"]);
-    expect(report.summary.create).toBe(45);
+    expect(report.summary.create).toBe(18);
     expect(report.applicable).toBe(true);
     expect(report.files.find((file: { path: string }) => file.path === "AGENTS.md").purpose).toContain("instructions");
     expect(report.written).toBe(false);
@@ -406,7 +407,7 @@ dependencies = ["fastapi"]
     expect(result.stderr).toBe("");
     const report = JSON.parse(result.stdout);
     expect(report).toMatchObject({ mode: "apply", ok: true, written: true, applicable: true });
-    expect(report.applied.writtenFiles).toHaveLength(39);
+    expect(report.applied.writtenFiles).toHaveLength(14);
     expect(report.applied.unchangedFiles).toEqual([]);
     expect(report.applied.backupDir).toBeNull();
   });
@@ -419,7 +420,7 @@ dependencies = ["fastapi"]
     });
 
     expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain("Applied 45 file change(s)");
+    expect(result.stdout).toContain("Applied 18 file change(s)");
     expect(result.stdout).toContain("Skills: installed 0 of 3");
     expect(result.stdout).toContain("retry: skills add");
     expect(existsSync(join(dir, ".farrier.json"))).toBe(true);
@@ -453,4 +454,77 @@ dependencies = ["fastapi"]
     const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8"));
     expect(manifest.skills).toHaveLength(3);
   });
+  test("--agents codex emits a Codex-only bundle with no Claude assets", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "package.json"), '{"name":"fixture","version":"1.0.0"}\n', "utf8");
+    await writeFile(join(dir, "tsconfig.json"), "{}\n", "utf8");
+    await writeFile(join(dir, "bun.lock"), "", "utf8");
+
+    const result = await runCli(["--detect", "--agents", "codex", "--yes", "--no-skills", "--dir", dir]);
+    expect(result.exitCode).toBe(0);
+
+    const files = await listFiles(dir);
+    expect(files.some((file) => file.startsWith(".claude/"))).toBe(false);
+    expect(files).not.toContain("CLAUDE.md");
+    expect(files).toEqual(expect.arrayContaining([
+      "AGENTS.md",
+      ".codex/hooks.json",
+      ".farrier/hooks/tool-policy.py",
+      ".farrier/hooks/tool-policy-rules.json",
+      "justfile",
+      ".farrier.json"
+    ]));
+
+    const binding = await readFile(join(dir, ".codex", "hooks.json"), "utf8");
+    expect(binding).toContain(".farrier/hooks/");
+    expect(binding).not.toContain(".claude/");
+  });
+
+  test("--with-advisors opts into agent-scoped advisor skill trees", async () => {
+    const withoutDir = await tempDir();
+    const without = await runCli(["--stack", "generic", "--yes", "--no-skills", "--dir", withoutDir]);
+    expect(without.exitCode).toBe(0);
+    for (const file of [...claudeAdvisorFiles, ...codexAdvisorFiles]) {
+      expect(existsSync(join(withoutDir, file))).toBe(false);
+    }
+
+    const withDir = await tempDir();
+    const withAdvisors = await runCli([
+      "--stack", "generic", "--agents", "claude,codex", "--with-advisors", "--yes", "--no-skills", "--dir", withDir
+    ]);
+    expect(withAdvisors.exitCode).toBe(0);
+    for (const file of [...claudeAdvisorFiles, ...codexAdvisorFiles]) {
+      expect(existsSync(join(withDir, file))).toBe(true);
+    }
+
+    const manifest = JSON.parse(await readFile(join(withDir, ".farrier.json"), "utf8"));
+    expect(manifest.advisors).toBe(true);
+  });
+
+  test("dry-run maps every conditional rule block to repository evidence", async () => {
+    const withEvidence = await tempDir();
+    await writeFile(join(withEvidence, "package.json"), '{"name":"fixture","version":"1.0.0"}\n', "utf8");
+    await writeFile(join(withEvidence, "tsconfig.json"), "{}\n", "utf8");
+    await writeFile(join(withEvidence, "bun.lock"), "", "utf8");
+
+    const included = await runCli(["--detect", "--dry-run", "--dir", withEvidence]);
+    expect(included.exitCode).toBe(0);
+    expect(included.stdout).toContain("Policy evidence:");
+    expect(included.stdout).toContain("bun-managed: 5 rule(s) included; evidence: bun.lock exists (bun.lock)");
+    expect(included.stdout).toContain("11 shared agent rules in AGENTS.md");
+
+    const withoutEvidence = await tempDir();
+    await writeFile(join(withoutEvidence, "package.json"), '{"name":"fixture","version":"1.0.0"}\n', "utf8");
+    await writeFile(join(withoutEvidence, "tsconfig.json"), "{}\n", "utf8");
+
+    const omitted = await runCli(["--detect", "--dry-run", "--json", "--dir", withoutEvidence]);
+    expect(omitted.exitCode).toBe(0);
+    const report = JSON.parse(omitted.stdout);
+    expect(report.harnessBehavior.policyEvidence.ruleBlocks).toEqual([
+      { id: "bun-managed", evidence: "bun.lock exists", matched: false, matchedPaths: [] }
+    ]);
+    const rulesFile = report.files.find((file: { path: string }) => file.path === ".farrier/hooks/tool-policy-rules.json");
+    expect(JSON.parse(rulesFile.content).rules).toEqual([]);
+  });
 });
+

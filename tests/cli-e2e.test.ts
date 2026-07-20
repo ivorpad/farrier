@@ -135,7 +135,7 @@ describe("CLI e2e", () => {
       expect(dryRun.exitCode).toBe(0);
       expect(dryRun.stderr).toBe("");
       expect(dryRun.stdout).toContain("declared project generator: bun run setup (from @acme/demo); harness creation does not run it");
-      expect(dryRun.stdout).toContain(".claude/hooks/@acme/guard/guard.sh");
+      expect(dryRun.stdout).toContain(".farrier/hooks/@acme/guard/guard.sh");
       expect(dryRun.stdout).toContain("Registry executable review (exact bytes):");
       expect(dryRun.stdout).toContain("registry: @acme/guard v1.0.0");
       expect(dryRun.stdout).toContain("content sha256:");
@@ -146,7 +146,7 @@ describe("CLI e2e", () => {
       expect(jsonDryRun.exitCode).toBe(0);
       const jsonReport = JSON.parse(jsonDryRun.stdout);
       const reviewedHook = jsonReport.files.find(
-        (file: { path: string }) => file.path === ".claude/hooks/@acme/guard/guard.sh"
+        (file: { path: string }) => file.path === ".farrier/hooks/@acme/guard/guard.sh"
       );
       expect(reviewedHook.content).toBe("echo guard\n");
       expect(reviewedHook.executableProvenance.registryRef).toBe("@acme/guard");
@@ -161,7 +161,7 @@ describe("CLI e2e", () => {
       const render = await runCli(["--stack", "@acme/demo", "--yes", "--dir", dir], { env });
       expect(render.exitCode).toBe(0);
       expect(render.stderr).toBe("");
-      expect(existsSync(join(dir, ".claude", "hooks", "@acme", "guard", "guard.sh"))).toBe(true);
+      expect(existsSync(join(dir, ".farrier", "hooks", "@acme", "guard", "guard.sh"))).toBe(true);
 
       const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8"));
       expect(manifest.packIds).toEqual(["generic", "@acme/demo"]);
@@ -209,14 +209,14 @@ describe("CLI e2e", () => {
       const dryRun = await runCli(["--stack", "@acme/demo", "--dry-run", "--dir", dir], { env });
       expect(dryRun.exitCode).toBe(0);
       expect(dryRun.stderr).toBe("");
-      expect(dryRun.stdout).toContain(".claude/hooks/secret-shield.py");
-      expect(dryRun.stdout).toContain(".claude/hooks/@acme/guard/guard.py");
+      expect(dryRun.stdout).toContain(".farrier/hooks/secret-shield.py");
+      expect(dryRun.stdout).toContain(".farrier/hooks/@acme/guard/guard.py");
 
       const render = await runCli(["--stack", "@acme/demo", "--yes", "--dir", dir], { env });
       expect(render.exitCode).toBe(0);
       expect(render.stderr).toBe("");
 
-      const guardPath = join(dir, ".claude", "hooks", "@acme", "guard", "guard.py");
+      const guardPath = join(dir, ".farrier", "hooks", "@acme", "guard", "guard.py");
       expect(existsSync(guardPath)).toBe(true);
       expect(await readFile(guardPath, "utf8")).toContain("docker push");
 
@@ -373,7 +373,7 @@ describe("CLI e2e", () => {
     const render = await runCli(["--stack", "generic", "--yes", "--dir", dir]);
     expect(render.exitCode).toBe(0);
 
-    const rulesPath = join(dir, ".claude", "hooks", "tool-policy-rules.json");
+    const rulesPath = join(dir, ".farrier", "hooks", "tool-policy-rules.json");
     const before = await readFile(rulesPath, "utf8");
 
     const result = await runCli(["learn", "--dir", dir, "--transcripts", join(dir, "missing-transcripts"), "--no-llm"]);

@@ -24,6 +24,13 @@ async function renderPack(dir: string, packId = "python-fastapi"): Promise<void>
   await writeRenderPlan(plan);
 }
 
+async function renderPackWithJudges(dir: string, packId = "python-fastapi"): Promise<void> {
+  const basePack = resolvePack(packId);
+  const pack: ResolvedPack = { ...basePack, hooks: [...basePack.hooks, "quality-judge", "stop-judge"] };
+  const plan = await createRenderPlan({ targetDir: dir, pack });
+  await writeRenderPlan(plan);
+}
+
 function remoteDoctorCatalog(pack: ResolvedPack): PackCatalog {
   const base = builtinCatalog();
   return {
@@ -308,17 +315,17 @@ describe("doctor engine", () => {
     const dir = await tempDir();
     await renderPack(dir);
 
-    await chmod(join(dir, ".claude", "hooks", "secret-shield.py"), 0o644);
+    await chmod(join(dir, ".farrier", "hooks", "secret-shield.py"), 0o644);
 
     const report = await createDoctorReport({ targetDir: dir });
 
     expect(report.healthy).toBe(false);
     expectProblem(report, "hooks", {
-      path: ".claude/hooks/secret-shield.py",
+      path: ".farrier/hooks/secret-shield.py",
       message: "Hook script is not executable"
     });
     expectProblem(report, "settings", {
-      path: ".claude/hooks/secret-shield.py",
+      path: ".farrier/hooks/secret-shield.py",
       message: "Hook command references a non-executable hook file"
     });
   });
@@ -341,7 +348,7 @@ describe("doctor engine", () => {
       hooks: [
         {
           type: "command",
-          command: 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/missing-policy.py"'
+          command: 'python3 "$CLAUDE_PROJECT_DIR/.farrier/hooks/missing-policy.py"'
         }
       ]
     });
@@ -353,15 +360,16 @@ describe("doctor engine", () => {
     expect(report.healthy).toBe(false);
     expectProblem(report, "settings", {
       path: ".claude/settings.json",
-      message: expect.stringContaining(".claude/hooks/missing-policy.py")
+      message: expect.stringContaining(".farrier/hooks/missing-policy.py")
     });
   });
 
   test("flags invalid tool-policy rule regex", async () => {
     const dir = await tempDir();
+    await writeFile(join(dir, "uv.lock"), "", "utf8");
     await renderPack(dir);
 
-    const rulesPath = join(dir, ".claude", "hooks", "tool-policy-rules.json");
+    const rulesPath = join(dir, ".farrier", "hooks", "tool-policy-rules.json");
     const rulesDocument = await readJson(rulesPath);
     const rules = rulesDocument.rules as Array<Record<string, unknown>>;
     rules[0] = {
@@ -374,7 +382,7 @@ describe("doctor engine", () => {
 
     expect(report.healthy).toBe(false);
     expectProblem(report, "tool-policy", {
-      path: ".claude/hooks/tool-policy-rules.json",
+      path: ".farrier/hooks/tool-policy-rules.json",
       id: "python-use-uv-not-python-m-pip",
       message: expect.stringContaining("commandPattern does not compile")
     });
@@ -382,9 +390,10 @@ describe("doctor engine", () => {
 
   test("flags duplicate tool-policy rule ids", async () => {
     const dir = await tempDir();
+    await writeFile(join(dir, "uv.lock"), "", "utf8");
     await renderPack(dir);
 
-    const rulesPath = join(dir, ".claude", "hooks", "tool-policy-rules.json");
+    const rulesPath = join(dir, ".farrier", "hooks", "tool-policy-rules.json");
     const rulesDocument = await readJson(rulesPath);
     const rules = rulesDocument.rules as Array<Record<string, unknown>>;
     rules.push({ ...rules[0] });
@@ -394,7 +403,7 @@ describe("doctor engine", () => {
 
     expect(report.healthy).toBe(false);
     expectProblem(report, "tool-policy", {
-      path: ".claude/hooks/tool-policy-rules.json",
+      path: ".farrier/hooks/tool-policy-rules.json",
       id: "python-use-uv-not-python-m-pip",
       message: "rule id duplicates another proposal"
     });
@@ -467,10 +476,10 @@ describe("doctor engine", () => {
 
   test("statically rejects unsafe judge prompts and stop bounds without running checks", async () => {
     const dir = await tempDir();
-    await renderPack(dir);
+    await renderPackWithJudges(dir);
     const outside = join(await tempDir(), "outside.txt");
     await writeFile(outside, "prompt\n", "utf8");
-    const promptPath = join(dir, ".claude", "hooks", "prompts", "quality-judge-v1.txt");
+    const promptPath = join(dir, ".farrier", "hooks", "prompts", "quality-judge-v1.txt");
     await unlink(promptPath);
     await symlink(outside, promptPath);
     const manifestPath = join(dir, ".farrier.json");
@@ -482,7 +491,7 @@ describe("doctor engine", () => {
 
     expect(report.healthy).toBe(false);
     expectProblem(report, "judge", {
-      path: ".claude/hooks/prompts/quality-judge-v1.txt",
+      path: ".farrier/hooks/prompts/quality-judge-v1.txt",
       message: expect.stringContaining("regular non-symlink")
     });
     expectProblem(report, "judge", {

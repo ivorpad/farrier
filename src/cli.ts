@@ -54,6 +54,7 @@ Options:
   --dry-run           Explain the creation plan and file actions; write nothing.
   --force             With --yes, replace reviewed conflicting files and keep backups. Never bypasses path blockers.
   --no-skills         Do not install the selected pack skills after writing (useful offline).
+  --with-advisors     Also generate the opt-in advisor skill trees for the selected agents.
   --json              Emit a machine-readable report, including creation previews and results.
   --transcripts <dir> Claude JSONL transcript directory for learn. Defaults to ~/.claude/projects/<target-slug>.
   --no-llm            Use deterministic learn proposals without calling claude or codex.
