@@ -490,8 +490,19 @@ export async function runLiveCodexProbe(input: {
       }
     });
 
+  // Codex only loads project hook definitions from trusted projects; scope
+  // trust to this one exec invocation instead of mutating the user's config.
   const result = await runner({
-    cmd: ["codex", "exec", "--skip-git-repo-check", "-s", "workspace-write", prompt],
+    cmd: [
+      "codex",
+      "exec",
+      "--skip-git-repo-check",
+      "-s",
+      "workspace-write",
+      "-c",
+      `projects."${targetDir}".trust_level="trusted"`,
+      prompt
+    ],
     targetDir,
     timeoutMs: 300_000
   });
@@ -508,13 +519,16 @@ export async function runLiveCodexProbe(input: {
     };
   }
 
+  if (result.exitCode !== 0) {
+    return { ran: true, ok: false, detail: `codex exec exited with code ${result.exitCode}.` };
+  }
+
   return {
     ran: true,
     ok: false,
-    detail:
-      result.exitCode === 0
-        ? `Live Codex session completed but no blocked event was logged (agent replied: ${result.stdout.trim().slice(0, 200) || "nothing"}). Check codex trust and /hooks status.`
-        : `codex exec exited with code ${result.exitCode}.`
+    detail: claimedBlocked
+      ? `The agent reported BLOCKED but no hook event was logged: it likely refused via AGENTS.md instructions before executing \`${probe}\`. That is instruction-level prevention; hook-level contact remains unproven. Check /hooks inside Codex.`
+      : `Live Codex session completed but no blocked event was logged (agent replied: ${result.stdout.trim().slice(0, 200) || "nothing"}). Check codex trust and /hooks status.`
   };
 }
 
