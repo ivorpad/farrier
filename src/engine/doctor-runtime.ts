@@ -353,8 +353,15 @@ export async function createRuntimeReport(input: {
     let failure: string | undefined;
     const stdin = JSON.stringify(fixture.payload(targetDir));
 
-    for (const binding of matching) {
-      const result = await runner({ command: binding.command, targetDir, stdin, timeoutMs: defaultTimeoutMs });
+    // Probe bindings are independent verifications of the same payload; run
+    // them concurrently and fold the ordered results back into the exact
+    // sequential outcome (last non-zero exit wins, any deny sets the flags).
+    const results = await Promise.all(
+      matching.map((binding) => runner({ command: binding.command, targetDir, stdin, timeoutMs: defaultTimeoutMs }))
+    );
+
+    for (const [index, result] of results.entries()) {
+      const binding = matching[index]!;
       if (result.exitCode !== 0) {
         failure = `binding exited with code ${result.exitCode}: ${binding.command}\n${result.stderr.trim()}`.trim();
         continue;
