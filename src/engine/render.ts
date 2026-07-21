@@ -135,7 +135,7 @@ type ClaudeSettingsHooks = Partial<Record<ClaudeHookEvent, ClaudeHookEntry[]>>;
 export const farrierManifestVersion = 3;
 
 export const hookCatalogVersions: Record<HookId, number> = {
-    "secret-shield": 6,
+    "secret-shield": 7,
     "tool-policy": 3,
     "write-guard": 4,
     "verb-runner": 6,

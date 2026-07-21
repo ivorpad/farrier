@@ -192,6 +192,24 @@ def test_allows_env_example_glob() -> None:
     assert_allowed(stdout, stderr)
 
 
+def test_allows_example_discovery_command_with_env_prefixed_glob() -> None:
+    # 2026-07-21 round 3: `.env.*.example` starts with `.env.` but is plainly
+    # an example glob; the suffix allowlist must let it through.
+    code, stdout, stderr = run_hook(
+        pretool_payload("Bash", {"command": "rg --files -g '.env.example' -g '.env.*.example'"})
+    )
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
+
+
+def test_denies_broad_env_glob_that_matches_real_env() -> None:
+    code, stdout, stderr = run_hook(pretool_payload("Bash", {"command": "rg --files -g '.env*'"}))
+
+    assert code == 0
+    assert_denied(stdout)
+
+
 def test_denies_key_glob() -> None:
     code, stdout, stderr = run_hook(pretool_payload("Bash", {"command": "cat secrets/*.key*"}))
 

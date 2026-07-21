@@ -27,6 +27,10 @@ SAFE_ENV_EXAMPLE_BASENAMES = {
     ".env.defaults",
 }
 
+# A path or glob ending in one of these is a tracked example, never a real
+# secret file (covers globs like `.env.*.example`).
+SAFE_ENV_EXAMPLE_SUFFIXES = (".example", ".sample", ".template", ".defaults")
+
 
 def redact_detail(text: str) -> str:
     """Short, value-free description of the denied input for the event log."""
@@ -106,6 +110,9 @@ def is_secret_path(text: str) -> bool:
         unglobbed = base.strip("*?")
 
         if base in SAFE_ENV_EXAMPLE_BASENAMES or unglobbed in SAFE_ENV_EXAMPLE_BASENAMES:
+            continue
+
+        if base.endswith(SAFE_ENV_EXAMPLE_SUFFIXES) or unglobbed.endswith(SAFE_ENV_EXAMPLE_SUFFIXES):
             continue
 
         if unglobbed == ".env" or unglobbed.startswith(".env."):
