@@ -324,8 +324,8 @@ def main() -> int:
                 log_event(cwd, "verb-runner", "Stop", "blocked", rule="check-full")
                 emit_stop_block(
                     "check-full",
-                    f"{output}\n\nIf this failure predates your changes, state it in your final summary and stop; "
-                    "an identical failure will not block again.",
+                    f"{output}\n\nIf this failure predates your changes, name each failing test explicitly in your "
+                    "final summary as pre-existing and stop; an identical failure will not block again.",
                 )
                 return 0
             # Known baseline failure already reported once: allow the stop.

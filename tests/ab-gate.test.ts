@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { evaluateAbGate, formatAbGateReport, runAbGate } from "../src/engine/ab-gate";
+import { evaluateAbGate, formatAbGateReport, loadAbGateReport } from "../src/engine/ab-gate";
 
 function passingResult(): Record<string, unknown> {
   return {
@@ -28,7 +28,7 @@ describe("ab-gate", () => {
   });
 
   test("fails the recorded 2026-07-20 evaluation on loops, overhead, and artifact contact", async () => {
-    const report = await runAbGate(join(import.meta.dir, "..", "docs", "evaluations", "harness-ab-2026-07-20", "result.json"));
+    const report = await loadAbGateReport(join(import.meta.dir, "..", "docs", "evaluations", "harness-ab-2026-07-20", "result.json"));
 
     expect(report.ok).toBe(false);
     const failedIds = report.checks.filter((check) => !check.ok).map((check) => check.id);

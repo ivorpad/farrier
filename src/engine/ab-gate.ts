@@ -149,7 +149,7 @@ export function evaluateAbGate(raw: unknown, resultPath: string): AbGateReport {
   };
 }
 
-export async function runAbGate(resultPath: string): Promise<AbGateReport> {
+export async function loadAbGateReport(resultPath: string): Promise<AbGateReport> {
   let raw: unknown;
   try {
     raw = JSON.parse(await readFile(resultPath, "utf8"));

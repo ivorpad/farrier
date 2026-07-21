@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { formatAbGateReport, runAbGate } from "../engine/ab-gate";
+import { formatAbGateReport, loadAbGateReport } from "../engine/ab-gate";
 
 type AbGateCliOptions = {
   result?: string;
@@ -44,7 +44,7 @@ function parseAbGateArgs(args: string[]): AbGateCliOptions {
   return options;
 }
 
-export async function runAbGateCli(args: string[], usage: () => string): Promise<number> {
+export async function runAbGate(args: string[], usage: () => string): Promise<number> {
   const options = parseAbGateArgs(args);
 
   if (options.help) {
@@ -56,7 +56,7 @@ export async function runAbGateCli(args: string[], usage: () => string): Promise
     throw new Error("ab-gate requires --result <result.json> from a paired harness evaluation");
   }
 
-  const report = await runAbGate(resolve(options.result));
+  const report = await loadAbGateReport(resolve(options.result));
 
   if (options.json) {
     console.log(JSON.stringify(report, null, 2));

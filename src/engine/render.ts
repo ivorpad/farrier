@@ -236,7 +236,7 @@ export function agentsHardRules(
     "Do not directly edit protected generated/owned files: lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`.",
     "After edits, run `just check-fast`, passing the relevant test files when they exist.",
     "Before finishing, run `just check-full` once.",
-    "If `just check-full` repeats a failure that predates your changes, report it once in your summary and stop retrying; the Stop gate does not re-block on an identical known failure.",
+    "If `just check-full` fails for reasons that predate your changes, name each pre-existing failing test explicitly in your final summary and stop retrying; the Stop gate does not re-block on an identical known failure.",
     ...(pack.verbs.konsistent ? [`Run \`just ${konsistentToolName(pack)}\` before stopping.`] : []),
     "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
     "Keep generated hook scripts and their tests together.",

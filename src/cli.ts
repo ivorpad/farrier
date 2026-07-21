@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { resolve } from "node:path";
-import { runAbGateCli } from "./cli/ab-gate";
+import { runAbGate } from "./cli/ab-gate";
 import { runAuditPanel } from "./cli/audit-panel";
 import { runAdvise } from "./cli/advise";
 import { parseCreateArgs, runCreate } from "./cli/create";
@@ -290,7 +290,7 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
     }
 
     if (args[0] === "ab-gate") {
-      return await runAbGateCli(args.slice(1), usage);
+      return await runAbGate(args.slice(1), usage);
     }
 
     if (args[0] === "advise") {
