@@ -27,27 +27,29 @@ test("headless advice accepts realistic Claude and Codex final JSON in human and
   await mkdir(bin);
   await Bun.write(join(root, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }));
   await Bun.write(join(root, "AGENTS.md"), "Run the test suite before stopping.\n");
-  const payload = (provider: "claude" | "codex") => `JSON.stringify({ recommendations: [{
-  id: "guidance:cli-parity",
-  category: "guidance",
-  targetVendors: ["${provider}"],
-  reason: "Keep the discovered verification command in shared guidance.",
-  benefit: "Gives every supported agent the same completion standard without repeated prompting.",
-  evidence: ["project:root"],
-  confidence: "high",
-  routeId: "guidance:agents-md"
-}], coverage: [{ category: "guidance", reason: "One shared-guidance improvement is strongly supported." }] })`;
+  const payload = (provider: "claude" | "codex") => JSON.stringify({ recommendations: [{
+    id: "guidance:cli-parity",
+    category: "guidance",
+    targetVendors: [provider],
+    reason: "Keep the discovered verification command in shared guidance.",
+    benefit: "Gives every supported agent the same completion standard without repeated prompting.",
+    evidence: ["project:root"],
+    confidence: "high",
+    routeId: "guidance:agents-md"
+  }], coverage: [{ category: "guidance", reason: "One shared-guidance improvement is strongly supported." }] });
   const claude = join(bin, "claude");
-  await writeFile(claude, `#!/usr/bin/env bun
-await Bun.stdin.text();
-console.log(${payload("claude")});
+  await writeFile(claude, `#!/usr/bin/env python3
+import sys
+sys.stdin.read()
+sys.stdout.write('${payload("claude")}' + "\\n")
 `, "utf8");
   await chmod(claude, 0o755);
   const codex = join(bin, "codex");
-  await writeFile(codex, `#!/usr/bin/env bun
-console.log("I inspected the bounded project evidence.\\n\\n\`\`\`json");
-console.log(${payload("codex")});
-console.log("\`\`\`");
+  await writeFile(codex, `#!/usr/bin/env python3
+import sys
+sys.stdout.write("I inspected the bounded project evidence.\\n\\n\`\`\`json\\n")
+sys.stdout.write('${payload("codex")}' + "\\n")
+sys.stdout.write("\`\`\`\\n")
 `, "utf8");
   await chmod(codex, 0o755);
   const env = { PATH: `${bin}${delimiter}${Bun.env.PATH ?? ""}` };
@@ -101,27 +103,29 @@ test("headless advice prints a partial report and exits nonzero", async () => {
   await mkdir(bin);
   await Bun.write(join(root, "package.json"), JSON.stringify({ scripts: { test: "bun test" } }));
   const claude = join(bin, "claude");
-  await writeFile(claude, `#!/usr/bin/env bun
-const prompt = await Bun.stdin.text();
-if (prompt.includes("advice coordinator")) {
-  console.log(JSON.stringify({ selectedIds: ["skills:cli-review"], omissions: [] }));
-  process.exit(0);
-}
-const category = prompt.match(/Use only requested categories \\(([^,)]+)\\)/)?.[1];
-if (category === "hooks") {
-  console.error("hook worker failed");
-  process.exit(4);
-}
-console.log(JSON.stringify({
-  recommendations: category === "skills" ? [{
-    id: "skills:cli-review",
-    category: "skills",
-    evidence: ["project:root"],
-    routeId: "skills:claude-local",
-    reason: "Keep repository review as a reusable procedure."
-  }] : [],
-  coverage: [{ category, reason: "Worker complete." }]
-}));
+  await writeFile(claude, `#!/usr/bin/env python3
+import json, re, sys
+prompt = sys.stdin.read()
+if "advice coordinator" in prompt:
+    sys.stdout.write(json.dumps({"selectedIds": ["skills:cli-review"], "omissions": []}, separators=(",", ":")) + "\\n")
+    sys.exit(0)
+match = re.search(r"Use only requested categories \\(([^,)]+)\\)", prompt)
+category = match.group(1) if match else None
+if category == "hooks":
+    sys.stderr.write("hook worker failed\\n")
+    sys.exit(4)
+recommendations = [{
+    "id": "skills:cli-review",
+    "category": "skills",
+    "evidence": ["project:root"],
+    "routeId": "skills:claude-local",
+    "reason": "Keep repository review as a reusable procedure."
+}] if category == "skills" else []
+coverage = {}
+if category is not None:
+    coverage["category"] = category
+coverage["reason"] = "Worker complete."
+sys.stdout.write(json.dumps({"recommendations": recommendations, "coverage": [coverage]}, separators=(",", ":")) + "\\n")
 `, "utf8");
   await chmod(claude, 0o755);
   const result = await runCli(

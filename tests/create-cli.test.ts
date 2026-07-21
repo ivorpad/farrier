@@ -27,7 +27,7 @@ async function runCli(args: string[], options: { env?: Record<string, string | u
     cwd: repoRoot(),
     env: {
       ...process.env,
-      FARRIER_SKILLS_BIN: `bun run ${join(repoRoot(), "tests", "fixtures", "fake-skills.ts")}`,
+      FARRIER_SKILLS_BIN: join(repoRoot(), "tests", "fixtures", "fake-skills.py"),
       ...options.env,
     },
     stdout: "pipe",

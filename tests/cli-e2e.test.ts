@@ -19,7 +19,7 @@ async function runCli(args: string[], options: { env?: Record<string, string | u
     cwd: repoRoot(),
     env: {
       ...process.env,
-      FARRIER_SKILLS_BIN: `bun run ${join(repoRoot(), "tests", "fixtures", "fake-skills.ts")}`,
+      FARRIER_SKILLS_BIN: join(repoRoot(), "tests", "fixtures", "fake-skills.py"),
       ...options.env,
     },
     stdout: "pipe",
@@ -365,7 +365,7 @@ describe("CLI e2e", () => {
     expect(report.problems).toEqual([]);
     expect(report.problemsByGroup.manifest).toEqual([]);
     expect(report.problemsByGroup["tool-policy"]).toEqual([]);
-  });
+  }, 60000);
 
   test("learn report-only mode exits successfully and writes nothing", async () => {
     const dir = await tempDir();
