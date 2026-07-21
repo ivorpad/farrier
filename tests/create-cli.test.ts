@@ -59,6 +59,7 @@ const pythonFastapiFiles = [
   "CLAUDE.md",
   ".claude/settings.json",
   ".farrier/hooks/_hook_runtime.py",
+  ".farrier/hooks/conftest.py",
   ".farrier/hooks/secret-shield.py",
   ".farrier/hooks/test_secret_shield.py",
   ".farrier/hooks/test_hook_contract.py",
@@ -85,7 +86,7 @@ describe("creation CLI e2e", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Applied 18 file change(s); 0 unchanged.");
+    expect(result.stdout).toContain("Applied 19 file change(s); 0 unchanged.");
     expect(result.stdout).toContain("Skills: installed 3 of 3");
 
     for (const file of pythonFastapiFiles) {
@@ -108,7 +109,7 @@ describe("creation CLI e2e", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 18 create");
+    expect(result.stdout).toContain("File actions: 19 create");
     expect(result.stdout).toContain("Dry run: nothing was written.");
     expect(result.stdout).toContain("advisor skill trees: not generated (opt in with --with-advisors)");
 
@@ -195,7 +196,7 @@ dependencies = [
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Selected stack: python-fastapi (detected");
-    expect(result.stdout).toContain("Applied 18 file change(s); 0 unchanged.");
+    expect(result.stdout).toContain("Applied 19 file change(s); 0 unchanged.");
 
     for (const file of pythonFastapiFiles) {
       expect(existsSync(join(dir, file))).toBe(true);
@@ -220,7 +221,7 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 18 create");
+    expect(result.stdout).toContain("File actions: 19 create");
     expect(result.stdout).toContain("pyproject.toml dependency: fastapi");
     expect(result.stdout).not.toContain(".claude/skills/harness-advisor/SKILL.md");
     expect(result.stdout).toContain(".farrier/hooks/tool-policy.py");
@@ -268,7 +269,7 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 17 create");
+    expect(result.stdout).toContain("File actions: 18 create");
 
     for (const file of railsFiles) {
       expect(result.stdout).toContain(file);
@@ -285,7 +286,7 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 15 create");
+    expect(result.stdout).toContain("File actions: 16 create");
     expect(result.stdout).toContain("AGENTS.md");
     expect(result.stdout).not.toContain(".claude/skills/harness-advisor/SKILL.md");
     expect(result.stdout).not.toContain("quality-judge.py");
@@ -392,7 +393,7 @@ dependencies = ["fastapi"]
     expect(report.stack.detected[0].evidence).toContain("pyproject.toml dependency: fastapi");
     expect(report.harnessBehavior.skillAction).toBe("install");
     expect(report.harnessBehavior.agents).toEqual(["claude"]);
-    expect(report.summary.create).toBe(18);
+    expect(report.summary.create).toBe(19);
     expect(report.applicable).toBe(true);
     expect(report.files.find((file: { path: string }) => file.path === "AGENTS.md").purpose).toContain("instructions");
     expect(report.written).toBe(false);
@@ -407,7 +408,7 @@ dependencies = ["fastapi"]
     expect(result.stderr).toBe("");
     const report = JSON.parse(result.stdout);
     expect(report).toMatchObject({ mode: "apply", ok: true, written: true, applicable: true });
-    expect(report.applied.writtenFiles).toHaveLength(15);
+    expect(report.applied.writtenFiles).toHaveLength(16);
     expect(report.applied.unchangedFiles).toEqual([]);
     expect(report.applied.backupDir).toBeNull();
   });
@@ -420,7 +421,7 @@ dependencies = ["fastapi"]
     });
 
     expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain("Applied 18 file change(s)");
+    expect(result.stdout).toContain("Applied 19 file change(s)");
     expect(result.stdout).toContain("Skills: installed 0 of 3");
     expect(result.stdout).toContain("retry: skills add");
     expect(existsSync(join(dir, ".farrier.json"))).toBe(true);

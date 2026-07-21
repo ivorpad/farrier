@@ -13,3 +13,4 @@ __pycache__/
 .env.*
 !.env.example
 .farrier-staging/
+eval-workspaces/

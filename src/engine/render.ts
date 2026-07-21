@@ -752,12 +752,16 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   }
 
   // Every builtin hook imports the shared runtime (bounded subprocess/file
-  // helpers and the JSONL event log).
+  // helpers and the JSONL event log). conftest.py keeps the self-tests
+  // importable when the host project's pytest config (e.g.
+  // --import-mode=importlib) would keep the hooks directory off sys.path.
   if (options.pack.hooks.some(isBuiltinHookId)) {
-    files.push({
-      path: posixPath(join(hooksDirectory, "_hook_runtime.py")),
-      content: await readHookTemplate("_hook_runtime.py")
-    });
+    for (const fileName of ["_hook_runtime.py", "conftest.py"]) {
+      files.push({
+        path: posixPath(join(hooksDirectory, fileName)),
+        content: await readHookTemplate(fileName)
+      });
+    }
   }
 
   for (const hookId of options.pack.hooks.filter(isBuiltinHookId)) {

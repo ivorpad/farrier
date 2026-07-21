@@ -43,6 +43,7 @@ const codexAdvisorInventory = [
 
 const defaultHookFiles = [
   ".farrier/hooks/_hook_runtime.py",
+  ".farrier/hooks/conftest.py",
   ".farrier/hooks/secret-shield.py",
   ".farrier/hooks/test_secret_shield.py",
   ".farrier/hooks/test_hook_contract.py",
@@ -79,6 +80,7 @@ const genericInventory = [
   "CLAUDE.md",
   ".claude/settings.json",
   ".farrier/hooks/_hook_runtime.py",
+  ".farrier/hooks/conftest.py",
   ".farrier/hooks/secret-shield.py",
   ".farrier/hooks/test_secret_shield.py",
   ".farrier/hooks/test_hook_contract.py",
@@ -123,7 +125,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(pythonFastapiInventory);
-    expect(plan.files).toHaveLength(18);
+    expect(plan.files).toHaveLength(19);
   });
 
   test("default plan emits no advisor skill trees, judge scripts, or judge prompts", async () => {
@@ -423,6 +425,7 @@ describe("render engine", () => {
       "CLAUDE.md",
       ".claude/settings.json",
       ".farrier/hooks/_hook_runtime.py",
+      ".farrier/hooks/conftest.py",
       ".farrier/hooks/secret-shield.py",
       ".farrier/hooks/test_secret_shield.py",
       ".farrier/hooks/test_hook_contract.py",
@@ -732,7 +735,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(tsReactViteInventory);
-    expect(plan.files).toHaveLength(18);
+    expect(plan.files).toHaveLength(19);
 
     const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";
     expect(agents).toContain("Use Bun for TypeScript package and script execution");
@@ -788,7 +791,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(railsInventory);
-    expect(plan.files).toHaveLength(17);
+    expect(plan.files).toHaveLength(18);
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
@@ -830,7 +833,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(genericInventory);
-    expect(plan.files).toHaveLength(15);
+    expect(plan.files).toHaveLength(16);
     expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
     expect(plan.files.some((file) => file.path.includes("verb-runner.py"))).toBe(false);
     expect(plan.files.some((file) => file.path.includes("stop-judge.py"))).toBe(false);
