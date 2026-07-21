@@ -120,9 +120,25 @@ def is_secret_path(text: str) -> bool:
     return False
 
 
+def plausible_path_token(candidate: str) -> bool:
+    """Regex fragments in commands (e.g. `ENV\\.key\\?`) are not paths.
+    Windows-style backslash paths (backslash before a word character) are."""
+    if any(ch in candidate for ch in "|()[]{}$^"):
+        return False
+    # Collapse shell-escaped doubled backslashes so Windows-style paths
+    # (`.\\SSH\\id_ed25519`) survive the regex-escape test below.
+    collapsed = candidate.replace("\\\\", "\\")
+    return re.search(r"\\[^A-Za-z0-9_]", collapsed) is None
+
+
 def looks_secretish(text: str) -> bool:
-    if is_secret_path(text):
-        return True
+    # Path matching applies per whitespace-separated word. Matching a whole
+    # command line as one path glues quoted arguments together and produced
+    # false denials of example-file discovery commands (2026-07-21 round 2);
+    # per-word matching still catches path arguments like nested/.env.local.
+    for word in re.split(r"\s+", text):
+        if word and plausible_path_token(word) and is_secret_path(word):
+            return True
 
     token_pattern = re.compile(
         r"(^|[\s\"'])"
@@ -139,7 +155,7 @@ def looks_secretish(text: str) -> bool:
     )
 
     return any(
-        is_secret_path(match.group("candidate"))
+        plausible_path_token(match.group("candidate")) and is_secret_path(match.group("candidate"))
         for match in token_pattern.finditer(text)
     )
 

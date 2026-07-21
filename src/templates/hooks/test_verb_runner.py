@@ -214,7 +214,10 @@ konpy:
     assert "drift found" in data["reason"]
 
 
-def test_stop_blocks_when_generated_structure_recipe_is_missing(tmp_path: Path) -> None:
+def test_stop_skips_structure_check_when_pack_ships_no_recipe(tmp_path: Path) -> None:
+    # Packs without a structure linter (rails) generate no konpy/konsistent
+    # recipe; the Stop gate must not demand one (2026-07-21 round 2: it
+    # blocked every rails stop). Drift detection belongs to doctor/update.
     write_justfile(
         tmp_path,
         """check:
@@ -236,9 +239,9 @@ fmt:
 
     assert code == 0
     assert stderr == ""
-    data = json.loads(stdout)
-    assert data["decision"] == "block"
-    assert "Required generated structure recipe is missing" in data["reason"]
+    assert stdout == ""
+    events = (tmp_path / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
+    assert "skipped-no-structure-recipe" in events
 
 
 def test_stop_hook_active_prevents_recursive_block(tmp_path: Path) -> None:

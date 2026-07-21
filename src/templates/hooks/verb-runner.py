@@ -381,7 +381,11 @@ def main() -> int:
             return 0
         recipe = next((name for name in STRUCTURE_RECIPES if name in recipes), None)
         if recipe is None:
-            emit_stop_block("structure", "Required generated structure recipe is missing; run farrier doctor and farrier update --yes.")
+            # Packs without a structure linter (e.g. rails) generate no such
+            # recipe; demanding one blocked every stop on those projects
+            # (2026-07-21 round 2). Missing-but-expected recipes are doctor's
+            # and update's job to detect, not the Stop gate's.
+            log_event(cwd, "verb-runner", "Stop", "skipped-no-structure-recipe", rule="structure")
             return 0
 
         ok, output = run_command(["just", recipe], cwd)

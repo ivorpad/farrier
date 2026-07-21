@@ -511,10 +511,10 @@ describe("render engine", () => {
     expect(manifest.quality).toEqual({ maxFileLines: 500 });
     expect(manifest.versions.farrierManifest).toBe(3);
     expect(manifest.versions.hooks).toEqual({
-      "secret-shield": 5,
+      "secret-shield": 6,
       "tool-policy": 3,
       "write-guard": 4,
-      "verb-runner": 5
+      "verb-runner": 6
     });
     expect(manifest.versions.prompts).toBeUndefined();
     expect(manifest.registry).toBeUndefined();
@@ -657,7 +657,7 @@ describe("render engine", () => {
     expect(manifest.learn).toEqual({ enabled: true });
     expect(manifest.versions.farrierManifest).toBe(3);
     expect(manifest.versions.hooks).toEqual({
-      "secret-shield": 5
+      "secret-shield": 6
     });
     expect(manifest.judge).toBeUndefined();
     expect(manifest.quality.maxFileLines).toBe(500);
