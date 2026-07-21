@@ -1,18 +1,8 @@
 #!/usr/bin/env bun
 
 import { resolve } from "node:path";
-import { runAbGate } from "./cli/ab-gate";
-import { runAuditPanel } from "./cli/audit-panel";
-import { runAdvise } from "./cli/advise";
-import { parseCreateArgs, runCreate } from "./cli/create";
-import { runDoctor } from "./cli/doctor";
-import { runRegistry } from "./cli/registry";
-import { runSkillEval } from "./cli/skill-eval";
-import { runSkillNew } from "./cli/skill-new";
-import { runUpdate } from "./cli/update";
-import { loadFarrierConfig, resolveModelSettings } from "./config/farrier-config";
-import { applyLearn, createLearnReport, formatLearnApplyResult, formatLearnReport, type LearnBackend } from "./engine/learn";
 import { supportedPackIds } from "./packs/index";
+import type { LearnBackend } from "./engine/learn";
 
 type LearnCliOptions = {
   dir: string;
@@ -203,6 +193,9 @@ async function runLearn(args: string[]): Promise<number> {
   const targetDir = resolve(options.dir);
   const transcriptsDir = options.transcripts ? resolve(options.transcripts) : undefined;
 
+  const { loadFarrierConfig, resolveModelSettings } = await import("./config/farrier-config");
+  const { applyLearn, createLearnReport, formatLearnApplyResult, formatLearnReport } = await import("./engine/learn");
+
   const models = await loadFarrierConfig({ projectDir: targetDir })
     .then((loaded) => loaded.config.models)
     .catch(() => ({}));
@@ -270,10 +263,12 @@ async function runLearn(args: string[]): Promise<number> {
 export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> {
   try {
     if (args[0] === "update") {
+      const { runUpdate } = await import("./cli/update");
       return await runUpdate(args.slice(1), usage);
     }
 
     if (args[0] === "registry") {
+      const { runRegistry } = await import("./cli/registry");
       return await runRegistry(args.slice(1), usage);
     }
 
@@ -282,27 +277,33 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
     }
 
     if (args[0] === "doctor") {
+      const { runDoctor } = await import("./cli/doctor");
       return await runDoctor(args.slice(1), usage);
     }
 
     if (args[0] === "audit-panel") {
+      const { runAuditPanel } = await import("./cli/audit-panel");
       return await runAuditPanel(args.slice(1));
     }
 
     if (args[0] === "ab-gate") {
+      const { runAbGate } = await import("./cli/ab-gate");
       return await runAbGate(args.slice(1), usage);
     }
 
     if (args[0] === "advise") {
+      const { runAdvise } = await import("./cli/advise");
       return await runAdvise(args.slice(1));
     }
 
     if (args[0] === "skill") {
       if (args[1] === "new") {
+        const { runSkillNew } = await import("./cli/skill-new");
         return await runSkillNew(args.slice(2));
       }
 
       if (args[1] === "eval") {
+        const { runSkillEval } = await import("./cli/skill-eval");
         return await runSkillEval(args.slice(2));
       }
 
@@ -311,6 +312,7 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
     }
 
     if (process.stdout.isTTY === true && !args.includes("--json")) {
+      const { parseCreateArgs } = await import("./cli/create");
       const renderOptions = parseCreateArgs(args);
 
       if (
@@ -371,7 +373,10 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
       return 1;
     }
 
-    return await runCreate(args, usage);
+    return await (async () => {
+      const { runCreate } = await import("./cli/create");
+      return runCreate(args, usage);
+    })();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`farrier: ${message}`);
