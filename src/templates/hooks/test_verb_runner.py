@@ -376,10 +376,50 @@ def test_stop_blocks_once_then_allows_identical_check_full_failure(tmp_path: Pat
     assert stdout == ""
 
 
-def test_stop_blocks_again_when_check_full_failure_changes(tmp_path: Path) -> None:
+def record_source_edit(tmp_path: Path) -> None:
+    """Register a hook-visible source edit so the next Stop re-verifies."""
+    (tmp_path / "src").mkdir(exist_ok=True)
+    code, _, stderr = run_hook(post_payload(tmp_path), tmp_path, 'test "$1" = "check-fast" || exit 7\nexit 0')
+    assert code == 0
+    assert stderr == ""
+
+
+def test_posttool_docs_only_edit_skips_check_fast(tmp_path: Path) -> None:
+    code, stdout, stderr = run_hook(
+        post_payload(tmp_path, tool_name="Write", tool_input={"file_path": "docs/notes.md"}),
+        tmp_path,
+        "exit 9",  # any just invocation would fail loudly
+    )
+    assert code == 0
+    assert stdout == ""
+    assert stderr == ""
+
+
+def test_stop_after_docs_only_session_runs_fast_gate_not_full(tmp_path: Path) -> None:
+    write_justfile(tmp_path, STRUCTURE_OK_JUSTFILE)
+
+    code, _, _ = run_hook(
+        post_payload(tmp_path, tool_name="Write", tool_input={"file_path": "README.md"}),
+        tmp_path,
+        "exit 9",
+    )
+    assert code == 0
+
+    code, stdout, stderr = run_hook(
+        stop_payload(tmp_path),
+        tmp_path,
+        'test "$1" = "check-full" && exit 9\nexit 0',
+    )
+    assert code == 0
+    assert stdout == ""
+    assert stderr == ""
+
+
+def test_stop_blocks_again_when_failure_changes_after_an_edit(tmp_path: Path) -> None:
     write_justfile(tmp_path, STRUCTURE_OK_JUSTFILE)
 
     stop_with_full_failure(tmp_path, "first failure")
+    record_source_edit(tmp_path)
     code, stdout, _ = stop_with_full_failure(tmp_path, "second different failure")
 
     assert code == 0
@@ -388,10 +428,24 @@ def test_stop_blocks_again_when_check_full_failure_changes(tmp_path: Path) -> No
     assert "second different failure" in data["reason"]
 
 
-def test_check_full_success_clears_recorded_baseline_failure(tmp_path: Path) -> None:
+def test_stop_without_edits_skips_the_redundant_rerun(tmp_path: Path) -> None:
+    write_justfile(tmp_path, STRUCTURE_OK_JUSTFILE)
+
+    stop_with_full_failure(tmp_path, "known failure")
+
+    # No edit since the block: even a would-be-different failure is not
+    # re-observed; the stop is allowed without running check-full again.
+    code, stdout, stderr = stop_with_full_failure(tmp_path, "would be different now")
+    assert code == 0
+    assert stdout == ""
+    assert stderr == ""
+
+
+def test_check_full_success_after_edit_clears_recorded_baseline_failure(tmp_path: Path) -> None:
     write_justfile(tmp_path, STRUCTURE_OK_JUSTFILE)
 
     stop_with_full_failure(tmp_path, "flaky failure")
+    record_source_edit(tmp_path)
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path, "exit 0")
     assert code == 0
@@ -400,6 +454,7 @@ def test_check_full_success_clears_recorded_baseline_failure(tmp_path: Path) -> 
     state = json.loads((tmp_path / ".farrier" / "runtime" / "verify-state.json").read_text(encoding="utf-8"))
     assert "checkFullFailure" not in state
 
+    record_source_edit(tmp_path)
     code, stdout, _ = stop_with_full_failure(tmp_path, "flaky failure")
     data = json.loads(stdout)
     assert data["decision"] == "block"

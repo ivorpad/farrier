@@ -135,10 +135,10 @@ type ClaudeSettingsHooks = Partial<Record<ClaudeHookEvent, ClaudeHookEntry[]>>;
 export const farrierManifestVersion = 3;
 
 export const hookCatalogVersions: Record<HookId, number> = {
-    "secret-shield": 4,
+    "secret-shield": 5,
     "tool-policy": 3,
     "write-guard": 4,
-    "verb-runner": 4,
+    "verb-runner": 5,
     "quality-judge": 4,
     "stop-judge": 3
 };
@@ -237,14 +237,15 @@ export function agentsHardRules(
     ...pack.agentsRules,
     ...pack.ruleBlocks.flatMap((block) => block.agentsRules ?? [])
   ];
+  const stopChecks = pack.verbs.konsistent
+    ? `\`just check-full\` and \`just ${konsistentToolName(pack)}\``
+    : "`just check-full`";
   return [
     "Do not read real `.env*` files or private key material; tracked examples such as `.env.example` are allowed.",
     ...rules,
     "Do not directly edit protected generated/owned files: lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`.",
-    "After edits, run `just check-fast`, passing the relevant test files when they exist.",
-    "Before finishing, run `just check-full` once.",
-    "If `just check-full` fails for reasons that predate your changes, name each pre-existing failing test explicitly in your final summary and stop retrying; the Stop gate does not re-block on an identical known failure.",
-    ...(pack.verbs.konsistent ? [`Run \`just ${konsistentToolName(pack)}\` before stopping.`] : []),
+    `Verification is automatic: hooks run \`just check-fast\` after each code edit and ${stopChecks} when you stop. Run these manually only to debug a failure the hooks reported.`,
+    "If the Stop check fails for reasons that predate your changes, name each pre-existing failing test explicitly in your final summary and stop again; do not re-run the full check yourself — an identical known failure does not re-block.",
     "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
     "Keep generated hook scripts and their tests together.",
     `Do not bypass ${hookNames} hooks; every agent must also follow these rules from AGENTS.md and the justfile.`

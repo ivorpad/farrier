@@ -14,6 +14,9 @@ from _hook_runtime import log_event, read_project_text, run_bounded_process
 
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
+# Documentation-only edits cannot break the verification gate in the stacks
+# farrier scaffolds; they skip check-fast and downgrade the Stop check.
+DOC_EXTENSIONS = (".md", ".markdown", ".rst", ".adoc", ".txt")
 JUSTFILE_NAMES = ("justfile", "Justfile", ".justfile")
 # Structure-linting recipes farrier scaffolds, in priority order. Python packs
 # ship "konpy"; TypeScript packs ship "konsistent". A project has at most one.
@@ -180,6 +183,21 @@ def write_verify_state(cwd: str, state: dict) -> None:
         pass
 
 
+def docs_only_edit(payload: dict[str, Any]) -> bool:
+    paths = edited_project_paths(payload)
+    return bool(paths) and all(path.lower().endswith(DOC_EXTENSIONS) for path in paths)
+
+
+def record_edit(cwd: str, docs_only: bool) -> None:
+    """Count hook-visible edits so the Stop gate can tell whether anything
+    changed since its last verdict, and whether any change touched non-docs."""
+    state = read_verify_state(cwd)
+    state["editSerial"] = int(state.get("editSerial", 0)) + 1
+    if not docs_only:
+        state["sourceEditSerial"] = int(state.get("sourceEditSerial", 0)) + 1
+    write_verify_state(cwd, state)
+
+
 def is_test_file(path: str) -> bool:
     name = os.path.basename(path)
     stem, _ = os.path.splitext(name)
@@ -295,6 +313,12 @@ def main() -> int:
         if edited_hook_file(payload):
             return 0
 
+        docs_only = docs_only_edit(payload)
+        record_edit(cwd, docs_only)
+        if docs_only:
+            log_event(cwd, "verb-runner", "PostToolUse", "skipped-docs-only", rule="check-fast")
+            return 0
+
         ok, output = run_command(["just", "check-fast", *targeted_test_files(payload, cwd)], cwd)
         log_event(cwd, "verb-runner", "PostToolUse", "passed" if ok else "failed", rule="check-fast")
         if not ok:
@@ -308,28 +332,48 @@ def main() -> int:
             emit_stop_block("stop", "Malformed stop_hook_active value; retry Stop after correcting the hook payload.")
             return 0
 
-        ok, output = run_command(["just", "check-full"], cwd)
-        if ok:
-            log_event(cwd, "verb-runner", "Stop", "passed", rule="check-full")
-            state = read_verify_state(cwd)
-            if "checkFullFailure" in state:
-                state.pop("checkFullFailure", None)
-                write_verify_state(cwd, state)
-        else:
-            fingerprint = failure_fingerprint(output, cwd)
-            state = read_verify_state(cwd)
-            if state.get("checkFullFailure") != fingerprint:
-                state["checkFullFailure"] = fingerprint
-                write_verify_state(cwd, state)
-                log_event(cwd, "verb-runner", "Stop", "blocked", rule="check-full")
-                emit_stop_block(
-                    "check-full",
-                    f"{output}\n\nIf this failure predates your changes, name each failing test explicitly in your "
-                    "final summary as pre-existing and stop; an identical failure will not block again.",
-                )
-                return 0
-            # Known baseline failure already reported once: allow the stop.
+        state = read_verify_state(cwd)
+        edit_serial = int(state.get("editSerial", 0))
+
+        # A previous Stop already recorded this tree's failure fingerprint and
+        # no hook-visible edit happened since: allow immediately instead of
+        # paying for an identical full run. Edits made through paths hooks do
+        # not see (raw shell edits) degrade to allowing a stop the gate would
+        # also have allowed on the recorded identical failure.
+        if "checkFullFailure" in state and state.get("checkFullEditSerial") == edit_serial:
             log_event(cwd, "verb-runner", "Stop", "baseline-allowed", rule="check-full")
+        else:
+            # Sessions whose hook-visible edits were all documentation run the
+            # fast gate instead of the full suite; docs cannot break it.
+            source_serial = int(state.get("sourceEditSerial", 0))
+            docs_only_session = edit_serial > 0 and source_serial == 0
+            recipe_name = "check-fast" if docs_only_session else "check-full"
+
+            ok, output = run_command(["just", recipe_name], cwd)
+            if ok:
+                log_event(cwd, "verb-runner", "Stop", "passed", rule=recipe_name)
+                if "checkFullFailure" in state:
+                    state.pop("checkFullFailure", None)
+                    state.pop("checkFullEditSerial", None)
+                    write_verify_state(cwd, state)
+            else:
+                fingerprint = failure_fingerprint(output, cwd)
+                if state.get("checkFullFailure") != fingerprint:
+                    state["checkFullFailure"] = fingerprint
+                    state["checkFullEditSerial"] = edit_serial
+                    write_verify_state(cwd, state)
+                    log_event(cwd, "verb-runner", "Stop", "blocked", rule=recipe_name)
+                    emit_stop_block(
+                        recipe_name,
+                        f"{output}\n\nIf this failure predates your changes, name each failing test explicitly in "
+                        "your final summary as pre-existing and stop again. Do not re-run the full check yourself; "
+                        "stopping again with the identical failure will be allowed.",
+                    )
+                    return 0
+                # Known baseline failure already reported once: allow the stop.
+                state["checkFullEditSerial"] = edit_serial
+                write_verify_state(cwd, state)
+                log_event(cwd, "verb-runner", "Stop", "baseline-allowed", rule=recipe_name)
 
         recipes, discovery_error = find_just_recipes(cwd)
         if discovery_error is not None:

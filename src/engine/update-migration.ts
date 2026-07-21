@@ -204,6 +204,15 @@ function legacyVariant(content: string): string {
   return content.replaceAll(hooksDirectory, legacyHooksDirectory);
 }
 
+/**
+ * Ruff verbs gained ` --extend-exclude .farrier` in 2026-07; justfiles
+ * rendered before then carry the bare commands and remain byte-exact legacy
+ * output, so migration must recognize both spellings.
+ */
+function withoutFarrierLintExclusion(content: string): string {
+  return content.replaceAll(" --extend-exclude .farrier", "");
+}
+
 const builtinHookIds = new Set(["secret-shield", "tool-policy", "write-guard", "verb-runner", "quality-judge", "stop-judge"]);
 
 /**
@@ -307,15 +316,19 @@ async function classifyGeneratedSingletons(
   const justfile = planFilesByPath.get("justfile");
   if (justfile) {
     const current = await readTextIfExists(targetDir, "justfile");
-    const legacyVariants = new Set([
+    const baseVariants = [
       legacyVariant(justfile.content),
       legacyJustfile(pack),
       legacyJustfile(legacyPack),
       // Interim layout: hooks already at .farrier/hooks but still a single
       // full check aggregate including the hook self-tests.
       legacyJustfile(pack).replaceAll(legacyHooksDirectory, hooksDirectory),
-      legacyJustfile(legacyPack).replaceAll(legacyHooksDirectory, hooksDirectory)
-    ]);
+      legacyJustfile(legacyPack).replaceAll(legacyHooksDirectory, hooksDirectory),
+      // Current layout rendered before the ruff exclusion existed.
+      justfile.content
+    ];
+    const legacyVariants = new Set(baseVariants.flatMap((variant) => [variant, withoutFarrierLintExclusion(variant)]));
+    legacyVariants.delete(justfile.content);
     if (current !== undefined && current !== justfile.content && legacyVariants.has(current)) {
       report.repairUserFiles.push("justfile");
     }

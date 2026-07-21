@@ -231,7 +231,7 @@ dependencies = ["fastapi>=0.110"]
     expect(report.hookDrift).toContainEqual({
       hookId: "secret-shield",
       manifestVersion: 0,
-      currentVersion: 4
+      currentVersion: 5
     });
     expect(report.notes).toContain("Manual review required for outdated user-mutable files; update mode will not overwrite them.");
 
@@ -248,7 +248,7 @@ dependencies = ["fastapi>=0.110"]
 
     const repairedManifest = await readJson(manifestPath);
     const repairedVersions = repairedManifest.versions as { hooks: Record<string, number> };
-    expect(repairedVersions.hooks["secret-shield"]).toBe(4);
+    expect(repairedVersions.hooks["secret-shield"]).toBe(5);
     expect(repairedManifest.farrierVersion).toBe("0.3.0");
 
     const after = await createUpdateReport({ targetDir: dir });

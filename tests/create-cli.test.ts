@@ -512,7 +512,7 @@ dependencies = ["fastapi"]
     expect(included.exitCode).toBe(0);
     expect(included.stdout).toContain("Policy evidence:");
     expect(included.stdout).toContain("bun-managed: 5 rule(s) included; evidence: bun.lock exists (bun.lock)");
-    expect(included.stdout).toContain("13 shared agent rules in AGENTS.md");
+    expect(included.stdout).toContain("11 shared agent rules in AGENTS.md");
 
     const withoutEvidence = await tempDir();
     await writeFile(join(withoutEvidence, "package.json"), '{"name":"fixture","version":"1.0.0"}\n', "utf8");

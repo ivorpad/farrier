@@ -28,6 +28,14 @@ SAFE_ENV_EXAMPLE_BASENAMES = {
 }
 
 
+def redact_detail(text: str) -> str:
+    """Short, value-free description of the denied input for the event log."""
+    collapsed = re.sub(r"\s+", " ", text).strip()
+    # Never persist anything that looks like an assignment's right-hand side.
+    collapsed = re.sub(r"([A-Za-z_][A-Za-z0-9_]*)=(\S+)", r"\1=[REDACTED]", collapsed)
+    return collapsed[:160]
+
+
 def emit_deny(reason: str) -> None:
     reason = reason.encode("utf-8")[:2000].decode("utf-8", errors="ignore")
     print(
@@ -92,17 +100,21 @@ def is_secret_path(text: str) -> bool:
 
     for part in parts:
         base = normalized_basename(part)
+        # Glob forms like `.env*` or `*.key` reach the same files; match them
+        # with the wildcard glyphs stripped (2026-07-21 eval: a Grep over
+        # `.env*` with content output slipped past the literal matching).
+        unglobbed = base.strip("*?")
 
-        if base in SAFE_ENV_EXAMPLE_BASENAMES:
+        if base in SAFE_ENV_EXAMPLE_BASENAMES or unglobbed in SAFE_ENV_EXAMPLE_BASENAMES:
             continue
 
-        if base == ".env" or base.startswith(".env."):
+        if unglobbed == ".env" or unglobbed.startswith(".env."):
             return True
 
-        if base in SECRET_BASENAMES:
+        if base in SECRET_BASENAMES or unglobbed in SECRET_BASENAMES:
             return True
 
-        if base.endswith(".pem") or base.endswith(".key"):
+        if unglobbed.endswith(".pem") or unglobbed.endswith(".key"):
             return True
 
     return False
@@ -115,12 +127,12 @@ def looks_secretish(text: str) -> bool:
     token_pattern = re.compile(
         r"(^|[\s\"'])"
         r"(?P<candidate>"
-        r"\.env(?:\.[^\s\"']*)?"
+        r"\.env(?:\.[^\s\"']*)?[*?]*"
         r"|id_rsa"
         r"|id_dsa"
         r"|id_ecdsa"
         r"|id_ed25519"
-        r"|[^\s\"']+\.(?:pem|key)"
+        r"|[^\s\"']+\.(?:pem|key)[*?]*"
         r")"
         r"($|[\s\"'])",
         re.IGNORECASE,
@@ -132,20 +144,21 @@ def looks_secretish(text: str) -> bool:
     )
 
 
-def should_deny(payload: dict[str, Any]) -> bool:
+def should_deny(payload: dict[str, Any]) -> str | None:
+    """The offending input text when the call must be denied, else None."""
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input", {})
 
     if tool_name not in {"Read", "Bash", "Grep"}:
-        return False
+        return None
     if payload.get("hook_event_name") != "PreToolUse" or not isinstance(tool_input, dict):
-        return True
+        return "<malformed payload>"
 
     for text in iter_strings(tool_input):
         if looks_secretish(text):
-            return True
+            return text
 
-    return False
+    return None
 
 
 def main() -> int:
@@ -153,8 +166,9 @@ def main() -> int:
     cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else os.getcwd()
     tool_name = payload.get("tool_name")
 
-    if should_deny(payload):
-        log_event(cwd, "secret-shield", "PreToolUse", "blocked", rule="secret-access")
+    denied_text = should_deny(payload)
+    if denied_text is not None:
+        log_event(cwd, "secret-shield", "PreToolUse", "blocked", rule="secret-access", detail=redact_detail(denied_text))
         emit_deny(
             "Blocked secret access. Do not read real .env* files or private key material; tracked examples such as .env.example are allowed."
         )

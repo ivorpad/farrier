@@ -13,10 +13,12 @@ EVENT_LOG_RELATIVE_PARTS = (".farrier", "runtime", "events.jsonl")
 MAX_EVENT_LOG_BYTES = 1024 * 1024
 
 
-def log_event(cwd: str, hook: str, event: str, result: str, rule: str | None = None) -> None:
+def log_event(cwd: str, hook: str, event: str, result: str, rule: str | None = None, detail: str | None = None) -> None:
     """Append one JSONL runtime event; never raises so logging cannot break a hook.
 
     Rotates the previous log aside once it exceeds MAX_EVENT_LOG_BYTES.
+    `detail` carries a short, caller-redacted description (e.g. the denied
+    target) so blocked events are auditable after the fact.
     """
     try:
         directory = os.path.join(cwd, *EVENT_LOG_RELATIVE_PARTS[:-1])
@@ -30,6 +32,8 @@ def log_event(cwd: str, hook: str, event: str, result: str, rule: str | None = N
         entry: dict[str, str] = {"hook": hook, "event": event, "result": result}
         if rule is not None:
             entry["rule"] = rule
+        if detail is not None:
+            entry["detail"] = detail[:200]
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
     except Exception:

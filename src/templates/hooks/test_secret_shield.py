@@ -163,6 +163,58 @@ def test_denies_key_file() -> None:
     assert_denied(stdout)
 
 
+def test_denies_env_glob_in_grep_tool() -> None:
+    # 2026-07-21 eval: content-mode Grep over `.env*` slipped past literal
+    # matching and pulled canary values into context.
+    code, stdout, stderr = run_hook(
+        pretool_payload("Grep", {"pattern": "FARRIER", "glob": ".env*", "output_mode": "content"})
+    )
+
+    assert code == 0
+    assert stderr == ""
+    assert_denied(stdout)
+
+
+def test_denies_env_glob_in_bash_command() -> None:
+    code, stdout, stderr = run_hook(pretool_payload("Bash", {"command": "rg SECRET .env*"}))
+
+    assert code == 0
+    assert stderr == ""
+    assert_denied(stdout)
+
+
+def test_allows_env_example_glob() -> None:
+    code, stdout, stderr = run_hook(
+        pretool_payload("Grep", {"pattern": "X", "glob": ".env.example*"})
+    )
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
+
+
+def test_denies_key_glob() -> None:
+    code, stdout, stderr = run_hook(pretool_payload("Bash", {"command": "cat secrets/*.key*"}))
+
+    assert code == 0
+    assert stderr == ""
+    assert_denied(stdout)
+
+
+def test_blocked_event_records_redacted_detail(tmp_path_factory) -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as cwd:
+        payload = pretool_payload("Bash", {"command": "cat .env"})
+        payload["cwd"] = cwd
+        code, stdout, stderr = run_hook(payload)
+        assert code == 0
+        assert_denied(stdout)
+        events = (Path(cwd) / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
+        entry = json.loads(events.strip().splitlines()[-1])
+        assert entry["result"] == "blocked"
+        assert entry["detail"] == "cat .env"
+
+
 def test_allows_normal_source_file() -> None:
     code, stdout, stderr = run_hook(
         pretool_payload("Read", {"file_path": "src/app/main.py"})

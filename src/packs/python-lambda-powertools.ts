@@ -15,10 +15,10 @@ export const pythonLambdaPowertoolsPack: Pack = {
   skills: [],
   hooks: [],
   verbs: {
-    check: "uv run ruff check . && uv run pytest",
-    checkFast: "uv run ruff check .",
+    check: "uv run ruff check . --extend-exclude .farrier && uv run pytest",
+    checkFast: "uv run ruff check . --extend-exclude .farrier",
     test: "uv run pytest",
-    fmt: "uv run ruff format .",
+    fmt: "uv run ruff format . --extend-exclude .farrier",
     konsistent: `uv run --with ${PYTHON_KONSISTENT_PATH} konpy check`
   },
   agentsRules: [

@@ -232,7 +232,7 @@ describe("render engine", () => {
     expect(agents).toContain("Do not use `pip install`, `pip3 install`, or `python -m pip`");
     expect(agents).toContain("Run Python scripts through `uv run python ...`");
     expect(agents).toContain("lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`");
-    expect(agents).toContain("Run `just konpy` before stopping");
+    expect(agents).toContain("`just check-full` and `just konpy` when you stop");
     expect(agents).toContain("quality.maxFileLines");
     expect(agents).not.toContain("LLM semantic judge hooks");
     expect(agents).toContain("## Accepted Risks");
@@ -511,10 +511,10 @@ describe("render engine", () => {
     expect(manifest.quality).toEqual({ maxFileLines: 500 });
     expect(manifest.versions.farrierManifest).toBe(3);
     expect(manifest.versions.hooks).toEqual({
-      "secret-shield": 4,
+      "secret-shield": 5,
       "tool-policy": 3,
       "write-guard": 4,
-      "verb-runner": 4
+      "verb-runner": 5
     });
     expect(manifest.versions.prompts).toBeUndefined();
     expect(manifest.registry).toBeUndefined();
@@ -657,7 +657,7 @@ describe("render engine", () => {
     expect(manifest.learn).toEqual({ enabled: true });
     expect(manifest.versions.farrierManifest).toBe(3);
     expect(manifest.versions.hooks).toEqual({
-      "secret-shield": 4
+      "secret-shield": 5
     });
     expect(manifest.judge).toBeUndefined();
     expect(manifest.quality.maxFileLines).toBe(500);
