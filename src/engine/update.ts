@@ -18,6 +18,7 @@ import {
   type NormalizedManifest
 } from "./manifest";
 import { applyMutationPlan, fingerprintPath, inspectMutationPlan, type MutationOperation, type PathFingerprint } from "./mutation-transaction";
+import { extractRepoMapSection, spliceRepoMapSection, stripRepoMapSection } from "./repo-map";
 
 export {
   notFarrierProjectMessage,
@@ -301,15 +302,6 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function fileContentMatches(path: string, expectedContent: string): Promise<boolean> {
-  try {
-    const current = await readFile(path, "utf8");
-    return current === expectedContent;
-  } catch {
-    return false;
-  }
-}
-
 async function modeMatches(path: string, mode: number | undefined): Promise<boolean> {
   if (mode === undefined) {
     return true;
@@ -347,7 +339,13 @@ async function classifyInventoryDrift(
       continue;
     }
 
-    const contentMatches = await fileContentMatches(absolutePath, file.content);
+    let current: string | null;
+    try {
+      current = await readFile(absolutePath, "utf8");
+    } catch {
+      current = null;
+    }
+    const contentMatches = current === file.content;
     const executableMatches = await modeMatches(absolutePath, file.mode);
 
     if (contentMatches && executableMatches) {
@@ -355,6 +353,16 @@ async function classifyInventoryDrift(
     }
 
     if (inventoryOwnership(file.path) === "farrier-owned") {
+      outdatedOwnedFiles.push(file.path);
+    } else if (
+      current !== null &&
+      executableMatches &&
+      stripRepoMapSection(current) === stripRepoMapSection(file.content)
+    ) {
+      // Only a generated marked region (the repository map) is stale; every
+      // user-editable byte is identical, so rewriting is safe. Files without
+      // a marked region can never take this branch: strip is the identity for
+      // them, and plain equality already passed above.
       outdatedOwnedFiles.push(file.path);
     } else {
       outdatedUserFiles.push(file.path);
@@ -402,6 +410,12 @@ function reportNotes(input: {
 
   if (input.outdatedUserFiles.length > 0) {
     notes.push("Manual review required for outdated user-mutable files; update mode will not overwrite them.");
+  }
+
+  if (input.outdatedUserFiles.includes("AGENTS.md")) {
+    notes.push(
+      "AGENTS.md has user edits; update with --yes still refreshes only its generated repository-map region and leaves everything else untouched."
+    );
   }
 
   if (input.suggestedSkills.length > 0) {
@@ -547,6 +561,36 @@ async function removeEmptyDirectories(targetDir: string, roots: string[]): Promi
   }
 }
 
+/**
+ * A write that refreshes only the marked repository-map region of AGENTS.md,
+ * preserving every byte outside the markers. Null when AGENTS.md is unreadable,
+ * the plan carries no AGENTS.md, or the region is already current.
+ */
+async function spliceAgentsMapOperation(
+  targetDir: string,
+  planFiles: readonly RenderedFile[]
+): Promise<MutationOperation | null> {
+  const planAgents = planFiles.find((file) => file.path === "AGENTS.md");
+  if (!planAgents) {
+    return null;
+  }
+
+  let current: string;
+  try {
+    current = await readFile(join(targetDir, "AGENTS.md"), "utf8");
+  } catch {
+    return null;
+  }
+
+  const section = extractRepoMapSection(planAgents.content);
+  const spliced = section === null ? stripRepoMapSection(current) : spliceRepoMapSection(current, section);
+  if (spliced === current) {
+    return null;
+  }
+
+  return { kind: "write-file", path: "AGENTS.md", content: spliced, mode: planAgents.mode };
+}
+
 export async function applyUpdate(input: UpdateInput | string, deps: UpdateApplyDeps = {}): Promise<UpdateApplyResult> {
   const targetDir = targetDirFromInput(input);
   const catalog = typeof input === "string" ? builtinCatalog() : input.catalog ?? builtinCatalog();
@@ -557,7 +601,10 @@ export async function applyUpdate(input: UpdateInput | string, deps: UpdateApply
     ...report.outdatedOwnedFiles,
     ...report.migratableUserFiles,
     ...report.stalePaths,
-    ".farrier.json"
+    ".farrier.json",
+    // The repository-map region of AGENTS.md may be refreshed in place even
+    // when the surrounding prose has user edits.
+    "AGENTS.md"
   ]);
   await Promise.all([...initiallyRepairable].map(async (path) => {
     reviewedFingerprints.set(path, await fingerprintPath(join(targetDir, path)));
@@ -607,16 +654,26 @@ export async function applyUpdate(input: UpdateInput | string, deps: UpdateApply
     repairPaths.add(override.path);
   }
 
+  // The repository-map region of AGENTS.md is farrier-owned even when the
+  // surrounding prose has user edits, so it is refreshed by splicing into the
+  // current file rather than overwriting with plan content. Whole-file writes
+  // still apply when the file is missing or is a byte-exact legacy render.
+  const agentsMapOperation =
+    stale.repairUserFiles.includes("AGENTS.md") || report.missingInventoryFiles.includes("AGENTS.md")
+      ? null
+      : await spliceAgentsMapOperation(targetDir, plan.files);
+
   const pruneSet = new Set([...stale.pruneFiles, ...stale.pruneTrees]);
   const operations: MutationOperation[] = [
     ...plan.files
-      .filter((file) => repairPaths.has(file.path))
+      .filter((file) => repairPaths.has(file.path) && !(file.path === "AGENTS.md" && agentsMapOperation))
       .map((file): MutationOperation => ({
         kind: "write-file",
         path: file.path,
         content: override && file.path === override.path ? override.content : file.content,
         mode: file.mode
       })),
+    ...(agentsMapOperation ? [agentsMapOperation] : []),
     ...stale.pruneFiles.map((path): MutationOperation => ({ kind: "remove-file", path })),
     ...stale.pruneTrees.map((path): MutationOperation => ({ kind: "remove-tree", path }))
   ];

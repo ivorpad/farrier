@@ -7,6 +7,7 @@ import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
 import type { RegistryPin } from "../registry/catalog";
 import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
 import { evaluatePackRules, type EvaluatedPackRules } from "./detect";
+import { generateRepoMapSection, spliceRepoMapSection } from "./repo-map";
 
 /** Provider-neutral home for generated hook implementations and their tests. */
 export const hooksDirectory = ".farrier/hooks";
@@ -75,6 +76,12 @@ export type CreateRenderPlanOptions = {
   existingManifest?: FarrierManifestInput;
   registryPins?: Record<string, RegistryPin>;
   agents?: EnforcementAgent[];
+  /**
+   * Precomputed repository-map section for AGENTS.md. Omit to generate from
+   * the target repository; pass null to skip generation (callers that never
+   * compare AGENTS.md content, such as doctor).
+   */
+  repoMapSection?: string | null;
 };
 
 export type FarrierManifestVersions = {
@@ -704,12 +711,17 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   const advisors = options.advisors ?? existingAdvisors ?? false;
   const existingSecondaryAcknowledged = stringArray(options.existingManifest?.secondaryAcknowledged);
   const secondaryAcknowledged = options.secondaryAcknowledged ?? existingSecondaryAcknowledged ?? [];
-  const rules = await evaluatePackRules(options.targetDir, options.pack);
+  const [rules, repoMapSection] = await Promise.all([
+    evaluatePackRules(options.targetDir, options.pack),
+    options.repoMapSection !== undefined
+      ? Promise.resolve(options.repoMapSection)
+      : generateRepoMapSection(options.targetDir)
+  ]);
 
   const files: RenderedFile[] = [
     {
       path: "AGENTS.md",
-      content: renderAgentsMd(options.pack, agents, rules.agentsRules)
+      content: spliceRepoMapSection(renderAgentsMd(options.pack, agents, rules.agentsRules), repoMapSection)
     }
   ];
 

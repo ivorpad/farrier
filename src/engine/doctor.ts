@@ -1072,7 +1072,10 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
     secondaryAcknowledged: manifest.secondaryAcknowledged,
     existingManifest: manifestToInput(manifest),
     agents: manifest.agents,
-    registryPins: registryPinsForManifest(manifest, catalog)
+    registryPins: registryPinsForManifest(manifest, catalog),
+    // Doctor never content-compares AGENTS.md (user-mutable), so generating
+    // the repository map here would be wasted git work.
+    repoMapSection: null
   });
 
   await addInventoryProblems(targetDir, expectedPlan.files, problems);

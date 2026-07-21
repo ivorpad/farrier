@@ -25,6 +25,7 @@ Usage:
   farrier --detect --agents claude|codex|claude,codex --yes --dir <target>
   farrier --detect --agents claude|codex|claude,codex --dry-run --dir <target>
   farrier update --dir <target> [--yes] [--json]
+  farrier map --dir <target> [--json]
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
   farrier doctor --dir <target> [--json] [--static] [--live]
@@ -70,6 +71,7 @@ Note:
   --yes approves a conflict-free plan. Replacing existing differing files additionally requires --force.
   farrier registry list shows configured private registries without executing payloads.
   farrier learn is report-only unless --yes is provided; it appends new declarative ToolPolicyRule data only.
+  farrier map regenerates the repository-map section of AGENTS.md (layout, test conventions, git co-change coupling) in place, preserving all other AGENTS.md content. update --yes also refreshes it.
   farrier ab-gate enforces the harness release thresholds against a recorded paired evaluation; it exits 1 listing violated thresholds.
   farrier doctor runs static checks plus runtime hook probes (fixture payloads through the installed bindings). --static skips probes; --live adds one real Codex session that must get blocked. Exits 0 only when every executed layer is healthy.
   Headless farrier advise is report-only. The interactive report can create a selected recommendation only after review and confirmation.`;
@@ -265,6 +267,11 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
     if (args[0] === "update") {
       const { runUpdate } = await import("./cli/update");
       return await runUpdate(args.slice(1), usage);
+    }
+
+    if (args[0] === "map") {
+      const { runMap } = await import("./cli/map");
+      return await runMap(args.slice(1), usage);
     }
 
     if (args[0] === "registry") {
