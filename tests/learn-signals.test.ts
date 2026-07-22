@@ -320,6 +320,7 @@ describe("learn report integration", () => {
     const report = await createLearnReport({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       noLlm: true
     });
 
