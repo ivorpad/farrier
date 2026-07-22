@@ -18,14 +18,55 @@ export function backendName(backend: AgentBackend): "Claude" | "Codex" {
   return backend === "claude" ? "Claude" : "Codex";
 }
 
+/** The product/agent name shown to users (the CLI that reads the project). */
+export function adviceBackendProductName(backend: AgentBackend): "Claude Code" | "Codex" {
+  return backend === "claude" ? "Claude Code" : "Codex";
+}
+
 export function adviceBackendControlLabel(
   backend: AgentBackend,
   availability: AgentAvailability,
 ): string {
-  const availabilityLabel = availability.claude && availability.codex
-    ? "Claude and Codex available"
-    : `${availability.claude ? "Codex" : "Claude"} unavailable`;
-  return `Reasoning backend: ‹ ${backendName(backend)} › · ${availabilityLabel}`;
+  const segment = (candidate: AgentBackend): string => {
+    const name = adviceBackendProductName(candidate);
+    const shown = candidate === backend ? `‹ ${name} ›` : name;
+    return availability[candidate] ? shown : `${shown} (${backendName(candidate)} not installed)`;
+  };
+  return `Analyze with: ${segment("claude")} / ${segment("codex")}`;
+}
+
+/**
+ * The explicit "your data leaves this machine" notice shown before Analyze when
+ * the sessions toggle is on. It names the destination service and spells out
+ * exactly what is sent, so consent is informed rather than implied.
+ */
+export function adviceSessionConsentNotice(input: {
+  backend: AgentBackend;
+  sessionCount: number;
+}): string[] {
+  const service = backendName(input.backend);
+  return [
+    `Sessions on: short excerpts from ${input.sessionCount} recent ${service} session(s) will be sent to ${service}.`,
+    "Passwords, tokens, and keys are removed on this computer first.",
+    "Sent: what you asked for, corrections you made, commands that ran, file names touched, and pass/fail outcomes (from up to 20 recent sessions).",
+    "Nothing is written to your project.",
+  ];
+}
+
+/** Plain-language outcome for each creation-support kind, no jargon. */
+export function adviceSupportOutcome(
+  kind: "files" | "skill" | "inspect" | "unsupported",
+): string {
+  switch (kind) {
+    case "files":
+      return "We can create this for you";
+    case "skill":
+      return "Opens the guided skill creator";
+    case "inspect":
+      return "Inspect the existing registry item";
+    default:
+      return "You'll need to do this by hand";
+  }
 }
 
 const adviceCancelBindings = defineBindings(
@@ -117,7 +158,7 @@ export function adviceDecisionSummary(
   const more = signalCount > 1 ? ` · +${signalCount - 1} more` : "";
   const evidence = primary
     ? `${primary.source}${primary.path ? ` · ${primary.path}` : ""}: ${primary.summary}${more}`
-    : recommendation.evidence.join(", ");
+    : "based on repeated patterns in your project";
   return {
     why: recommendation.reason,
     benefit: recommendation.benefit,

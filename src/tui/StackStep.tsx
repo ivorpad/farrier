@@ -41,6 +41,26 @@ const packSummary: Record<string, string> = {
   generic: "language-agnostic starter harness",
 };
 
+/**
+ * Plain stack names lead each row; the pack slug is demoted to the muted tail
+ * so the emphasized text is the one a user recognizes.
+ */
+const packDisplayName: Record<string, string> = {
+  "python-uv": "Python",
+  "python-fastapi": "Python · FastAPI",
+  "python-lambda-powertools": "Python · AWS Lambda",
+  "ts-base": "TypeScript",
+  "ts-react-vite": "React + Vite",
+  "ts-nextjs": "Next.js web app",
+  "ts-lambda": "TypeScript · AWS Lambda",
+  rails: "Ruby on Rails",
+  generic: "Any language (neutral starter)",
+};
+
+export function displayNameFor(packId: string): string {
+  return packDisplayName[packId] ?? packId;
+}
+
 function summaryFor(packId: string, listings: PackListing[]): string {
   const authored = packSummary[packId];
   if (authored) {
@@ -53,7 +73,7 @@ function summaryFor(packId: string, listings: PackListing[]): string {
 export function StackStep(props: StackStepProps) {
   const [focusedIndex, setFocusedIndex] = useState<number>(Math.max(props.packIds.indexOf(props.selectedPackId), 0));
 
-  const nameWidth = props.packIds.reduce((width, packId) => Math.max(width, packId.length), 0);
+  const nameWidth = props.packIds.reduce((width, packId) => Math.max(width, displayNameFor(packId).length), 0);
   const detectedByPack = new Map(detectedPackPresentations(props.detectedPacks).map((match) => [match.packId, match]));
 
   function moveFocus(delta: -1 | 1): void {
@@ -83,12 +103,22 @@ export function StackStep(props: StackStepProps) {
       moveFocus(-1);
       return;
     }
-    if (intent === "choose") props.onNext();
+    if (intent === "choose") {
+      // With no detection nothing is preselected; pressing enter on a row is the
+      // explicit pick that unblocks advancing (selection otherwise follows focus).
+      if (!props.selectedPackId) {
+        const packId = props.packIds[focusedIndex];
+        if (packId) {
+          props.onSelectPack(packId);
+        }
+      }
+      props.onNext();
+    }
   });
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <StepHeader current="Stack" subtitle="Which iron are we working?" />
+      <StepHeader current="Stack" subtitle="Which stack does your project use?" />
       {props.warnings && props.warnings.length > 0 ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
           {props.warnings.slice(0, 2).map((warning) => (
@@ -108,7 +138,8 @@ export function StackStep(props: StackStepProps) {
           return (
             <text key={packId} bg={bg}>
               <span fg={palette.accent}>{cursor}</span>
-              <span fg={palette.text}>{packId.padEnd(nameWidth + 1)}</span>
+              <span fg={palette.text}>{displayNameFor(packId).padEnd(nameWidth + 1)}</span>
+              <span fg={palette.faint}>{`${packId} `}</span>
               {detected !== undefined ? (
                 <span>
                   <span fg={palette.success}>{detected.label}</span>

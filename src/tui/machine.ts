@@ -5,7 +5,7 @@ import type { InstallSkillResult, SkillSearchResult } from "../engine/skills";
 import { normalizeAgents, type EnforcementAgent } from "../engine/agent-selection";
 import type { PackHookRef, SkillRef } from "../packs/types";
 
-export type WizardStep = "Stack" | "Skills" | "Create" | "Hooks" | "Learn" | "Review" | "Writing" | "Done";
+export type WizardStep = "Agent" | "Stack" | "Skills" | "Create" | "Hooks" | "Learn" | "Review" | "Writing" | "Done";
 
 export type SkillSearchStatus = "idle" | "loading" | "ready" | "error";
 
@@ -46,6 +46,7 @@ export type WizardState = {
   availableHooks: PackHookRef[];
   selectedHooks: PackHookRef[];
   agents: EnforcementAgent[];
+  shareSkillsWithOtherAgent: boolean;
 
   learnEnabled: boolean;
 
@@ -73,7 +74,9 @@ export type WizardEvent =
   | { type: "ADD_CREATE_REQUEST"; request: SkillCreationRequest }
   | { type: "REMOVE_CREATE_REQUEST"; index: number }
   | { type: "TOGGLE_HOOK"; hook: PackHookRef }
+  | { type: "SELECT_AGENTS"; agents: EnforcementAgent[] }
   | { type: "TOGGLE_AGENT"; agent: EnforcementAgent }
+  | { type: "TOGGLE_SHARE_SKILLS" }
   | { type: "TOGGLE_LEARN" }
   | { type: "TOGGLE_ADVISE" }
   | { type: "ADVISE_STARTED" }
@@ -142,11 +145,15 @@ export function createInitialWizardState(input: CreateInitialWizardStateInput): 
 
   const detectedPackId = input.detectedPackId && availablePackIds.includes(input.detectedPackId) ? input.detectedPackId : undefined;
 
-  const selectedPackId = detectedPackId ?? fallbackPackId;
-  const defaults = packDefaultFor(input, selectedPackId);
+  // Zero-detection never picks a silent default: with no detected pack the stack
+  // is left unselected (packId ""), which the NEXT reducer blocks from advancing
+  // until the user explicitly picks a row. The fallback pack only guarantees the
+  // available list is non-empty; it is no longer a preselection.
+  const selectedPackId = detectedPackId ?? "";
+  const defaults = selectedPackId ? packDefaultFor(input, selectedPackId) : { skills: [], hooks: [] };
 
   return {
-    step: "Stack",
+    step: "Agent",
     packId: selectedPackId,
     detectedPackId,
     availablePackIds,
@@ -160,6 +167,7 @@ export function createInitialWizardState(input: CreateInitialWizardStateInput): 
     availableHooks: defaults.hooks,
     selectedHooks: defaults.hooks,
     agents: normalizeAgents(input.defaultAgents),
+    shareSkillsWithOtherAgent: false,
     learnEnabled: false,
     contextText: input.contextText,
     contextSource: input.contextSource,
@@ -180,6 +188,8 @@ function toggle<T>(values: T[], value: T): T[] {
 
 function nextStep(step: WizardStep): WizardStep {
   switch (step) {
+    case "Agent":
+      return "Stack";
     case "Stack":
       return "Skills";
     case "Skills":
@@ -199,6 +209,8 @@ function nextStep(step: WizardStep): WizardStep {
 
 function previousStep(step: WizardStep): WizardStep {
   switch (step) {
+    case "Stack":
+      return "Agent";
     case "Skills":
       return "Stack";
     case "Create":
@@ -209,7 +221,7 @@ function previousStep(step: WizardStep): WizardStep {
       return "Hooks";
     case "Review":
       return "Learn";
-    case "Stack":
+    case "Agent":
     case "Writing":
     case "Done":
       return step;
@@ -306,6 +318,12 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         selectedHooks: toggle(state.selectedHooks, event.hook),
       };
 
+    case "SELECT_AGENTS":
+      return {
+        ...state,
+        agents: normalizeAgents(event.agents),
+      };
+
     case "TOGGLE_AGENT": {
       const next = state.agents.includes(event.agent)
         ? state.agents.filter((agent) => agent !== event.agent)
@@ -318,6 +336,12 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
             agents: normalizeAgents(next),
           };
     }
+
+    case "TOGGLE_SHARE_SKILLS":
+      return {
+        ...state,
+        shareSkillsWithOtherAgent: !state.shareSkillsWithOtherAgent,
+      };
 
     case "TOGGLE_LEARN":
       return {
@@ -375,6 +399,12 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
       };
 
     case "NEXT":
+      // The stack step cannot advance until a pack is explicitly selected; with
+      // no detection there is no preselected default to carry forward.
+      if (state.step === "Stack" && !state.packId) {
+        return state;
+      }
+
       return {
         ...state,
         step: nextStep(state.step),

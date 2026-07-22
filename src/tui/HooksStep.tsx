@@ -1,7 +1,5 @@
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
-import { enforcementAgentOrder, type EnforcementAgent } from "../engine/agent-selection";
-import type { AgentAvailability } from "../engine/backend";
 import type { HookId, PackHookRef, ToolPolicyRule } from "../packs/types";
 import { ButtonBar } from "./ButtonBar";
 import { DetailPane, palette, StepHeader, type PaneLine } from "./chrome";
@@ -10,11 +8,8 @@ import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 type HooksStepProps = {
   availableHooks: PackHookRef[];
   selectedHooks: PackHookRef[];
-  selectedAgents: EnforcementAgent[];
-  agentAvailability?: AgentAvailability;
   toolPolicyRules: ToolPolicyRule[];
   onToggleHook: (hook: PackHookRef) => void;
-  onToggleAgent: (agent: EnforcementAgent) => void;
   onNext: () => void;
   onBack: () => void;
   onQuit: () => void;
@@ -47,12 +42,12 @@ function hookGroup(hook: PackHookRef): "protect" | "verify" | "registry" {
 }
 
 const hookDescriptions: Record<HookId, string> = {
-  "secret-shield": "blocks reads of .env* and private keys",
-  "tool-policy": "redirects banned shell tools to stack-approved ones",
-  "write-guard": "blocks direct writes to protected/generated files",
-  "verb-runner": "`just check` after edits; structure check at Stop",
-  "quality-judge": "LOC budget + per-edit review vs your quality.rules + repo map",
-  "stop-judge": "full-diff review vs your rules before yield"
+  "secret-shield": "agents are refused reads of .env files and private keys",
+  "tool-policy": "denies shell commands you blacklist and points to the approved one",
+  "write-guard": "denies edits to lockfiles and other generated files",
+  "verb-runner": "runs `just check` after edits and before the agent finishes",
+  "quality-judge": "experimental AI review of each edit (ships off)",
+  "stop-judge": "experimental AI review of the full diff (ships off)"
 };
 
 /**
@@ -122,9 +117,9 @@ function agentSeesLines(hook: PackHookRef, rules: ToolPolicyRule[]): PaneLine[] 
 }
 
 const groupHeaders: Record<"protect" | "verify" | "registry", { title: string; tagline: string }> = {
-  protect: { title: "Protect", tagline: " — block the move, teach the right one" },
-  verify: { title: "Verify", tagline: " — runs the engine wrote, not the LLM" },
-  registry: { title: "Registry", tagline: " — private executable hook payloads" }
+  protect: { title: "Protect", tagline: ": actions agents are refused, with the right move pointed out" },
+  verify: { title: "Verify", tagline: ": checks that run automatically after edits" },
+  registry: { title: "Registry", tagline: ": hooks from your private registry" }
 };
 
 export function HooksStep(props: HooksStepProps) {
@@ -136,7 +131,7 @@ export function HooksStep(props: HooksStepProps) {
   }, [props.availableHooks]);
 
   const nameWidth = orderedHooks.reduce((width, hook) => Math.max(width, hook.length), 0);
-  const focusCount = enforcementAgentOrder.length + orderedHooks.length;
+  const focusCount = orderedHooks.length;
 
   const [focusedIndex, setFocusedIndex] = useState<number>(0);
 
@@ -146,8 +141,7 @@ export function HooksStep(props: HooksStepProps) {
     }
   }, [focusCount, focusedIndex]);
 
-  const focusedAgent = enforcementAgentOrder[focusedIndex];
-  const focusedHook = focusedAgent ? undefined : orderedHooks[focusedIndex - enforcementAgentOrder.length];
+  const focusedHook = orderedHooks[focusedIndex];
 
   function moveFocus(delta: -1 | 1): void {
     setFocusedIndex((current) => Math.min(Math.max(current + delta, 0), focusCount - 1));
@@ -171,10 +165,6 @@ export function HooksStep(props: HooksStepProps) {
       moveFocus(-1);
       return;
     }
-    if (intent === "toggle" && focusedAgent) {
-      props.onToggleAgent(focusedAgent);
-      return;
-    }
     if (intent === "toggle" && focusedHook) {
       props.onToggleHook(focusedHook);
       return;
@@ -182,44 +172,12 @@ export function HooksStep(props: HooksStepProps) {
     if (intent === "continue") props.onNext();
   });
 
-  const agentPaneLines = focusedAgent === "claude"
-    ? [
-        { fg: palette.success, text: "native binding · .claude/settings.json" },
-        { fg: palette.muted, text: "CLI availability never changes this selection" }
-      ]
-    : focusedAgent === "codex"
-      ? [
-          { fg: palette.success, text: "native binding · .codex/hooks.json" },
-          { fg: palette.muted, text: "simple Bash, apply_patch, and Stop mappings only" },
-          { fg: palette.faint, text: "project/hook trust and /hooks runtime review still apply" }
-        ]
-      : [];
-
   const groups: Array<"protect" | "verify" | "registry"> = ["protect", "verify", "registry"];
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <StepHeader current="Hooks" subtitle="The deny message is the interface — the agent reads it." />
+      <StepHeader current="Hooks" subtitle="Choose what agents are blocked from doing, and what gets checked. Hooks apply no matter what the agent decides." />
       <box style={{ flexDirection: "column", gap: 0 }}>
-        <text>
-          <span fg={palette.gold}>Targets</span>
-          <span fg={palette.faint}> — choose one or both native enforcement bindings</span>
-        </text>
-        {enforcementAgentOrder.map((agent, index) => {
-          const selected = props.selectedAgents.includes(agent);
-          const focused = index === focusedIndex;
-          const available = props.agentAvailability?.[agent];
-          const availability = available === false ? " · CLI unavailable (binding still selectable)" : "";
-          return (
-            <text key={agent} bg={focused ? palette.selBg : undefined}>
-              <span fg={palette.accent}>{focused ? "▸ " : "  "}</span>
-              <span fg={selected ? palette.success : palette.faint}>{selected ? "[x] " : "[ ] "}</span>
-              <span fg={palette.text}>{agent.padEnd(nameWidth + 2)}</span>
-              <span fg={palette.faint}>{availability || (selected && props.selectedAgents.length === 1 ? " · at least one target required" : "")}</span>
-            </text>
-          );
-        })}
-        <text> </text>
         {groups.map((group, groupIndex) => {
           const groupHooks = orderedHooks.filter((hook) => hookGroup(hook) === group);
           if (groupHooks.length === 0) {
@@ -236,7 +194,7 @@ export function HooksStep(props: HooksStepProps) {
                 <span fg={palette.faint}>{header.tagline}</span>
               </text>
               {groupHooks.map((hook) => {
-                const index = enforcementAgentOrder.length + orderedHooks.indexOf(hook);
+                const index = orderedHooks.indexOf(hook);
                 const selected = props.selectedHooks.includes(hook);
                 const focused = index === focusedIndex;
                 const bg = focused ? palette.selBg : undefined;
@@ -255,11 +213,12 @@ export function HooksStep(props: HooksStepProps) {
           );
         })}
       </box>
-      {focusedAgent
-        ? <DetailPane title={`enforcement target · ${focusedAgent}`} lines={agentPaneLines} />
-        : focusedHook
-          ? <DetailPane title={`agent sees · ${focusedHook}`} lines={agentSeesLines(focusedHook, props.toolPolicyRules)} />
-          : null}
+      <text fg={palette.faint}>
+        {"AI review hooks (quality-judge, stop-judge) ship disabled while under evaluation."}
+      </text>
+      {focusedHook
+        ? <DetailPane title={`agent sees · ${focusedHook}`} lines={agentSeesLines(focusedHook, props.toolPolicyRules)} />
+        : null}
       <ButtonBar hint={bindingsHint(hooksBindings)} />
     </box>
   );

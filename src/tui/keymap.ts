@@ -24,6 +24,7 @@ export type KeyChord =
   | "b"
   | "q"
   | "r"
+  | "t"
   | "y"
   | "n";
 
@@ -80,6 +81,7 @@ const keyLabels: Record<KeyChord, string> = {
   b: "b",
   q: "q",
   r: "r",
+  t: "t",
   y: "y",
   n: "n"
 };
@@ -97,11 +99,11 @@ export const destructiveConfirmationBindings = defineBindings(
 );
 
 export const runningCancellationBindings = defineBindings(
-  binding("ctrl+c", "interrupt", "cancel and stop child processes")
+  binding("ctrl+c", "interrupt", "stop")
 );
 
 export const adviceBatchCancellationBindings = defineBindings(
-  binding(["super+z", "ctrl+c"], "interrupt", "cancel batch and stop child processes")
+  binding(["super+z", "ctrl+c"], "interrupt", "cancel and stop")
 );
 
 export const idleExitBindings = defineBindings(

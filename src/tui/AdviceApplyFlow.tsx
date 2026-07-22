@@ -4,6 +4,7 @@ import type { ApplyHarnessChangePlanResult, HarnessChangePlan } from "../engine/
 import type { AdviceCreationPlan } from "../engine/advice-apply";
 import type { AdviceRecommendation } from "../engine/advice-types";
 import { DetailPane, KeyHints, palette, scrollWindow, truncateTo, useSpinner } from "./chrome";
+import { fileActionLegend, fileActionMarker } from "./file-action-markers";
 import { binding, bindingsHint, defineBindings, destructiveConfirmationBindings, resolveIntent, runningCancellationBindings } from "./keymap";
 
 type Phase = "planning" | "review" | "applying" | "done" | "error";
@@ -145,9 +146,9 @@ export function AdviceApplyFlow(props: {
   if (phase === "planning" || phase === "applying") {
     return (
       <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-        <text fg={palette.accent}>{`${spinner}  ${phase === "planning" ? "Building a constrained creation plan…" : "Applying the reviewed plan transactionally…"}`}</text>
+        <text fg={palette.accent}>{`${spinner}  ${phase === "planning" ? "Preparing the exact files…" : "Saving your files…"}`}</text>
         <text fg={palette.text}>{props.recommendation.id}</text>
-        <text fg={palette.muted}>{phase === "planning" ? "The backend can propose data only; Farrier validates every path before review." : "Concurrent edits are detected; failures roll back completed writes."}</text>
+        <text fg={palette.muted}>{phase === "planning" ? "Farrier checks every file location before showing you the plan." : "If anything fails, farrier undoes all of it so nothing is left half-done."}</text>
         <KeyHints hint={bindingsHint(phase === "planning" ? planningBindings : applyingBindings)} />
       </box>
     );
@@ -156,8 +157,8 @@ export function AdviceApplyFlow(props: {
   if (phase === "error") {
     return (
       <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-        <text fg={palette.warn}>✗ Could not create this recommendation</text>
-        <text fg={palette.text}>{error}</text>
+        <text fg={palette.warn}>✗ Could not create this recommendation. Nothing on your computer was changed.</text>
+        <text fg={palette.faint}>{error}</text>
         <KeyHints hint={bindingsHint(errorBindings)} />
       </box>
     );
@@ -197,9 +198,10 @@ export function AdviceApplyFlow(props: {
       <text fg={palette.text}>{props.recommendation.id}</text>
       <text fg={palette.muted}>{plan?.summary}</text>
       <text fg={palette.gold}>{`${files.length} file(s) · ${replacements} replacement(s) · ${blocked} blocked · nothing written yet`}</text>
+      <text fg={palette.faint}>{fileActionLegend}</text>
       {files.slice(window.start, window.end).map((file, offset) => {
         const index = window.start + offset;
-        const marker = file.action === "create" ? "A" : file.action === "unchanged" ? "=" : file.action === "blocked" ? "!" : "R";
+        const marker = fileActionMarker(file.action);
         return (
           <text key={file.path} bg={index === clampedIndex ? palette.selBg : undefined}>
             <span fg={palette.accent}>{index === clampedIndex ? "▸ " : "  "}</span>

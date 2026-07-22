@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { enforcementAgentOrder, normalizeAgents, type EnforcementAgent } from "./agent-selection";
 import type { AgentBackend } from "./backend";
 
 export type SkillAgent = AgentBackend;
@@ -23,6 +24,16 @@ export const skillsCliAgentIds: Record<SkillAgent, string> = {
   claude: "claude-code",
   codex: "codex",
 };
+
+/**
+ * The `skills` CLI `-a` agent list for a harness. Normally skills install only
+ * for the enforcement agents the harness targets; when a single agent is
+ * targeted and the user opts to share, both agents are included.
+ */
+export function skillInstallAgentIds(agents: readonly EnforcementAgent[], shareSkillsWithOtherAgent: boolean): string[] {
+  const effective = agents.length === 1 && shareSkillsWithOtherAgent ? enforcementAgentOrder : agents;
+  return normalizeAgents(effective).map((agent) => skillsCliAgentIds[agent]);
+}
 
 export const nativeSkillRoots: Record<SkillAgent, string> = {
   claude: ".claude/skills",

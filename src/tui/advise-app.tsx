@@ -1,6 +1,6 @@
 import { createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
-import { useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { loadFarrierConfig } from "../config/farrier-config";
 import {
   listProjectSessions,
@@ -21,6 +21,8 @@ import { AdviceRegistryInspection } from "./AdviceRegistryInspection";
 import {
   adjacentAdviceRecommendationIndex,
   adviceBackendControlLabel,
+  adviceBackendProductName,
+  adviceSessionConsentNotice,
   adviceSessionCountsFromMetadata,
   backendName,
   sessionEntriesForLookback,
@@ -68,6 +70,8 @@ export function AdviceApp(props: {
   const [inspectingRecommendation, setInspectingRecommendation] = useState<AdviceRecommendation>();
   const [creatingAll, setCreatingAll] = useState(false);
   const [reportActionIndex, setReportActionIndex] = useState(0);
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [actionMessage, setActionMessage] = useState<string>();
   const [setupNotice, setSetupNotice] = useState<{
     text: string;
@@ -76,6 +80,15 @@ export function AdviceApp(props: {
   const availableSessions = sessionEntriesForLookback(props.sessionInventory.entries, state.lookback)
     .filter((entry) => entry.provider === state.backend);
   const spinner = useSpinner(state.status === "running");
+  useEffect(() => {
+    if (state.status !== "running") {
+      setElapsedSeconds(0);
+      return;
+    }
+    const started = Date.now();
+    const interval = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(interval);
+  }, [state.status]);
   const runningBindings = defineBindings(...runningCancellationBindings, binding(["escape", "b"], "back", "cancel"), binding("q", "quit", "quit"));
   const errorBindings = defineBindings(binding("r", "retry", "options"), binding(["escape", "b"], "back", "launcher"), binding(["q", "ctrl+c"], "quit", "quit"));
   const setupBindings = defineBindings(
@@ -125,7 +138,7 @@ export function AdviceApp(props: {
     dispatch({ type: "SET_SESSION_CONSENT", consent });
     setSetupFocus(adviceSetupControls.indexOf("analyze"));
     setSetupNotice({
-      text: `Session context enabled: ${consent.selected.length} recent ${backendName(state.backend)} session(s). Press Enter to analyze; local parsing runs first.`,
+      text: `Enabled ${consent.selected.length} recent ${backendName(state.backend)} session(s). See what will be sent, then press Enter to analyze.`,
       tone: "success",
     });
   };
@@ -133,6 +146,11 @@ export function AdviceApp(props: {
   useKeyboard((key) => {
     if (creatingRecommendation || inspectingRecommendation || creatingAll) return;
     if (state.status === "done" && state.report) {
+      // "t" is not a shared keymap chord; toggle the technical-details section directly.
+      if (key.name === "t" && !key.ctrl && !key.meta && !key.super) {
+        setShowTechnicalDetails((current) => !current);
+        return;
+      }
       const intent = resolveIntent(adviceReportBindings(state.report), key);
       if (intent === "quit") props.onDone();
       else if (intent === "back") props.onBack();
@@ -140,6 +158,7 @@ export function AdviceApp(props: {
         setSelectedRecommendationIndex(0);
         reportScrollRef.current?.scrollTo(0);
         setReportActionIndex(0);
+        setShowTechnicalDetails(false);
         setSetupFocus(0);
         dispatch({ type: "RESET" });
       }
@@ -203,12 +222,12 @@ export function AdviceApp(props: {
       if (key.name === "right" && !state.includeSessions) enableSessionContext();
       else if (key.name === "left" && state.includeSessions) {
         dispatch({ type: "TOGGLE_SESSIONS" });
-        setSetupNotice({ text: "Session context disabled. Analysis will use the repository only.", tone: "success" });
+        setSetupNotice({ text: "Sessions off: analysis will use your project files only.", tone: "success" });
       }
     } else if (intent === "toggle" && focusedControl === "sessions") {
       if (state.includeSessions) {
         dispatch({ type: "TOGGLE_SESSIONS" });
-        setSetupNotice({ text: "Session context disabled. Analysis will use the repository only.", tone: "success" });
+        setSetupNotice({ text: "Sessions off: analysis will use your project files only.", tone: "success" });
       } else enableSessionContext();
     }
     else if (intent === "adjust" && focusedControl === "lookback") {
@@ -221,7 +240,7 @@ export function AdviceApp(props: {
     } else if (intent === "activate" && focusedControl === "sessions") {
       if (state.includeSessions) {
         dispatch({ type: "TOGGLE_SESSIONS" });
-        setSetupNotice({ text: "Session context disabled. Analysis will use the repository only.", tone: "success" });
+        setSetupNotice({ text: "Sessions off: analysis will use your project files only.", tone: "success" });
       } else enableSessionContext();
     }
     else if (intent === "activate" && focusedControl === "analyze") start();
@@ -271,6 +290,7 @@ export function AdviceApp(props: {
         selectedRecommendationIndex={selectedRecommendationIndex}
         reportActionIndex={reportActionIndex}
         actionMessage={actionMessage}
+        showTechnicalDetails={showTechnicalDetails}
         scrollRef={reportScrollRef}
       />
     );
@@ -297,12 +317,23 @@ export function AdviceApp(props: {
           <span fg={palette.accent}>{setupFocus === index ? "▸ " : "  "}</span><span fg={palette.text}>{label}</span>
         </text>
       ))}
+      <text fg={palette.faint}>Which AI reads your project and writes the suggestions.</text>
+      {state.includeSessions && state.sessionConsent ? (
+        <box style={{ flexDirection: "column", gap: 0 }}>
+          {adviceSessionConsentNotice({ backend: state.backend, sessionCount: state.sessionConsent.selected.length }).map((line, index) => (
+            <text key={`consent-${index}`} fg={index === 0 ? palette.warn : palette.muted}>{line}</text>
+          ))}
+        </box>
+      ) : (
+        <text fg={palette.faint}>Sessions off: analysis uses your project files only.</text>
+      )}
       <text fg={palette.faint}>Recent work helps find repeated instructions, corrections, failed checks, and missing project automation.</text>
-      <text fg={palette.faint}>Parsing and redaction happen locally after Analyze. One selected category uses one call; all categories use six {backendName(state.backend)} workers (three at a time) and normally one coordinator.</text>
+      <text fg={palette.faint}>Secrets are stripped on this computer before anything is sent. One selected category is one {backendName(state.backend)} call; all categories run six workers (three at a time) and usually one coordinator.</text>
       {setupNotice ? <text fg={setupNotice.tone === "success" ? palette.success : palette.warn}>{setupNotice.text}</text> : null}
       {state.status === "running" ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
-          <text fg={palette.agent}>{`${spinner}  ${state.progress ?? "Analyzing bounded codebase and session evidence…"}`}</text>
+          <text fg={palette.agent}>{`${spinner}  ${elapsedSeconds}s  Reading your project and asking ${adviceBackendProductName(state.backend)} for suggestions…`}</text>
+          <text fg={palette.faint}>{`Usually takes 1–3 minutes and uses your ${backendName(state.backend)} account.`}</text>
           {state.progressHistory.slice(-7).map((message, index, visible) => (
             <text key={`${index}-${message}`} fg={index === visible.length - 1 ? palette.text : palette.success}>
               {`${index === visible.length - 1 ? "  ▸" : "  ✓"} ${message}`}

@@ -6,9 +6,11 @@ import {
   adviceBackendControlLabel,
   adviceDecisionSummary,
   adviceNoRecommendationSummary,
+  adviceSessionConsentNotice,
   adviceSessionCountsFromMetadata,
   adviceSetupControls,
   adviceSkillCreationRequest,
+  adviceSupportOutcome,
   createAdviceWizardActions,
   formatAdviceTuiReportLines,
   isAdviceCancelKey,
@@ -173,15 +175,18 @@ test("reasoning backend selection prefers Claude and cycles only through availab
   expect(adjacentAvailableAdviceBackend("codex", bothAvailable, 1)).toBe("claude");
   expect(adjacentAvailableAdviceBackend("claude", bothAvailable, -1)).toBe("codex");
 
+  expect(adviceBackendControlLabel("claude", bothAvailable)).toBe("Analyze with: ‹ Claude Code › / Codex");
+  expect(adviceBackendControlLabel("codex", bothAvailable)).toBe("Analyze with: Claude Code / ‹ Codex ›");
+
   const claudeOnly = { claude: true, codex: false };
   expect(initialAdviceBackend(claudeOnly)).toBe("claude");
   expect(adjacentAvailableAdviceBackend("claude", claudeOnly, 1)).toBe("claude");
-  expect(adviceBackendControlLabel("claude", claudeOnly)).toContain("Codex unavailable");
+  expect(adviceBackendControlLabel("claude", claudeOnly)).toContain("Codex not installed");
 
   const codexOnly = { claude: false, codex: true };
   expect(initialAdviceBackend(codexOnly)).toBe("codex");
   expect(adjacentAvailableAdviceBackend("codex", codexOnly, -1)).toBe("codex");
-  expect(adviceBackendControlLabel("codex", codexOnly)).toContain("Claude unavailable");
+  expect(adviceBackendControlLabel("codex", codexOnly)).toContain("Claude not installed");
 
   const unavailable = { claude: false, codex: false };
   expect(initialAdviceBackend(unavailable)).toBeUndefined();
@@ -540,6 +545,43 @@ test("advice report selection explains why the recommendation is useful before c
     evidence: "claude: Repeated `bun test` before completion. · +1 more",
     creates: recommendation.implementationRoute.description
   });
+});
+
+test("session consent notice names the destination and what leaves before analyze", () => {
+  const notice = adviceSessionConsentNotice({ backend: "claude", sessionCount: 3 }).join("\n");
+  expect(notice).toContain("3 recent Claude session(s) will be sent to Claude");
+  expect(notice).toContain("Passwords, tokens, and keys are removed on this computer first");
+  expect(notice).toContain("what you asked for");
+  expect(notice).toContain("corrections you made");
+  expect(notice).toContain("commands that ran");
+  expect(notice).toContain("file names touched");
+  expect(notice).toContain("pass/fail outcomes");
+  expect(notice).toContain("Nothing is written to your project");
+  expect(adviceSessionConsentNotice({ backend: "codex", sessionCount: 1 }).join("\n")).toContain("will be sent to Codex");
+});
+
+test("advice support kinds present as plain outcomes, not primitive jargon", () => {
+  expect(adviceSupportOutcome("files")).toBe("We can create this for you");
+  expect(adviceSupportOutcome("skill")).toBe("Opens the guided skill creator");
+  expect(adviceSupportOutcome("unsupported")).toBe("You'll need to do this by hand");
+  expect(adviceSupportOutcome("inspect")).toContain("registry");
+});
+
+test("advice decision summary never leaks raw evidence ids into a card", () => {
+  const recommendation = {
+    id: "hooks:orphan-evidence",
+    category: "hooks",
+    targetVendors: ["claude"],
+    reason: "Verification is repeated.",
+    benefit: "Verification becomes reliable.",
+    evidence: ["session:ghost-1", "project:ghost-2"],
+    confidence: "high",
+    implementationRoute: { id: "hooks:claude-settings", description: "Create a declarative Claude Stop hook." }
+  } satisfies AdviceReport["recommendations"][number];
+  const summary = adviceDecisionSummary(emptyReport("claude"), recommendation);
+  expect(summary.evidence).toBe("based on repeated patterns in your project");
+  expect(summary.evidence).not.toContain("session:ghost-1");
+  expect(summary.evidence).not.toContain("project:ghost-2");
 });
 
 test("advice creation preview wraps every line for complete paged inspection", () => {

@@ -1,5 +1,6 @@
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
+import type { EnforcementAgent } from "../engine/agent-selection";
 import type { AdviseBackend, SkillRecommendation } from "../engine/advise";
 import type { SkillSearchResult } from "../engine/skills";
 import type { SkillRef } from "../packs/types";
@@ -28,9 +29,12 @@ type SkillsStepProps = {
   adviseError?: string;
   recommendations: SkillRecommendation[];
   onToggleAdvise: () => void;
+  agents: readonly EnforcementAgent[];
+  shareSkillsWithOtherAgent: boolean;
+  onToggleShareSkills: () => void;
 };
 
-type Zone = "input" | "advise" | "list";
+type Zone = "input" | "advise" | "share" | "list";
 
 const skillsBindings = defineBindings(
   binding(["tab", "shift+tab"], "focus", "focus zone"),
@@ -72,8 +76,13 @@ function fit(text: string, width: number): string {
   return width <= 1 ? text.slice(0, width) : `${text.slice(0, width - 1)}…`;
 }
 
-function adjacentZone(current: Zone, adviseAvailable: boolean, delta: -1 | 1): Zone {
-  const zones: Zone[] = adviseAvailable ? ["input", "advise", "list"] : ["input", "list"];
+function adjacentZone(current: Zone, adviseAvailable: boolean, shareAvailable: boolean, delta: -1 | 1): Zone {
+  const zones: Zone[] = [
+    "input",
+    ...(adviseAvailable ? (["advise"] as const) : []),
+    ...(shareAvailable ? (["share"] as const) : []),
+    "list"
+  ];
   const index = zones.indexOf(current);
   return zones[(index + delta + zones.length) % zones.length] ?? "input";
 }
@@ -88,6 +97,10 @@ function contextLabel(source?: string): string {
 export function SkillsStep(props: SkillsStepProps) {
   const [focus, setFocus] = useState<Zone>("input");
   const [focusedRef, setFocusedRef] = useState<SkillRef | undefined>(props.selectedSkills[0]);
+  // The cross-agent install offer only makes sense when exactly one agent was
+  // selected: with both, skills already install for both.
+  const shareAvailable = props.agents.length === 1;
+  const otherAgentLabel = props.agents[0] === "claude" ? "Codex" : "Claude Code";
 
   const rows = useMemo<SkillRow[]>(() => {
     const rowByRef = new Map<string, SkillRow>();
@@ -156,7 +169,7 @@ export function SkillsStep(props: SkillsStepProps) {
       return;
     }
     if (intent === "focus") {
-      setFocus((current) => adjacentZone(current, props.adviseAvailable, key.shift ? -1 : 1));
+      setFocus((current) => adjacentZone(current, props.adviseAvailable, shareAvailable, key.shift ? -1 : 1));
       return;
     }
     if (intent === "move" && focus === "list") {
@@ -173,9 +186,14 @@ export function SkillsStep(props: SkillsStepProps) {
       props.onToggleAdvise();
       return;
     }
+    if (intent === "toggle" && focus === "share" && shareAvailable) {
+      props.onToggleShareSkills();
+      return;
+    }
     if (intent === "activate") {
       if (focus === "input") return;
       if (focus === "advise" && props.adviseAvailable) props.onToggleAdvise();
+      else if (focus === "share" && shareAvailable) props.onToggleShareSkills();
       else props.onNext();
     }
   });
@@ -238,7 +256,7 @@ export function SkillsStep(props: SkillsStepProps) {
         title,
         lines: [
           { fg: palette.gold, text: `${formatInstalls(result.installs)} installs on skills.sh` },
-          { fg: palette.faint, text: "check to pin it in skills-lock.json" }
+          { fg: palette.faint, text: "turn on to include this skill" }
         ] as PaneLine[]
       };
     }
@@ -246,7 +264,7 @@ export function SkillsStep(props: SkillsStepProps) {
     return {
       title,
       lines: [
-        { fg: palette.faint, text: `pack default for ${props.packId} — uncheck to drop` }
+        { fg: palette.faint, text: `included by default for ${props.packId}; turn off to remove` }
       ] as PaneLine[]
     };
   })();
@@ -256,12 +274,17 @@ export function SkillsStep(props: SkillsStepProps) {
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <StepHeader current="Skills" subtitle={`From skills.sh, matched to ${props.packId} · pinned in skills-lock.json`} />
+      <StepHeader current="Skills" subtitle="Skills from skills.sh, preselected for your stack. Type to search for more." />
       <input
         placeholder="Search skills.sh…"
         focused={focus === "input"}
         onInput={(value) => props.onQueryChange(String(value))}
-        onSubmit={() => setFocus("list")}
+        onSubmit={() => {
+          // Enter on an empty search continues the wizard: the two most
+          // skippable steps must stay Enter-through.
+          if (props.query.trim().length === 0) props.onNext();
+          else setFocus("list");
+        }}
         onKeyDown={(key) => {
           if (resolveIntent(skillsInputBindings, key) === "leaveField" && (key.name === "escape" || key.sequence === "\u001b")) {
             key.preventDefault();
@@ -274,22 +297,34 @@ export function SkillsStep(props: SkillsStepProps) {
       {props.adviseAvailable ? (
         <box style={{ flexDirection: "row", gap: 1 }}>
           <text fg={focus === "advise" ? palette.accentText : palette.agent} bg={focus === "advise" ? palette.agent : undefined}>
-            {` ★ Research with ${props.adviseBackend === "claude" ? "Claude" : "Codex"} `}
+            {` ★ Let ${props.adviseBackend === "claude" ? "Claude" : "Codex"} suggest skills for your project `}
           </text>
-          <text fg={palette.faint}>{`· ${contextLabel(props.adviseContextSource)}`}</text>
-          <text fg={palette.faint}>· 2 LLM calls, only when activated</text>
+          <text fg={palette.faint}>{`· reads ${contextLabel(props.adviseContextSource)} · ~20s, only when activated`}</text>
           <text fg={adviseBadgeColor}>{`[${adviseStateBadge}]`}</text>
-          {adviseRunning ? <text fg={palette.agent}>{`${spinner} researching detected libraries…`}</text> : null}
+          {adviseRunning ? <text fg={palette.agent}>{`${spinner} researching your project…`}</text> : null}
         </box>
       ) : (
         <text fg={palette.faint}>
           {props.adviseContextSource
-            ? "★ Agent advise unavailable — install Claude or Codex"
-            : "★ Agent advise unavailable — pass --context or add PRP.md"}
+            ? "★ Skill suggestions need Claude or Codex installed. Skip for now."
+            : "★ Skill suggestions need a short description of your project. Skip for now."}
         </text>
       )}
       {props.adviseEnabled && props.adviseStatus === "error" ? (
-        <text fg={palette.warn}>✗ Agent advise failed: {props.adviseError ?? "unknown error"} — search still works</text>
+        <box style={{ flexDirection: "column", gap: 0 }}>
+          <text fg={palette.warn}>✗ Suggestions failed; searching still works.</text>
+          <text fg={palette.faint}>{`  ${props.adviseError ?? "unknown error"}`}</text>
+        </box>
+      ) : null}
+      {shareAvailable ? (
+        <text bg={focus === "share" ? palette.selBg : undefined}>
+          <span fg={palette.accent}>{focus === "share" ? "▸ " : "  "}</span>
+          <span fg={props.shareSkillsWithOtherAgent ? palette.success : palette.faint}>
+            {props.shareSkillsWithOtherAgent ? "[x] " : "[ ] "}
+          </span>
+          <span fg={palette.text}>{`Also install these skills for ${otherAgentLabel}`}</span>
+          <span fg={palette.faint}>{"  (skills work across both agents)"}</span>
+        </text>
       ) : null}
       {rows.length === 0 ? (
         <text fg={palette.faint}>No skills to list yet — type above to search skills.sh.</text>

@@ -24,6 +24,8 @@ const applyResult: ApplyHarnessChangePlanResult = {
 
 function writingState() {
   let state = createInitialWizardState({ availablePackIds: ["python-fastapi"], fallbackPackId: "python-fastapi" });
+  state = wizardReducer(state, { type: "NEXT" }); // Agent -> Stack
+  state = wizardReducer(state, { type: "SELECT_PACK", packId: "python-fastapi", skills: [], hooks: [] });
   for (let index = 0; index < 5; index += 1) state = wizardReducer(state, { type: "NEXT" });
   return wizardReducer(state, { type: "START_WRITING" });
 }
@@ -36,6 +38,11 @@ describe("TUI pack presentation", () => {
     ]);
     expect(stackSelectionAssumption("python-fastapi", detected)).toContain("first, most-specific match");
     expect(stackSelectionAssumption("python-uv", detected)).toBe("Explicit override: python-uv selected; detected signals for python-fastapi did not override your choice.");
+  });
+
+  test("with no detection asks the user to pick, and stops assuming once they do", () => {
+    expect(stackSelectionAssumption("", [])).toBe("We couldn't tell what your project uses. Pick one to continue.");
+    expect(stackSelectionAssumption("python-uv", [])).toBe("Selected python-uv; no supported stack signals matched, so nothing was assumed for you.");
   });
 
   test("attributes built-in and inherited generators to the pack that declared them", () => {

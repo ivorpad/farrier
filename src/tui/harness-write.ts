@@ -29,6 +29,7 @@ export async function runHarnessWrite(
     forceReplace?: boolean;
     onCollision?: (info: { path: string; stagingPath: string }) => Promise<CollisionDecision>;
     modelSettings?: Partial<Record<CreateAgent, ResolvedModelSettings>>;
+    installAgents?: string[];
   },
   deps: HarnessWriteDeps = {},
 ): Promise<HarnessWriteResult> {
@@ -41,7 +42,7 @@ export async function runHarnessWrite(
     throw new Error("Harness apply completed without a transaction result; no success was recorded. Run `farrier doctor --dir <target>` before retrying.");
   }
 
-  const installResults = await install(input.selectedSkills, input.targetDir);
+  const installResults = await install(input.selectedSkills, input.targetDir, undefined, undefined, input.installAgents);
   const failedInstalls = installResults.filter((result) => !result.ok).length;
   const installed = installResults.length - failedInstalls;
 

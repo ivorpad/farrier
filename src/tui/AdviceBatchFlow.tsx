@@ -13,6 +13,7 @@ import type { AdviceReport } from "../engine/advice-types";
 import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import { advicePlanPreviewLines } from "./AdviceApplyFlow";
 import { DetailPane, KeyHints, palette, scrollWindow, truncateTo, useSpinner } from "./chrome";
+import { fileActionLegend, fileActionMarker } from "./file-action-markers";
 import {
   adviceBatchCancellationBindings,
   binding,
@@ -191,9 +192,9 @@ export function AdviceBatchFlow(props: {
   const statusTitle = state.phase === "planning"
     ? `${spinner}  Planning and authoring recommendation batch…`
     : state.phase === "applying"
-      ? `${spinner}  Applying the reviewed manifest transactionally…`
+      ? `${spinner}  Saving your files…`
       : state.phase === "review"
-        ? "Review Create all manifest"
+        ? "Review what will be created"
         : state.phase === "done"
           ? "Create all complete"
           : state.phase === "cancelled"
@@ -224,16 +225,17 @@ export function AdviceBatchFlow(props: {
       ))}
       {cancellationRequested ? (
         <text fg={palette.warn}>{state.phase === "applying"
-          ? "Cancellation requested after commit started; the atomic transaction will finish or roll back first."
-          : "Cancelling: no new jobs will start; waiting for running backends to terminate and settle…"}</text>
+          ? "Cancellation requested while saving; farrier finishes or undoes the save first, so nothing is left half-done."
+          : "Cancelling: no new jobs will start; waiting for running work to stop…"}</text>
       ) : null}
       {state.error ? <text fg={palette.warn}>{state.error}</text> : null}
       {state.phase === "review" && state.inspection ? (
         <box style={{ flexDirection: "column", gap: 0, flexGrow: 1 }}>
           <text fg={palette.gold}>{`${files.length} exact file(s) · ${state.inspection.replacementPaths.length} replacement(s) · ${state.inspection.blockers.length} blocked · nothing written yet`}</text>
+          <text fg={palette.faint}>{fileActionLegend}</text>
           {files.slice(window.start, window.end).map((file, offset) => {
             const index = window.start + offset;
-            return <text key={file.path} bg={index === clampedIndex ? palette.selBg : undefined}>{`${index === clampedIndex ? "▸" : " "} ${file.action.padEnd(9)} ${file.path}`}</text>;
+            return <text key={file.path} bg={index === clampedIndex ? palette.selBg : undefined}>{`${index === clampedIndex ? "▸" : " "} ${fileActionMarker(file.action)} ${file.path}`}</text>;
           })}
           {focused ? <DetailPane
             title={`${focused.path} · complete content preview`}
@@ -247,7 +249,7 @@ export function AdviceBatchFlow(props: {
         </box>
       ) : null}
       {state.phase === "done" && result ? <text fg={palette.success}>{`${result.written.length} written · ${result.unchanged.length} unchanged${result.backupDir ? ` · backups: ${result.backupDir}` : ""}`}</text> : null}
-      {state.phase === "done" && cancelDuringApplyRef.current ? <text fg={palette.gold}>The cancellation arrived during the atomic transaction; it completed safely before stopping.</text> : null}
+      {state.phase === "done" && cancelDuringApplyRef.current ? <text fg={palette.gold}>The cancellation arrived while saving; the save completed safely before stopping.</text> : null}
       <KeyHints hint={bindingsHint(state.phase === "planning" ? runningBindings : state.phase === "applying" ? applyingBindings : state.phase === "review" ? reviewBindings : finishedBindings)} />
     </box>
   );

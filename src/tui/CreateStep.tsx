@@ -305,7 +305,7 @@ export function CreateStep(props: CreateStepProps) {
           <text fg={palette.muted}>Each vendor's own skill-creator authors; farrier validates and installs.</text>
         </box>
       ) : (
-        <StepHeader current="Create" subtitle="Queue new skills — each vendor's own skill-creator does the authoring." />
+        <StepHeader current="Create" subtitle="Optional: describe a custom skill you want built. Most people skip this (press Enter)." />
       )}
 
       <box style={{ flexDirection: "column", gap: 0 }}>
@@ -314,7 +314,16 @@ export function CreateStep(props: CreateStepProps) {
           value={description}
           focused={zone === "input"}
           onInput={(value) => setDescription(String(value))}
-          onSubmit={() => setZone("agents")}
+          onSubmit={() => {
+            // Wizard flow: Enter on an empty description skips the step outright
+            // instead of forcing a Tab trek to the actions row. Standalone
+            // `skill new` still needs a description, so it keeps the old path.
+            if (!props.standalone && description.trim().length === 0 && props.requests.length === 0) {
+              props.onSubmit(undefined);
+              return;
+            }
+            setZone("agents");
+          }}
           onKeyDown={(key) => {
             if (resolveIntent(createInputBindings, key) === "leaveField" && (key.name === "escape" || key.sequence === "\u001b")) {
               key.preventDefault();
@@ -342,7 +351,7 @@ export function CreateStep(props: CreateStepProps) {
               <span fg={palette.accent}>{focused ? "▸ " : "  "}</span>
               <span fg={selected ? palette.success : palette.faint}>{selected ? "[x] " : "[ ] "}</span>
               <span fg={available ? palette.text : palette.faint}>{agent.padEnd(8)}</span>
-              <span fg={palette.faint}>{available ? (agent === "claude" ? "authors via pinned skill-creator" : "authors via built-in $skill-creator") : `not detected (${agent} --version failed)`}</span>
+              <span fg={palette.faint}>{available ? (agent === "claude" ? "Claude Code will build this" : "Codex will build this") : `not detected (${agent} --version failed)`}</span>
             </text>
           );
         })}

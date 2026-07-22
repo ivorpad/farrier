@@ -333,43 +333,54 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
         renderOptions.installSkills
       ) {
         const { runLauncher } = await import("./tui/launcher");
-        let choice = await runLauncher();
+        const targetDir = resolve(renderOptions.dir);
 
-        while (choice === "advise") {
-          const { runAdviceWizard } = await import("./tui/advise-app");
-          const outcome = await runAdviceWizard(resolve(renderOptions.dir));
+        for (;;) {
+          const choice = await runLauncher();
 
-          if (typeof outcome === "object" && outcome.kind === "create-skill") {
+          if (choice === "advise") {
+            const { runAdviceWizard } = await import("./tui/advise-app");
+            const outcome = await runAdviceWizard(targetDir);
+
+            if (typeof outcome === "object" && outcome.kind === "create-skill") {
+              const { runCreateWizard } = await import("./tui/create-app");
+              return await runCreateWizard(targetDir, [outcome.request]);
+            }
+
+            if (outcome === "done") {
+              return 0;
+            }
+
+            if (outcome === "cancel") {
+              console.error("farrier: cancelled.");
+              return 1;
+            }
+
+            // "back" returns to the launcher.
+            continue;
+          }
+
+          if (choice === "doctor") {
+            const { runDoctorApp } = await import("./tui/doctor-app");
+            await runDoctorApp(targetDir);
+            continue;
+          }
+
+          if (choice === "create") {
             const { runCreateWizard } = await import("./tui/create-app");
-            return await runCreateWizard(resolve(renderOptions.dir), [outcome.request]);
+            return await runCreateWizard(targetDir);
           }
 
-          if (outcome === "done") {
-            return 0;
+          if (choice === "harness") {
+            const { runWizard } = await import("./tui/app");
+            return await runWizard(targetDir, {
+              context: renderOptions.context,
+            });
           }
 
-          if (outcome === "cancel") {
-            console.error("farrier: cancelled.");
-            return 1;
-          }
-
-          choice = await runLauncher();
+          console.error("farrier: cancelled.");
+          return 1;
         }
-
-        if (choice === "create") {
-          const { runCreateWizard } = await import("./tui/create-app");
-          return await runCreateWizard(resolve(renderOptions.dir));
-        }
-
-        if (choice === "harness") {
-          const { runWizard } = await import("./tui/app");
-          return await runWizard(resolve(renderOptions.dir), {
-            context: renderOptions.context,
-          });
-        }
-
-        console.error("farrier: cancelled.");
-        return 1;
       }
     }
 

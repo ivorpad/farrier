@@ -26,20 +26,57 @@ function initialState(): WizardState {
   });
 }
 
+// Past the Agent step with a pack explicitly picked — nothing is preselected
+// without detection, so navigation tests must choose a stack before advancing.
+function stackedState(): WizardState {
+  const afterAgent = wizardReducer(initialState(), { type: "NEXT" });
+  return wizardReducer(afterAgent, {
+    type: "SELECT_PACK",
+    packId: "python-fastapi",
+    skills: defaultSkills,
+    hooks: defaultHooks
+  });
+}
+
 describe("wizard machine", () => {
-  test("creates initial state with defaults selected", () => {
+  test("opens on the agent step with no stack preselected when detection is empty", () => {
     const state = initialState();
 
-    expect(state.step).toBe("Stack");
-    expect(state.packId).toBe("python-fastapi");
+    expect(state.step).toBe("Agent");
+    expect(state.packId).toBe("");
     expect(state.detectedPackId).toBeUndefined();
     expect(state.availablePackIds).toEqual(["python-fastapi", "python-uv"]);
-    expect(state.selectedSkills).toEqual(defaultSkills);
-    expect(state.availableHooks).toEqual(defaultHooks);
-    expect(state.selectedHooks).toEqual(defaultHooks);
+    expect(state.selectedSkills).toEqual([]);
+    expect(state.availableHooks).toEqual([]);
+    expect(state.selectedHooks).toEqual([]);
     expect(state.agents).toEqual(["claude"]);
+    expect(state.shareSkillsWithOtherAgent).toBe(false);
     expect(state.learnEnabled).toBe(false);
     expect(state.skillSearchStatus).toBe("idle");
+  });
+
+  test("no-detection stack cannot advance until a pack is explicitly picked", () => {
+    let state = wizardReducer(initialState(), { type: "NEXT" });
+    expect(state.step).toBe("Stack");
+
+    // No pack selected yet: NEXT is a no-op on the stack step.
+    const blocked = wizardReducer(state, { type: "NEXT" });
+    expect(blocked).toBe(state);
+    expect(blocked.step).toBe("Stack");
+
+    state = wizardReducer(state, { type: "SELECT_PACK", packId: "python-uv", skills: [], hooks: [] });
+    state = wizardReducer(state, { type: "NEXT" });
+    expect(state.step).toBe("Skills");
+  });
+
+  test("selects the agent target from the agent step", () => {
+    let state = initialState();
+
+    state = wizardReducer(state, { type: "SELECT_AGENTS", agents: ["codex"] });
+    expect(state.agents).toEqual(["codex"]);
+
+    state = wizardReducer(state, { type: "SELECT_AGENTS", agents: ["codex", "claude"] });
+    expect(state.agents).toEqual(["claude", "codex"]);
   });
 
   test("preselects detected pack and uses detected pack defaults", () => {
@@ -63,7 +100,7 @@ describe("wizard machine", () => {
       }
     });
 
-    expect(state.step).toBe("Stack");
+    expect(state.step).toBe("Agent");
     expect(state.packId).toBe("rails");
     expect(state.detectedPackId).toBe("rails");
     expect(state.selectedSkills).toEqual(["owner/rails@patterns"]);
@@ -71,7 +108,7 @@ describe("wizard machine", () => {
     expect(state.selectedHooks).toEqual(["secret-shield", "write-guard", "quality-judge"]);
   });
 
-  test("ignores unsupported detected pack and falls back", () => {
+  test("ignores an unsupported detected pack and preselects nothing", () => {
     const state = createInitialWizardState({
       availablePackIds: ["python-fastapi", "python-uv"],
       fallbackPackId: "python-fastapi",
@@ -84,15 +121,19 @@ describe("wizard machine", () => {
       }
     });
 
-    expect(state.packId).toBe("python-fastapi");
+    expect(state.packId).toBe("");
     expect(state.detectedPackId).toBeUndefined();
-    expect(state.selectedSkills).toEqual(["owner/python@fastapi"]);
-    expect(state.availableHooks).toEqual(["secret-shield", "tool-policy"]);
+    expect(state.selectedSkills).toEqual([]);
+    expect(state.availableHooks).toEqual([]);
   });
 
   test("steps through the happy path", () => {
     let state = initialState();
 
+    state = wizardReducer(state, { type: "NEXT" });
+    expect(state.step).toBe("Stack");
+
+    state = wizardReducer(state, { type: "SELECT_PACK", packId: "python-fastapi", skills: defaultSkills, hooks: defaultHooks });
     state = wizardReducer(state, { type: "NEXT" });
     expect(state.step).toBe("Skills");
 
@@ -123,8 +164,8 @@ describe("wizard machine", () => {
     });
   });
 
-  test("backs up from review to stack and ignores back at stack", () => {
-    let state = initialState();
+  test("backs up from review to agent and ignores back at agent", () => {
+    let state = stackedState();
 
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
@@ -149,11 +190,14 @@ describe("wizard machine", () => {
     expect(state.step).toBe("Stack");
 
     state = wizardReducer(state, { type: "BACK" });
-    expect(state.step).toBe("Stack");
+    expect(state.step).toBe("Agent");
+
+    state = wizardReducer(state, { type: "BACK" });
+    expect(state.step).toBe("Agent");
   });
 
   test("writing and done ignore back", () => {
-    let state = initialState();
+    let state = stackedState();
 
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
@@ -197,6 +241,8 @@ describe("wizard machine", () => {
     expect(state.createRequests).toHaveLength(1);
     expect(state.createRequests[0]?.description).toBe("Second skill");
 
+    state = wizardReducer(state, { type: "NEXT" });
+    state = wizardReducer(state, { type: "SELECT_PACK", packId: "python-fastapi", skills: defaultSkills, hooks: defaultHooks });
     for (let i = 0; i < 5; i += 1) {
       state = wizardReducer(state, { type: "NEXT" });
     }
@@ -216,7 +262,7 @@ describe("wizard machine", () => {
   });
 
   test("toggles skills", () => {
-    let state = initialState();
+    let state = stackedState();
 
     state = wizardReducer(state, {
       type: "TOGGLE_SKILL",
@@ -235,7 +281,7 @@ describe("wizard machine", () => {
   });
 
   test("toggles hooks", () => {
-    let state = initialState();
+    let state = stackedState();
 
     state = wizardReducer(state, {
       type: "TOGGLE_HOOK",
@@ -285,6 +331,8 @@ describe("wizard machine", () => {
     });
 
     state = wizardReducer(state, { type: "NEXT" });
+    state = wizardReducer(state, { type: "SELECT_PACK", packId: "python-fastapi", skills: [], hooks: [] });
+    state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });
     expect(state.step).toBe("Hooks");
@@ -303,6 +351,17 @@ describe("wizard machine", () => {
 
     state = wizardReducer(state, { type: "TOGGLE_LEARN" });
     expect(state.learnEnabled).toBe(false);
+  });
+
+  test("toggles cross-agent skill install", () => {
+    let state = initialState();
+    expect(state.shareSkillsWithOtherAgent).toBe(false);
+
+    state = wizardReducer(state, { type: "TOGGLE_SHARE_SKILLS" });
+    expect(state.shareSkillsWithOtherAgent).toBe(true);
+
+    state = wizardReducer(state, { type: "TOGGLE_SHARE_SKILLS" });
+    expect(state.shareSkillsWithOtherAgent).toBe(false);
   });
 
   test("ignores stale skill search results by query", () => {
@@ -431,6 +490,7 @@ describe("wizard machine", () => {
     let state = createInitialWizardState({
       availablePackIds: ["@acme/demo"],
       fallbackPackId: "@acme/demo",
+      detectedPackId: "@acme/demo",
       packDefaults: {
         "@acme/demo": {
           skills: [],
@@ -481,7 +541,7 @@ describe("wizard machine", () => {
 
     state = wizardReducer(state, { type: "START_WRITING" });
 
-    expect(state.step).toBe("Stack");
+    expect(state.step).toBe("Agent");
   });
 
   test("write completion events are ignored outside writing", () => {
@@ -493,7 +553,7 @@ describe("wizard machine", () => {
       installResults: []
     });
 
-    expect(state.step).toBe("Stack");
+    expect(state.step).toBe("Agent");
     expect(state.writeStatus).toBeUndefined();
 
     state = wizardReducer(state, {
@@ -501,12 +561,12 @@ describe("wizard machine", () => {
       message: "failed"
     });
 
-    expect(state.step).toBe("Stack");
+    expect(state.step).toBe("Agent");
     expect(state.writeStatus).toBeUndefined();
   });
 
   test("write failure transitions to done with failure status", () => {
-    let state = initialState();
+    let state = stackedState();
 
     state = wizardReducer(state, { type: "NEXT" });
     state = wizardReducer(state, { type: "NEXT" });

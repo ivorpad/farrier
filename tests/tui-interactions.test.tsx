@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
+import { AgentStep } from "../src/tui/AgentStep";
 import { CreateStep } from "../src/tui/CreateStep";
 import { HooksStep } from "../src/tui/HooksStep";
 import { RefineFreeTextInput } from "../src/tui/RefineScreen";
@@ -125,16 +126,16 @@ describe("TUI keyboard interactions", () => {
       renderOptions
     );
     try {
-      expect(await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Claude › · Claude and Codex available"))).toContain(
-        "▸ Reasoning backend: ‹ Claude › · Claude and Codex available"
+      expect(await view.waitForFrame((frame) => frame.includes("▸ Analyze with: ‹ Claude Code › / Codex"))).toContain(
+        "▸ Analyze with: ‹ Claude Code › / Codex"
       );
       await interact(view, async () => { await Bun.sleep(10); });
       await interact(view, () => view.mockInput.pressArrow("right"));
-      await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Codex ›"));
+      await view.waitForFrame((frame) => frame.includes("▸ Analyze with: Claude Code / ‹ Codex ›"));
       await interact(view, () => view.mockInput.pressArrow("left"));
-      await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Claude ›"));
+      await view.waitForFrame((frame) => frame.includes("▸ Analyze with: ‹ Claude Code › / Codex"));
       await interact(view, () => view.mockInput.pressArrow("right"));
-      await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Codex ›"));
+      await view.waitForFrame((frame) => frame.includes("▸ Analyze with: Claude Code / ‹ Codex ›"));
 
       await interact(view, () => view.mockInput.pressTab());
       await view.waitForFrame((frame) => frame.includes("▸ [ ] Use recent Codex sessions"));
@@ -151,9 +152,15 @@ describe("TUI keyboard interactions", () => {
       await interact(view, () => finishRun?.());
       const emptyReport = await view.waitForFrame((frame) => frame.includes("Codex · 0 validated recommendation(s)"));
       expect(emptyReport).toContain("No supported recommendation passed");
-      expect(emptyReport).toContain("Codebase profile");
+      expect(emptyReport).toContain("Show technical details");
+      expect(emptyReport).not.toContain("Codebase profile");
       expect(emptyReport).not.toContain("Create selected");
       expect(emptyReport).not.toContain("Create all (0)");
+
+      // The diagnostics dump (codebase profile, funnels) lives behind a toggle now.
+      await interact(view, () => view.mockInput.typeText("t"));
+      const details = await view.waitForFrame((frame) => frame.includes("Codebase profile"));
+      expect(details).toContain("Codebase profile");
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -197,12 +204,13 @@ describe("TUI keyboard interactions", () => {
     };
     const view = await testRender(<AdviceApp {...props} />, renderOptions);
     try {
-      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      await view.waitForFrame((frame) => frame.includes("Analyze with:"));
       await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
       const enabled = await view.waitForFrame((frame) =>
         frame.includes("▸ Analyze project") && frame.includes("[x] Use 20 recent Claude sessions"));
-      expect(enabled).toContain("Session context enabled: 20 recent Claude session(s). Press Enter to analyze; local parsing runs first.");
+      expect(enabled).toContain("Enabled 20 recent Claude session(s). See what will be sent, then press Enter to analyze.");
+      expect(enabled).toContain("will be sent to Claude");
       expect(enabled).not.toContain("Review locally extracted requests");
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => consents.length === 1);
@@ -237,7 +245,7 @@ describe("TUI keyboard interactions", () => {
 
       await interact(view, async () => { await Bun.sleep(10); });
       await interact(view, () => view.mockInput.typeText("r"));
-      await view.waitForFrame((frame) => frame.includes("▸ Reasoning backend: ‹ Codex ›") && !frame.includes("Advice failed:"));
+      await view.waitForFrame((frame) => frame.includes("▸ Analyze with: Claude Code / ‹ Codex ›") && !frame.includes("Advice failed:"));
       await interact(view, () => view.mockInput.pressArrow("left"));
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
@@ -258,7 +266,7 @@ describe("TUI keyboard interactions", () => {
       { width: 90, height: 50 }
     );
     try {
-      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      await view.waitForFrame((frame) => frame.includes("Analyze with:"));
       await interact(view, async () => { await Bun.sleep(10); });
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
@@ -308,7 +316,7 @@ describe("TUI keyboard interactions", () => {
       { width: 120, height: 50 }
     );
     try {
-      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      await view.waitForFrame((frame) => frame.includes("Analyze with:"));
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => finishRun !== undefined);
@@ -340,7 +348,7 @@ describe("TUI keyboard interactions", () => {
       { width: 120, height: 29 }
     );
     try {
-      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      await view.waitForFrame((frame) => frame.includes("Analyze with:"));
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => finishRun !== undefined);
@@ -397,7 +405,7 @@ describe("TUI keyboard interactions", () => {
       { width: 110, height: 50, kittyKeyboard: true, exitOnCtrlC: false }
     );
     try {
-      await view.waitForFrame((frame) => frame.includes("Reasoning backend:"));
+      await view.waitForFrame((frame) => frame.includes("Analyze with:"));
       for (let index = 0; index < 4; index += 1) await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => finishRun !== undefined);
@@ -411,7 +419,7 @@ describe("TUI keyboard interactions", () => {
       expect(frame).toContain("▸ Create all (1)");
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => batchSignals.length === 1);
-      expect(await view.waitForFrame((value) => value.includes("Active backend: Codex"))).toContain("cmd+z/ctrl+c cancel batch");
+      expect(await view.waitForFrame((value) => value.includes("Active backend: Codex"))).toContain("cmd+z/ctrl+c cancel and stop");
 
       await interact(view, () => view.mockInput.pressKey("z", { super: true }));
       await interact(view, () => view.mockInput.pressKey("z", { super: true }));
@@ -599,18 +607,46 @@ describe("TUI keyboard interactions", () => {
     }
   });
 
-  test("Hooks keeps Claude and Codex on the existing step and selectable when a CLI is unavailable", async () => {
+  test("Agent step starts on Claude Code and Enter selects the focused target", async () => {
+    const selected: string[][] = [];
+    let advanced = 0;
+    const view = await testRender(
+      <AgentStep
+        selectedAgents={["claude"]}
+        onSelectAgents={(agents) => selected.push([...agents])}
+        onNext={() => { advanced += 1; }}
+        onCancel={() => undefined}
+      />,
+      renderOptions
+    );
+
+    try {
+      const frame = await view.waitForFrame((value) => value.includes("Which agent is this harness for?"));
+      expect(frame).toContain("Claude Code");
+      expect(frame).toContain("Codex");
+      expect(frame).toContain("Both");
+
+      // Move the cursor to "Both" and confirm with Enter.
+      await interact(view, () => view.mockInput.pressArrow("down"));
+      await interact(view, () => view.mockInput.pressArrow("down"));
+      await interact(view, () => view.mockInput.pressEnter());
+
+      expect(selected.at(-1)).toEqual(["claude", "codex"]);
+      expect(advanced).toBe(1);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("Hooks no longer owns target selection and toggles hooks on the existing step", async () => {
     const toggled: string[] = [];
     let continued = 0;
     const view = await testRender(
       <HooksStep
         availableHooks={["secret-shield"]}
         selectedHooks={["secret-shield"]}
-        selectedAgents={["claude"]}
-        agentAvailability={{ claude: false, codex: false }}
         toolPolicyRules={[]}
         onToggleHook={(hook) => toggled.push(hook)}
-        onToggleAgent={(agent) => toggled.push(agent)}
         onNext={() => { continued += 1; }}
         onBack={() => undefined}
         onQuit={() => undefined}
@@ -619,17 +655,14 @@ describe("TUI keyboard interactions", () => {
     );
 
     try {
-      const frame = await view.waitForFrame((value) => value.includes("Targets") && value.includes("CLI unavailable"));
-      expect(frame).toContain("[x] claude");
-      expect(frame).toContain("[ ] codex");
-      expect(frame).toContain("Protect");
+      const frame = await view.waitForFrame((value) => value.includes("Protect"));
+      expect(frame).not.toContain("Targets");
+      expect(frame).toContain("[x] secret-shield");
 
-      await interact(view, () => view.mockInput.typeText(" "));
-      await interact(view, () => view.mockInput.pressArrow("down"));
       await interact(view, () => view.mockInput.typeText(" "));
       await interact(view, () => view.mockInput.pressEnter());
 
-      expect(toggled).toEqual(["claude", "codex"]);
+      expect(toggled).toEqual(["secret-shield"]);
       expect(continued).toBe(1);
     } finally {
       await interact(view, () => view.renderer.destroy());
@@ -669,14 +702,15 @@ describe("TUI keyboard interactions", () => {
       renderOptions
     );
     try {
-      const first = await review.waitForFrame((value) => value.includes("registry @acme/guard v1.2.3"));
-      expect(first).toContain("source source-identity");
+      // Purpose and exact payload lead the pane; registry provenance pages in last.
+      const first = await review.waitForFrame((value) => value.includes('1: "echo reviewed-payload  "'));
+      expect(first).toContain("new file — Executable hook supplied");
+      expect(first).toContain('2: ""');
       await interact(review, () => review.mockInput.pressKey("\x1B[6~"));
-      const second = await review.waitForFrame((value) => value.includes("content sha256"));
-      expect(second).toContain('1: "echo reviewed-payload  "');
+      const second = await review.waitForFrame((value) => value.includes("registry @acme/guard v1.2.3"));
+      expect(second).toContain("source source-identity");
       await interact(review, () => review.mockInput.pressKey("\x1B[6~"));
-      const third = await review.waitForFrame((value) => value.includes('2: ""'));
-      expect(third).toContain('3: ""');
+      await review.waitForFrame((value) => value.includes("content sha256"));
     } finally {
       await interact(review, () => review.renderer.destroy());
     }
@@ -703,8 +737,8 @@ describe("TUI keyboard interactions", () => {
       renderOptions
     );
     try {
-      const frame = await view.waitForFrame((value) => value.includes("Transaction: rollback-incomplete"));
-      expect(frame).toContain("Recovery material: .farrier-staging/backups/recovery");
+      const frame = await view.waitForFrame((value) => value.includes("Some changes may remain — run the repair command below."));
+      expect(frame).toContain("Backup saved to: .farrier-staging/backups/recovery");
       expect(frame).toContain("Run `farrier doctor --dir /tmp/project` before retrying.");
     } finally {
       await interact(view, () => view.renderer.destroy());

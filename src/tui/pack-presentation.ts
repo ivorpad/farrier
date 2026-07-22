@@ -34,7 +34,9 @@ export function detectedPackPresentations(detected: DetectedPackEvidence[]): Det
 export function stackSelectionAssumption(selectedPackId: string, detected: DetectedPackEvidence[]): string {
   const mostSpecific = detected[0];
   if (!mostSpecific) {
-    return "Assumption: no supported stack signals matched; review the selected fallback before continuing.";
+    return selectedPackId
+      ? `Selected ${selectedPackId}; no supported stack signals matched, so nothing was assumed for you.`
+      : "We couldn't tell what your project uses. Pick one to continue.";
   }
 
   if (selectedPackId !== mostSpecific.packId) {

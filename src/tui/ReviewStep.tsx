@@ -88,9 +88,9 @@ function actionView(action: ReviewFile["action"]): {
 } {
   switch (action) {
     case "create":
-      return { marker: "A ", label: "create", fg: palette.success };
+      return { marker: "+ ", label: "new file", fg: palette.success };
     case "unchanged":
-      return { marker: "= ", label: "unchanged", fg: palette.faint };
+      return { marker: "= ", label: "no change", fg: palette.faint };
     case "merge":
       return { marker: "M ", label: "merge safely", fg: palette.success };
     case "update":
@@ -100,9 +100,9 @@ function actionView(action: ReviewFile["action"]): {
         fg: palette.gold,
       };
     case "replace":
-      return { marker: "R ", label: "replace existing file", fg: palette.warn };
+      return { marker: "↻ ", label: "overwrites existing file", fg: palette.warn };
     case "blocked":
-      return { marker: "! ", label: "blocked", fg: palette.warn };
+      return { marker: "⚠ ", label: "blocked", fg: palette.warn };
   }
 }
 
@@ -132,13 +132,14 @@ function allPreviewLines(file: ReviewFile): PaneLine[] {
   const changed = file.previousContent !== undefined && file.previousContent !== file.content;
   const content = changed
     ? [
-        { fg: palette.warn, text: "--- previous bytes" },
+        { fg: palette.warn, text: "Before" },
         ...contentLines(file.previousContent!),
-        { fg: palette.success, text: "+++ reviewed bytes" },
+        { fg: palette.success, text: "After" },
         ...contentLines(file.content)
       ]
     : contentLines(file.content);
-  const orderedLines = provenance ? [...provenanceLines, ...content, ...descriptiveLines] : [...descriptiveLines, ...content];
+  // Purpose first; registry provenance (hashes) last, reachable by paging.
+  const orderedLines = [...descriptiveLines, ...content, ...provenanceLines];
   const allLines = orderedLines.flatMap((line) => {
     if (line.text.length === 0) return [line];
     const chunks: PaneLine[] = [];
@@ -263,13 +264,13 @@ export function ReviewStep(props: ReviewStepProps) {
         height: "100%",
       }}
     >
-      <StepHeader current="Review" subtitle="The full manifest before the strike." />
+      <StepHeader current="Review" subtitle="Everything that will be created. Nothing is written until you confirm." />
 
       {props.loading ? <text fg={palette.muted}>Building the manifest…</text> : null}
       {props.error ? <text fg={palette.warn}>✗ Render plan failed: {props.error}</text> : null}
       {props.existingHarness ? <text fg={palette.warn}>✗ This project already has a Farrier harness. Use `farrier update`; create is disabled.</text> : null}
       {!props.existingHarness && blockedCount > 0 ? (
-        <text fg={palette.warn}>{`✗ ${blockedCount} unsafe path${blockedCount === 1 ? " is" : "s are"} blocked. Inspect the ! rows; create is disabled.`}</text>
+        <text fg={palette.warn}>{`✗ ${blockedCount} unsafe path${blockedCount === 1 ? " is" : "s are"} blocked. Inspect the ⚠ rows; create is disabled.`}</text>
       ) : null}
       {!props.existingHarness && blockedCount === 0 && hasReplacements ? (
         <text fg={replaceConfirmationArmed ? palette.warn : palette.gold}>
@@ -301,6 +302,7 @@ export function ReviewStep(props: ReviewStepProps) {
             ) : null}
             <span fg={palette.muted}>{". Nothing has been written yet."}</span>
           </text>
+          <text fg={palette.faint}>{"+ new · = no change · M merge · U permission fix · ↻ overwrites · ⚠ blocked"}</text>
           {visibleFiles.map((file, offset) => {
             const index = fileWindow.start + offset;
             const note = file.reason ? `${file.purpose} · ${file.reason}` : file.purpose;
@@ -361,7 +363,7 @@ export function ReviewStep(props: ReviewStepProps) {
 export function WritingStep(props: { creatingCount?: number; cancelling?: boolean; collision?: CollisionPrompt | null; onCancel: () => void }) {
   const spinner = useSpinner(true);
   const creating = props.creatingCount ?? 0;
-  const bindings = defineBindings(...runningCancellationBindings, binding("q", "interrupt", "cancel and stop child processes"));
+  const bindings = defineBindings(...runningCancellationBindings, binding("q", "interrupt", "stop"));
 
   useKeyboard((key) => {
     if (resolveIntent(bindings, key) === "interrupt") {
@@ -481,16 +483,22 @@ export function DoneStep(props: DoneStepProps) {
       ) : (
         <box style={{ flexDirection: "column", gap: 0 }}>
           <text fg={palette.warn}>{`✗ ${props.writeStatus?.message ?? "Write failed."}`}</text>
-          {props.writeStatus?.mutationState ? <text fg={palette.gold}>{`Transaction: ${props.writeStatus.mutationState}`}</text> : null}
-          {props.writeStatus?.recoveryPath ? <text fg={palette.warn}>{`Recovery material: ${props.writeStatus.recoveryPath}`}</text> : null}
-          {props.writeStatus?.remediation ? <text fg={palette.muted}>{props.writeStatus.remediation}</text> : null}
+          {props.writeStatus?.mutationState === "rolled-back" ? (
+            <text fg={palette.gold}>Something went wrong and no changes were kept.</text>
+          ) : props.writeStatus?.mutationState === "rollback-incomplete" ? (
+            <text fg={palette.warn}>Some changes may remain — run the repair command below.</text>
+          ) : props.writeStatus?.mutationState ? (
+            <text fg={palette.gold}>{`State: ${props.writeStatus.mutationState}`}</text>
+          ) : null}
+          {props.writeStatus?.recoveryPath ? <text fg={palette.warn}>{`Backup saved to: ${props.writeStatus.recoveryPath}`}</text> : null}
+          {props.writeStatus?.remediation ? <text fg={palette.gold}>{props.writeStatus.remediation}</text> : null}
         </box>
       )}
 
       {ok ? (
         <box style={{ flexDirection: "column", gap: 0 }}>
           <text fg={palette.faint}>{"─".repeat(60)}</text>
-          <text fg={palette.muted}>{"Ride it:"}</text>
+          <text fg={palette.muted}>{"Try it:"}</text>
           {props.agents.map((agent) => (
             <text key={agent}>
               <span fg={palette.muted}>{"  "}</span>

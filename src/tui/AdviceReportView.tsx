@@ -5,6 +5,7 @@ import type { AdviceReport } from "../engine/advice-types";
 import {
   adviceDecisionSummary,
   adviceNoRecommendationSummary,
+  adviceSupportOutcome,
   backendName,
   formatAdviceTuiReportLines,
   reportLineColor,
@@ -38,6 +39,7 @@ export function AdviceReportView(props: {
   selectedRecommendationIndex: number;
   reportActionIndex: number;
   actionMessage?: string;
+  showTechnicalDetails: boolean;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
 }) {
   const lines = formatAdviceTuiReportLines(props.report);
@@ -58,7 +60,7 @@ export function AdviceReportView(props: {
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <text>
         <span fg={palette.accent}>✦ Advice report</span>
-        <span fg={analysis?.status === "partial" ? palette.warn : palette.success}>{` · ${backendName(props.report.backend)} · ${props.report.recommendations.length} validated recommendation(s) · ${modelCalls} model call(s)${recovered ? ` · ${recovered} recovered locally` : ""}`}</span>
+        <span fg={analysis?.status === "partial" ? palette.warn : palette.success}>{` · ${backendName(props.report.backend)} · ${props.report.recommendations.length} validated recommendation(s)${props.showTechnicalDetails ? ` · ${modelCalls} model call(s)${recovered ? ` · ${recovered} recovered locally` : ""}` : ""}`}</span>
       </text>
       {analysis?.status === "partial" ? (
         <text fg={palette.warn}>{`Partial report. Failed categories: ${analysis.categories.filter((item) => item.status === "failed").map((item) => item.category).join(", ")}. Validated recommendations remain reviewable.`}</text>
@@ -67,9 +69,9 @@ export function AdviceReportView(props: {
         <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
           <text bg={palette.selBg}>
             <span fg={palette.accent}>{`▸ ${props.selectedRecommendationIndex + 1}/${props.report.recommendations.length} `}</span>
-            <span fg={palette.text}>{selected.id}</span>
+            <span fg={palette.text}>{decision.benefit}</span>
             <span fg={palette.gold}>{` · ${selected.confidence} confidence`}</span>
-            <span fg={support?.kind === "files" || support?.kind === "skill" ? palette.success : palette.warn}>{` · ${support?.kind === "skill" ? "open skill creator" : support?.kind === "files" ? "review & create" : support?.kind === "inspect" ? "inspect registry item" : "manual only"}`}</span>
+            <span fg={support?.kind === "files" || support?.kind === "skill" ? palette.success : palette.warn}>{` · ${adviceSupportOutcome(support?.kind ?? "unsupported")}`}</span>
           </text>
           <text><span fg={palette.gold}>Why: </span><span fg={palette.text}>{decision.why}</span></text>
           <text><span fg={palette.gold}>Value: </span><span fg={palette.success}>{decision.benefit}</span></text>
@@ -86,20 +88,26 @@ export function AdviceReportView(props: {
         </box>
       ) : null}
       {props.actionMessage ? <text style={{ flexShrink: 0 }} fg={palette.warn}>{props.actionMessage}</text> : null}
-      <text style={{ flexShrink: 0 }} fg={palette.gold}>{`Full report · ${lines.length} lines`}</text>
-      <scrollbox
-        ref={props.scrollRef}
-        focused={false}
-        scrollX={false}
-        scrollY
-        viewportCulling
-        style={{ flexGrow: 1, flexShrink: 1, width: "100%" }}
-        contentOptions={{ flexDirection: "column", width: "100%" }}
-      >
-        {lines.map((line, index) => (
-          <text key={`${index}-${line}`} style={{ flexShrink: 0 }} fg={reportLineColor(line)}>{line || " "}</text>
-        ))}
-      </scrollbox>
+      <text style={{ flexShrink: 0 }} fg={palette.gold}>
+        {props.showTechnicalDetails ? `Technical details · ${lines.length} lines · press t to hide` : "Show technical details · press t"}
+      </text>
+      {props.showTechnicalDetails ? (
+        <scrollbox
+          ref={props.scrollRef}
+          focused={false}
+          scrollX={false}
+          scrollY
+          viewportCulling
+          style={{ flexGrow: 1, flexShrink: 1, width: "100%" }}
+          contentOptions={{ flexDirection: "column", width: "100%" }}
+        >
+          {lines.map((line, index) => (
+            <text key={`${index}-${line}`} style={{ flexShrink: 0 }} fg={reportLineColor(line)}>{line || " "}</text>
+          ))}
+        </scrollbox>
+      ) : (
+        <box style={{ flexGrow: 1 }} />
+      )}
       <text style={{ flexShrink: 0 }} fg={palette.muted}>Analysis is read-only. Creation always opens a separate review and confirmation step.</text>
       <box style={{ flexShrink: 0 }}><KeyHints hint={bindingsHint(bindings)} /></box>
     </box>

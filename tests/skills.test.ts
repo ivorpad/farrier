@@ -10,6 +10,7 @@ import {
   type CommandRunnerInput,
   type ResolveSkillsCommandDeps
 } from "../src/engine/skills";
+import { skillInstallAgentIds } from "../src/engine/skill-paths";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-skills-"));
@@ -38,6 +39,21 @@ function neverWhich(): string | null {
 function neverExists(): boolean {
   return false;
 }
+
+describe("skill install agent list", () => {
+  test("maps enforcement agents to skills CLI ids", () => {
+    expect(skillInstallAgentIds(["claude"], false)).toEqual(["claude-code"]);
+    expect(skillInstallAgentIds(["codex"], false)).toEqual(["codex"]);
+    expect(skillInstallAgentIds(["claude", "codex"], false)).toEqual(["claude-code", "codex"]);
+  });
+
+  test("shares with the other agent only for a single-agent selection", () => {
+    expect(skillInstallAgentIds(["claude"], true)).toEqual(["claude-code", "codex"]);
+    expect(skillInstallAgentIds(["codex"], true)).toEqual(["claude-code", "codex"]);
+    // Sharing is a no-op when both agents are already targeted.
+    expect(skillInstallAgentIds(["claude", "codex"], true)).toEqual(["claude-code", "codex"]);
+  });
+});
 
 describe("skills engine", () => {
   test("searchSkills queries SKILLS_API_URL and normalizes results", async () => {

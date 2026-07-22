@@ -27,7 +27,7 @@ export const palette = {
   selBg: "#33261a"
 } as const;
 
-const flowSteps = ["Stack", "Skills", "Create", "Hooks", "Learn", "Review"] as const;
+const flowSteps = ["Agent", "Stack", "Skills", "Create", "Hooks", "Learn", "Review"] as const;
 
 const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -64,12 +64,12 @@ type StepHeaderProps = {
 };
 
 /**
- * The breadcrumb is the wizard's contract: all six steps are always named,
+ * The breadcrumb is the wizard's contract: all seven steps are always named,
  * the current one burns ember, done steps cool to muted, upcoming steps stay
  * faint, and a step counter sits at the end so the user always knows how much
  * wizard is left. No brand badge — ember is reserved for the current step, the
  * cursor, and the harness verb; the breadcrumb opens the line directly. Only the
- * six flow steps get a breadcrumb; the done screen leads with its headline.
+ * seven flow steps get a breadcrumb; the done screen leads with its headline.
  */
 export function StepHeader(props: StepHeaderProps) {
   const currentIndex = (flowSteps as readonly string[]).indexOf(props.current);

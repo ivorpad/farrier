@@ -62,6 +62,6 @@ describe("TUI keymap", () => {
     expect(resolveIntent(adviceBatchCancellationBindings, { name: "z" })).toBeUndefined();
     expect(resolveIntent(adviceBatchCancellationBindings, { name: "z", meta: true })).toBeUndefined();
     expect(resolveIntent(adviceBatchCancellationBindings, { name: "c", ctrl: true })).toBe("interrupt");
-    expect(bindingsHint(adviceBatchCancellationBindings)).toBe("cmd+z/ctrl+c cancel batch and stop child processes");
+    expect(bindingsHint(adviceBatchCancellationBindings)).toBe("cmd+z/ctrl+c cancel and stop");
   });
 });

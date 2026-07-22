@@ -4,14 +4,15 @@ import { useState } from "react";
 import { KeyHints, palette } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
-export type LaunchChoice = "harness" | "create" | "advise" | "cancel";
+export type LaunchChoice = "harness" | "create" | "advise" | "doctor" | "cancel";
 export type LauncherState = { index: number };
 export type LauncherEvent = { type: "up" | "down" | "choose" | "cancel" };
 
 export const launcherRows: ReadonlyArray<{ choice: Exclude<LaunchChoice, "cancel">; label: string; detail: string }> = [
-  { choice: "harness", label: "⚒ Create a harness", detail: "detect the stack and generate the agent harness" },
-  { choice: "create", label: "✚ Create a skill", detail: "author and install a reusable skill" },
-  { choice: "advise", label: "✦ Advise this project", detail: "inspect the project and suggest agent configuration improvements" }
+  { choice: "harness", label: "⚒ Create harness", detail: "detect the stack; generate AGENTS.md, hooks, and skills" },
+  { choice: "create", label: "✚ Create skill", detail: "author a new skill (SKILL.md) with your agent's skill creator" },
+  { choice: "advise", label: "✦ Advise", detail: "analyze repo + recent sessions; recommend hooks, skills, MCP" },
+  { choice: "doctor", label: "⟳ Doctor & update", detail: "check harness health; repair drift after upgrades" }
 ];
 
 export function launcherReducer(state: LauncherState, event: LauncherEvent): { state: LauncherState; choice?: LaunchChoice } {
@@ -49,7 +50,10 @@ export function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void })
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <box style={{ flexDirection: "column", gap: 0 }}>
         <text fg={palette.accent}>{"🐴 farrier"}</text>
-        <text fg={palette.muted}>What would you like to do?</text>
+        <text fg={palette.muted}>
+          Generates the agent harness for this repo: AGENTS.md/CLAUDE.md, hooks, and skills, so coding agents follow your project's rules.
+        </text>
+        <text fg={palette.faint}>What would you like to do?</text>
       </box>
       <box style={{ flexDirection: "column", gap: 0 }}>
         {launcherRows.map((row, rowIndex) => {

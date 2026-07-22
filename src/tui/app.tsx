@@ -15,6 +15,8 @@ import { runHarnessWrite } from "./harness-write";
 import { generatorPresentation, selectedPackForWizard } from "./pack-presentation";
 import { WizardDone } from "./wizard-done";
 import { createInitialWizardState, wizardReducer, type PackDefaults, type WizardState } from "./machine";
+import { skillInstallAgentIds } from "../engine/skill-paths";
+import { AgentStep } from "./AgentStep";
 import { StackStep } from "./StackStep";
 import { SkillsStep } from "./SkillsStep";
 import { WizardCreate } from "./wizard-create";
@@ -42,7 +44,9 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 
 function WizardApp(props: WizardAppProps) {
   const packIds = useMemo(() => props.catalog.packIds(), [props.catalog]);
-  const defaultPackId = packIds.includes("python-fastapi") ? "python-fastapi" : (packIds[0] ?? "python-uv");
+  // Only guarantees the available list is non-empty; it is not a preselection.
+  // Zero-detection leaves the stack unselected (see createInitialWizardState).
+  const defaultPackId = packIds[0] ?? "python-uv";
 
   const packDefaults = useMemo<PackDefaults>(() => {
     return Object.fromEntries(
@@ -122,7 +126,10 @@ function WizardApp(props: WizardAppProps) {
     };
   }, []);
 
-  const selectedPack = useMemo(() => selectedPackForWizard(props.catalog.resolvePack(state.packId), state.selectedHooks), [props.catalog, state.packId, state.selectedHooks]);
+  // Before a stack is picked (Agent/Stack steps) packId is "" and would not
+  // resolve; fall back to any available pack so the memo never throws. The value
+  // is unused until a pack is selected, at which point packId drives it.
+  const selectedPack = useMemo(() => selectedPackForWizard(props.catalog.resolvePack(state.packId || state.availablePackIds[0] || defaultPackId), state.selectedHooks), [defaultPackId, props.catalog, state.availablePackIds, state.packId, state.selectedHooks]);
   const ruleCount = useMemo(() => agentsHardRules(selectedPack, state.agents).length, [selectedPack, state.agents]);
   const review = useHarnessReview({
     active: state.step === "Review",
@@ -278,6 +285,7 @@ function WizardApp(props: WizardAppProps) {
         signal: controller.signal,
         forceReplace,
         onCollision,
+        installAgents: skillInstallAgentIds(state.agents, state.shareSkillsWithOtherAgent),
         modelSettings: {
           claude: resolveModelSettings({
             models: props.models,
@@ -315,6 +323,16 @@ function WizardApp(props: WizardAppProps) {
   }
 
   switch (state.step) {
+    case "Agent":
+      return (
+        <AgentStep
+          selectedAgents={state.agents}
+          onSelectAgents={(agents) => dispatch({ type: "SELECT_AGENTS", agents })}
+          onNext={() => dispatch({ type: "NEXT" })}
+          onCancel={() => props.onExit(1)}
+        />
+      );
+
     case "Stack":
       return (
         <StackStep
@@ -351,6 +369,9 @@ function WizardApp(props: WizardAppProps) {
           adviseError={state.adviseError}
           recommendations={state.recommendations}
           onToggleAdvise={() => dispatch({ type: "TOGGLE_ADVISE" })}
+          agents={state.agents}
+          shareSkillsWithOtherAgent={state.shareSkillsWithOtherAgent}
+          onToggleShareSkills={() => dispatch({ type: "TOGGLE_SHARE_SKILLS" })}
         />
       );
 
@@ -376,11 +397,8 @@ function WizardApp(props: WizardAppProps) {
         <HooksStep
           availableHooks={state.availableHooks}
           selectedHooks={state.selectedHooks}
-          selectedAgents={state.agents}
-          agentAvailability={agentAvailability}
           toolPolicyRules={selectedPack.toolPolicyRules}
           onToggleHook={(hook) => dispatch({ type: "TOGGLE_HOOK", hook })}
-          onToggleAgent={(agent) => dispatch({ type: "TOGGLE_AGENT", agent })}
           onNext={() => dispatch({ type: "NEXT" })}
           onBack={() => dispatch({ type: "BACK" })}
           onQuit={() => props.onExit(1)}
