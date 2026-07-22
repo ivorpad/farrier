@@ -157,9 +157,11 @@ function isBuiltinHookId(value: PackHookRef): value is HookId {
 }
 
 // .farrier-staging/ holds failed skill-authoring runs kept for inspection;
-// .farrier/runtime/ holds hook event logs and verification state. Neither
+// .farrier/runtime/ holds hook event logs and verification state; the hooks
+// write __pycache__ bytecode when they run (2026-07-22 eval: litter showed up
+// as untracked files on repos whose .gitignore lacks __pycache__). None of it
 // should be committed.
-const requiredGitignoreLines = [".env", ".env.*", "!.env.example", ".farrier-staging/", ".farrier/runtime/"];
+const requiredGitignoreLines = [".env", ".env.*", "!.env.example", ".farrier-staging/", ".farrier/runtime/", ".farrier/hooks/__pycache__/"];
 
 function posixPath(path: string): string {
   return path.replaceAll("\\", "/");
