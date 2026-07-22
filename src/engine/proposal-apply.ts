@@ -14,8 +14,9 @@ import {
 import { guardShapeProblems } from "./doctor";
 import { routeFailureSignals, type PrimitiveProposal } from "./failure-router";
 import { defaultTranscriptDir } from "./learn";
-import { mineFailureSignals, type FailureSignal } from "./learn-signals";
-import { manifestToInput, readManifest, type NormalizedManifest } from "./manifest";
+import type { FailureSignal } from "./learn-signals";
+import { mineFailureSignalsFromSources } from "./learn-signals-codex";
+import { manifestToInput, notFarrierProjectMessage, readManifest, type NormalizedManifest } from "./manifest";
 import { createRenderPlan, hookCatalogVersions, hooksDirectory } from "./render";
 import { extractRepoMapSection, repoMapBeginMarker, spliceRepoMapSection, stripRepoMapSection } from "./repo-map";
 import { packForManifest } from "./update";
@@ -57,18 +58,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export async function minePrimitiveProposals(input: {
   targetDir: string;
   transcriptsDir?: string;
+  /** Override for the codex rollout directory; defaults to ~/.codex/sessions. */
+  codexSessionsDir?: string;
   catalog?: PackCatalog;
 }): Promise<ProposalMiningResult> {
   const targetDir = resolve(input.targetDir);
-  const manifest = await readManifest({ targetDir, catalog: input.catalog ?? builtinCatalog() });
+  // Mining needs no harness (the bare repo is the growth model's entry case);
+  // only applying a proposal does, and planProposal still refuses without one.
+  let installedHookIds: NormalizedManifest["hookIds"] = [];
+  let guards: unknown;
+  const notes: string[] = [];
+  try {
+    const manifest = await readManifest({ targetDir, catalog: input.catalog ?? builtinCatalog() });
+    installedHookIds = manifest.hookIds;
+    guards = manifest.guards;
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== notFarrierProjectMessage) {
+      throw error;
+    }
+    notes.push("No .farrier.json here yet. Proposals can be reviewed; applying one installs into the harness, so run farrier create first.");
+  }
   const transcriptsDir = input.transcriptsDir ? resolve(input.transcriptsDir) : defaultTranscriptDir(targetDir);
-  const scan = await mineFailureSignals(transcriptsDir);
+  const scan = await mineFailureSignalsFromSources({
+    claudeTranscriptsDir: transcriptsDir,
+    codexProjectDir: targetDir,
+    codexSessionsDir: input.codexSessionsDir
+  });
   const proposals = routeFailureSignals({
     signals: scan.signals,
-    installedHookIds: manifest.hookIds,
-    guards: manifest.guards
+    installedHookIds,
+    guards
   });
-  return { transcriptsDir, signals: scan.signals, proposals, notes: scan.notes };
+  return { transcriptsDir, signals: scan.signals, proposals, notes: [...notes, ...scan.notes] };
 }
 
 /**

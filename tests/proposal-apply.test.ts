@@ -290,13 +290,40 @@ describe("local proposal mining", () => {
       "utf8"
     );
 
-    const result = await minePrimitiveProposals({ targetDir, transcriptsDir });
+    const result = await minePrimitiveProposals({
+      targetDir,
+      transcriptsDir,
+      codexSessionsDir: await tempDir("farrier-proposal-codex-empty-")
+    });
     expect(result.proposals.map((proposal) => proposal.id)).toContain("guard-large-file-commit");
     expect(result.signals.some((signal) => signal.class === "oversized-commit")).toBe(true);
   });
 
-  test("refuses to mine without a manifest", async () => {
+  test("mines without a manifest; only planning an apply requires one", async () => {
     const targetDir = await tempDir();
-    await expect(minePrimitiveProposals({ targetDir })).rejects.toThrow(notFarrierProjectMessage);
+    const transcriptsDir = await tempDir("farrier-proposal-bare-transcripts-");
+    await mkdir(transcriptsDir, { recursive: true });
+    await writeFile(
+      join(transcriptsDir, "rewrite.jsonl"),
+      `${JSON.stringify({
+        timestamp: "2026-07-20T10:00:00.000Z",
+        message: {
+          content: [{ type: "tool_use", id: "r1", name: "Bash", input: { command: "git filter-repo --strip-blobs-bigger-than 50M" } }]
+        }
+      })}\n`,
+      "utf8"
+    );
+
+    const result = await minePrimitiveProposals({
+      targetDir,
+      transcriptsDir,
+      codexSessionsDir: await tempDir("farrier-proposal-codex-empty-")
+    });
+    expect(result.proposals.map((proposal) => proposal.id)).toContain("guard-large-file-commit");
+    expect(result.notes.some((note) => note.includes("run farrier create first"))).toBe(true);
+
+    const guard = result.proposals.find((proposal) => proposal.kind === "guard-instance");
+    if (!guard) throw new Error("expected a guard proposal");
+    await expect(planPrimitiveProposal({ targetDir, proposal: guard })).rejects.toThrow(notFarrierProjectMessage);
   });
 });
