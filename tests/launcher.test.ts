@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { launcherReducer, launcherRows } from "../src/tui/launcher";
 
 describe("primary launcher", () => {
-  test("exposes exactly the four primary workflows with the required labels", () => {
+  test("exposes exactly the five primary workflows with the required labels", () => {
     expect(launcherRows.map((row) => row.label)).toEqual([
       "Create harness",
       "Create skill",
       "Advise",
+      "Learn from failures",
       "Doctor & update"
     ]);
   });
@@ -18,13 +19,15 @@ describe("primary launcher", () => {
     }
   });
 
-  test("routes all four choices through the visible list", () => {
+  test("routes all five choices through the visible list", () => {
     expect(launcherReducer({ index: 0 }, { type: "choose" }).choice).toBe("harness");
     const skill = launcherReducer({ index: 0 }, { type: "down" }).state;
     expect(launcherReducer(skill, { type: "choose" }).choice).toBe("create");
     const advice = launcherReducer(skill, { type: "down" }).state;
     expect(launcherReducer(advice, { type: "choose" }).choice).toBe("advise");
-    const doctor = launcherReducer(advice, { type: "down" }).state;
+    const learn = launcherReducer(advice, { type: "down" }).state;
+    expect(launcherReducer(learn, { type: "choose" }).choice).toBe("learn");
+    const doctor = launcherReducer(learn, { type: "down" }).state;
     expect(launcherReducer(doctor, { type: "choose" }).choice).toBe("doctor");
     expect(launcherReducer({ index: 0 }, { type: "cancel" }).choice).toBe("cancel");
   });

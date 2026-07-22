@@ -4,7 +4,7 @@ import { useState } from "react";
 import { KeyHints, palette } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
-export type LaunchChoice = "harness" | "create" | "advise" | "doctor" | "cancel";
+export type LaunchChoice = "harness" | "create" | "advise" | "learn" | "doctor" | "cancel";
 export type LauncherState = { index: number };
 export type LauncherEvent = { type: "up" | "down" | "choose" | "cancel" };
 
@@ -17,6 +17,7 @@ export const launcherRows: ReadonlyArray<{ choice: Exclude<LaunchChoice, "cancel
   { choice: "harness", label: "Create harness", detail: "detect the stack; generate AGENTS.md, hooks, and skills" },
   { choice: "create", label: "Create skill", detail: "author a new skill (SKILL.md) with your agent's skill creator" },
   { choice: "advise", label: "Advise", detail: "analyze repo + recent sessions; recommend hooks, skills, MCP" },
+  { choice: "learn", label: "Learn from failures", detail: "count repeated session failures; propose hooks, AGENTS.md rules, skills" },
   { choice: "doctor", label: "Doctor & update", detail: "check harness health; repair drift after upgrades" }
 ];
 

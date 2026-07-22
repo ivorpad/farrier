@@ -149,7 +149,12 @@ function migratedHookIds(manifest: NormalizedManifest): PackHookRef[] {
   return manifest.hookIds.filter((hookId) => hookId !== "quality-judge" && hookId !== "stop-judge");
 }
 
-function packForManifest(manifest: NormalizedManifest, catalog: PackCatalog): ResolvedPack {
+/**
+ * The manifest's pack with its recorded hook selection (post-migration).
+ * Shared with proposal apply so a confirmed guard renders through exactly the
+ * machinery update uses.
+ */
+export function packForManifest(manifest: NormalizedManifest, catalog: PackCatalog): ResolvedPack {
   const pack = catalog.resolvePack(manifest.currentPackId);
 
   return {
