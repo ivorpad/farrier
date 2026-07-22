@@ -17,6 +17,8 @@ import {
   type BackendCommandRunnerOutput
 } from "./backend";
 import { compareEvidence, createEvidenceSet, type EvidenceComparison } from "./behavior-evidence";
+import { mineFailureSignals, toolResultsFromRecord, toolUseFromRecord, type FailureSignal } from "./learn-signals";
+import { routeFailureSignals, type PrimitiveProposal } from "./failure-router";
 
 export type CandidateEvent = {
   command: string;
@@ -55,6 +57,10 @@ export type LearnReport = {
   candidateEvents: CandidateEvent[];
   proposedRules: ToolPolicyRule[];
   droppedProposals: DroppedProposal[];
+  /** Deterministic failure signals mined with counts, dates, and session refs. */
+  signals: FailureSignal[];
+  /** Failure→primitive router output; review-only, never auto-applied. */
+  primitiveProposals: PrimitiveProposal[];
   evidence?: EvidenceComparison;
   notes: string[];
   errors: string[];
@@ -89,18 +95,6 @@ type TranscriptObservation = {
   reason: string;
 };
 
-type ToolUse = {
-  id?: string;
-  command: string;
-};
-
-type ToolResult = {
-  toolUseId?: string;
-  text: string;
-  isError: boolean;
-  isDenied: boolean;
-};
-
 type ToolPolicyRulesDocument = {
   version: 1;
   rules: unknown[];
@@ -125,10 +119,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
-
-function normalizeCommand(command: string): string {
-  return command.trim().replace(/\s+/g, " ");
 }
 
 function escapeRegExp(value: string): string {
@@ -167,66 +157,6 @@ function prefixKey(command: string): string | undefined {
   return prefix ? `${prefix[0]}\u0000${prefix[1]}` : undefined;
 }
 
-function flattenStrings(value: unknown): string[] {
-  if (typeof value === "string") {
-    return [value];
-  }
-
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => flattenStrings(item));
-  }
-
-  if (isRecord(value)) {
-    return Object.values(value).flatMap((item) => flattenStrings(item));
-  }
-
-  if (typeof value === "number" || typeof value === "boolean") {
-    return [String(value)];
-  }
-
-  return [];
-}
-
-function textFrom(value: unknown): string {
-  return flattenStrings(value).join("\n");
-}
-
-function booleanField(record: Record<string, unknown>, names: string[]): boolean {
-  return names.some((name) => record[name] === true);
-}
-
-function lowerText(value: string): string {
-  return value.toLowerCase();
-}
-
-function looksDenied(text: string): boolean {
-  const lower = lowerText(text);
-
-  return (
-    (lower.includes("permissiondecision") && lower.includes("deny")) ||
-    lower.includes("permission decision") && lower.includes("deny") ||
-    lower.includes("permission denied") ||
-    lower.includes("denied") ||
-    lower.includes("blocked by hook") ||
-    lower.includes("hook blocked") ||
-    lower.includes("blocked")
-  );
-}
-
-function looksErrored(text: string): boolean {
-  const lower = lowerText(text);
-
-  return (
-    lower.includes("exit code") ||
-    lower.includes("exited with code") ||
-    lower.includes("not found") ||
-    lower.includes("permission denied") ||
-    lower.includes("failed") ||
-    lower.includes("traceback") ||
-    lower.includes("error")
-  );
-}
-
 function summarizeReason(text: string, denied: boolean): string {
   if (denied) {
     return "blocked by hook or permission denial";
@@ -242,111 +172,6 @@ function summarizeReason(text: string, denied: boolean): string {
   }
 
   return firstUsefulLine.length > 160 ? `${firstUsefulLine.slice(0, 157)}...` : firstUsefulLine;
-}
-
-function toolUseFromRecord(record: Record<string, unknown>): ToolUse[] {
-  const uses: ToolUse[] = [];
-
-  function addUse(value: unknown): void {
-    if (!isRecord(value)) {
-      return;
-    }
-
-    const name = optionalString(value.name) ?? optionalString(value.tool_name);
-    const input = isRecord(value.input) ? value.input : isRecord(value.tool_input) ? value.tool_input : undefined;
-    const command = input ? optionalString(input.command) : undefined;
-
-    if (name === "Bash" && command) {
-      uses.push({
-        id: optionalString(value.id),
-        command: normalizeCommand(command)
-      });
-    }
-  }
-
-  addUse(record);
-
-  const message = isRecord(record.message) ? record.message : undefined;
-  const content = Array.isArray(message?.content) ? message.content : Array.isArray(record.content) ? record.content : [];
-
-  for (const item of content) {
-    if (isRecord(item) && item.type === "tool_use") {
-      addUse(item);
-    }
-  }
-
-  return dedupeToolUses(uses);
-}
-
-function dedupeToolUses(uses: ToolUse[]): ToolUse[] {
-  const seen = new Set<string>();
-  const deduped: ToolUse[] = [];
-
-  for (const use of uses) {
-    const key = `${use.id ?? ""}\u0000${use.command}`;
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    deduped.push(use);
-  }
-
-  return deduped;
-}
-
-function toolResultsFromRecord(record: Record<string, unknown>): ToolResult[] {
-  const results: ToolResult[] = [];
-
-  function addResult(value: unknown): void {
-    if (!isRecord(value)) {
-      return;
-    }
-
-    const text = textFrom(value);
-    const isDenied = looksDenied(text);
-    const isError = booleanField(value, ["is_error", "isError", "error"]) || looksErrored(text);
-
-    if (!isDenied && !isError) {
-      return;
-    }
-
-    results.push({
-      toolUseId: optionalString(value.tool_use_id) ?? optionalString(value.toolUseId),
-      text,
-      isError,
-      isDenied
-    });
-  }
-
-  if (record.type === "tool_result") {
-    addResult(record);
-  }
-
-  const message = isRecord(record.message) ? record.message : undefined;
-  const content = Array.isArray(message?.content) ? message.content : Array.isArray(record.content) ? record.content : [];
-
-  for (const item of content) {
-    if (isRecord(item) && item.type === "tool_result") {
-      addResult(item);
-    }
-  }
-
-  for (const key of ["tool_response", "tool_result", "result", "response"]) {
-    addResult(record[key]);
-  }
-
-  const fullText = textFrom(record);
-  if (looksDenied(fullText) || looksErrored(fullText)) {
-    results.push({
-      toolUseId: optionalString(record.tool_use_id) ?? optionalString(record.toolUseId),
-      text: fullText,
-      isError: looksErrored(fullText),
-      isDenied: looksDenied(fullText)
-    });
-  }
-
-  return results;
 }
 
 function toCandidateEvents(observations: TranscriptObservation[]): CandidateEvent[] {
@@ -972,13 +797,23 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
     notes.push("learn.enabled is false in .farrier.json; proceeding because farrier learn was invoked explicitly.");
   }
 
-  const [candidateResult, existingRules] = await Promise.all([
+  const [candidateResult, existingRules, signalScan] = await Promise.all([
     extractCandidateEvents(transcriptsDir),
-    readToolPolicyRulesDocument(targetDir)
+    readToolPolicyRulesDocument(targetDir),
+    mineFailureSignals(transcriptsDir)
   ]);
 
   notes.push(...candidateResult.notes);
   errors.push(...existingRules.errors);
+  const signals = signalScan.signals;
+  const primitiveProposals = routeFailureSignals({
+    signals,
+    installedHookIds: manifest.hookIds,
+    guards: manifest.guards
+  });
+  for (const note of signalScan.notes) {
+    if (!notes.includes(note)) notes.push(note);
+  }
   const reportEvidenceSet = createEvidenceSet({
     workflow: "learn",
     items: candidateResult.events,
@@ -1010,6 +845,8 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
       candidateEvents,
       proposedRules: [],
       droppedProposals: [],
+      signals,
+      primitiveProposals,
       evidence: compareEvidence({
         beforeSet: evidenceSet,
         afterSet: evidenceSet,
@@ -1072,6 +909,8 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
     candidateEvents,
     proposedRules: validation.accepted,
     droppedProposals: validation.dropped,
+    signals,
+    primitiveProposals,
     evidence,
     notes,
     errors
@@ -1171,6 +1010,20 @@ export function formatLearnReport(report: LearnReport): string {
       report.droppedProposals.map((proposal) =>
         proposal.id ? `${proposal.id}: ${proposal.reason}` : proposal.reason
       ),
+      "none"
+    ),
+    "",
+    "Failure signals (deterministic, with evidence):",
+    ...renderList(
+      report.signals.map((signal) =>
+        `[${signal.class}] ${signal.key}: ${signal.count}x across ${signal.sessionCount} session(s)${signal.dates.length > 0 ? ` (${signal.dates.join(", ")})` : ""}`
+      ),
+      "none"
+    ),
+    "",
+    "Primitive proposals (review in the TUI; nothing is applied automatically):",
+    ...renderList(
+      report.primitiveProposals.map((proposal) => `[${proposal.kind}] ${proposal.id}: ${proposal.title}`),
       "none"
     )
   ];
