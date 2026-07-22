@@ -13,9 +13,9 @@ from typing import Any
 from _hook_runtime import log_event, read_project_text, read_repo_map, run_bounded_process
 
 
-# Measured: a per-edit haiku judge call takes ~17 s end to end; the stop judge
-# reviews full diffs on a larger model and needs more headroom.
-DEFAULT_TIMEOUT_MS = 60000
+# Measured: a per-edit haiku judge call takes ~17 s end to end and a stop
+# sonnet call ~44 s idle — 60 s timed out under load, so 90 s.
+DEFAULT_TIMEOUT_MS = 90000
 DEFAULT_MAX_DIFF_BYTES = 120000
 DEFAULT_MAX_UNTRACKED_FILES = 50
 MAX_EMBEDDED_CONTENT_BYTES = 30 * 1024

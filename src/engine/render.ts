@@ -460,7 +460,7 @@ function defaultJudgeConfig(): Record<string, unknown> {
       enabled: false,
       backend: "claude",
       model: "sonnet",
-      timeoutMs: 60000,
+      timeoutMs: 90000,
       includeRepoMap: true,
       prompt: `${hooksDirectory}/prompts/stop-judge-v1.txt`,
       maxDiffBytes: 120000,
