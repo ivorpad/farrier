@@ -353,18 +353,42 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
         renderOptions.installSkills
       ) {
         const { runLauncher } = await import("./tui/launcher");
+        const { runStartup } = await import("./tui/startup");
+        const { launcherSessionView } = await import("./tui/session-context");
         const targetDir = resolve(renderOptions.dir);
 
+        // The startup screen always runs before the launcher: farrier never
+        // silently assumes a working agent. The confirmed pick (agents +
+        // backend + models) threads explicitly into every workflow below.
+        const session = await runStartup(targetDir);
+        if (session === "cancel") {
+          console.error("farrier: cancelled.");
+          return 1;
+        }
+        const launcherContext = launcherSessionView(session);
+        const noInstalledBackend = !session.detection.claude.installed && !session.detection.codex.installed;
+
         for (;;) {
-          const choice = await runLauncher();
+          const choice = await runLauncher(launcherContext);
 
           if (choice === "advise") {
+            if (noInstalledBackend) {
+              // The launcher row is marked; analysis cannot run without a CLI.
+              continue;
+            }
             const { runAdviceWizard } = await import("./tui/advise-app");
-            const outcome = await runAdviceWizard(targetDir);
+            const outcome = await runAdviceWizard(targetDir, {
+              initialBackend: session.backend,
+              modelOverrides: session.models,
+              probeAvailability: async () => ({
+                claude: session.detection.claude.installed,
+                codex: session.detection.codex.installed,
+              }),
+            });
 
             if (typeof outcome === "object" && outcome.kind === "create-skill") {
               const { runCreateWizard } = await import("./tui/create-app");
-              return await runCreateWizard(targetDir, [outcome.request]);
+              return await runCreateWizard(targetDir, [outcome.request], session);
             }
 
             if (outcome === "done") {
@@ -381,6 +405,13 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
           }
 
           if (choice === "learn") {
+            // Deliberate divergence from a literal "sessions follow the agent
+            // pick": learn keeps mining BOTH Claude transcripts and Codex
+            // rollouts regardless of the startup choice. Mining is local
+            // counting only, more evidence is strictly better, and the mined
+            // source note in the report states both counts. The pick governs
+            // which CLI farrier runs and which defaults it seeds, not which
+            // local evidence it may read.
             const { runLearnApp } = await import("./tui/learn-app");
             await runLearnApp(targetDir);
             continue;
@@ -394,13 +425,14 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
 
           if (choice === "create") {
             const { runCreateWizard } = await import("./tui/create-app");
-            return await runCreateWizard(targetDir);
+            return await runCreateWizard(targetDir, [], session);
           }
 
           if (choice === "harness") {
             const { runWizard } = await import("./tui/app");
             return await runWizard(targetDir, {
               context: renderOptions.context,
+              session,
             });
           }
 

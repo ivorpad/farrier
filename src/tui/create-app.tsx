@@ -16,6 +16,7 @@ import { CreateDoneScreen, CreateProgressScreen, type RequestStatus } from "./cr
 import { CreateStep } from "./CreateStep";
 import { RefineFlow } from "./RefineScreen";
 import { idleExitBindings, resolveIntent } from "./keymap";
+import type { SessionAgentContext } from "./session-context";
 
 type Phase = "form" | "questions" | "writing" | "done" | "eval";
 
@@ -23,6 +24,8 @@ type CreateAppProps = {
   targetDir: string;
   models: ModelsConfig;
   initialRequests?: SkillCreationRequest[];
+  /** Startup pick: seeds the agent default and refinement backend; never locks them. */
+  session?: SessionAgentContext;
   onExit: (code: number, message?: string) => void;
 };
 
@@ -45,7 +48,15 @@ function CreateApp(props: CreateAppProps) {
   // Concurrent runs can collide at once; prompts are shown one at a time.
   const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
 
-  const refineBackend: CreateAgent | undefined = availability?.claude ? "claude" : availability?.codex ? "codex" : undefined;
+  const sessionBackend = props.session?.backend;
+  const refineBackend: CreateAgent | undefined =
+    sessionBackend && availability?.[sessionBackend]
+      ? sessionBackend
+      : availability?.claude
+        ? "claude"
+        : availability?.codex
+          ? "codex"
+          : undefined;
   const evalBackend = refineBackend;
 
   // exitOnCtrlC is off (it would orphan the spawned agent runs), so ctrl+c is
@@ -107,8 +118,8 @@ function CreateApp(props: CreateAppProps) {
     // Concurrent authoring (each run has its own staging root); lock-touching
     // installs are serialized inside createSkills.
     const modelSettings = {
-      claude: resolveModelSettings({ models: props.models, backend: "claude", role: "skillCreation" }),
-      codex: resolveModelSettings({ models: props.models, backend: "codex", role: "skillCreation" })
+      claude: resolveModelSettings({ models: props.models, backend: "claude", role: "skillCreation", explicitModel: props.session?.models.claude }),
+      codex: resolveModelSettings({ models: props.models, backend: "codex", role: "skillCreation", explicitModel: props.session?.models.codex })
     };
 
     createSkills(requests, props.targetDir, { signal: controller.signal, onCollision, modelSettings }, (event) => {
@@ -170,6 +181,7 @@ function CreateApp(props: CreateAppProps) {
         <CreateStep
           requests={requests}
           availability={availability}
+          defaultAgents={props.session?.agents}
           standalone
           onAddRequest={(request) => setRequests((current) => [...current, request])}
           onRemoveRequest={(index) => setRequests((current) => current.filter((_, i) => i !== index))}
@@ -209,7 +221,12 @@ function CreateApp(props: CreateAppProps) {
         return null;
       }
 
-      const refineSettings = resolveModelSettings({ models: props.models, backend: refineBackend, role: "refine" });
+      const refineSettings = resolveModelSettings({
+        models: props.models,
+        backend: refineBackend,
+        role: "refine",
+        explicitModel: props.session?.models[refineBackend]
+      });
 
       return (
         <RefineFlow
@@ -289,7 +306,11 @@ function CreateApp(props: CreateAppProps) {
   }
 }
 
-export async function runCreateWizard(targetDir: string, initialRequests: SkillCreationRequest[] = []): Promise<number> {
+export async function runCreateWizard(
+  targetDir: string,
+  initialRequests: SkillCreationRequest[] = [],
+  session?: SessionAgentContext
+): Promise<number> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
 
   const models = await loadFarrierConfig({ projectDir: targetDir })
@@ -321,7 +342,9 @@ export async function runCreateWizard(targetDir: string, initialRequests: SkillC
         resolve(code);
       };
 
-      createRoot(cliRenderer).render(<CreateApp targetDir={targetDir} models={models} initialRequests={initialRequests} onExit={finish} />);
+      createRoot(cliRenderer).render(
+        <CreateApp targetDir={targetDir} models={models} initialRequests={initialRequests} session={session} onExit={finish} />
+      );
     });
   } catch (error) {
     renderer?.destroy();

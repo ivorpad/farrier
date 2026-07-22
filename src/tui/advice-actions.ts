@@ -46,6 +46,9 @@ export function createAdviceWizardActions(
     signal: AbortSignal;
     models?: ModelsConfig;
     loadModels?: () => Promise<ModelsConfig>;
+    /** Session-level per-backend model picks from the startup screen; an
+     * explicit pick beats every configured role entry for this session. */
+    modelOverrides?: { claude?: string; codex?: string };
   },
   dependencies: Partial<AdviceWizardActionDependencies> = {}
 ) {
@@ -70,7 +73,12 @@ export function createAdviceWizardActions(
       onProgress: (event: AdviceProgressEvent) => void
     ): Promise<AdviceReport> => {
       await requireBackend(backend);
-      const settings = resolveModelSettings({ models: await loadModels(), backend, role: "advise" });
+      const settings = resolveModelSettings({
+        models: await loadModels(),
+        backend,
+        role: "advise",
+        explicitModel: input.modelOverrides?.[backend]
+      });
       const report = await runAdvice({
         targetDir: input.targetDir,
         backend,
@@ -94,7 +102,12 @@ export function createAdviceWizardActions(
       if (support.kind === "inspect") throw new Error(support.description);
       const backend = report.backend;
       await requireBackend(backend);
-      const settings = resolveModelSettings({ models: await loadModels(), backend, role: "advise" });
+      const settings = resolveModelSettings({
+        models: await loadModels(),
+        backend,
+        role: "advise",
+        explicitModel: input.modelOverrides?.[backend]
+      });
       const plan = await planRecommendation({
         report,
         recommendation,
@@ -114,8 +127,9 @@ export function createAdviceWizardActions(
       const backend = report.backend;
       await requireBackend(backend);
       const models = await loadModels();
-      const fileSettings = resolveModelSettings({ models, backend, role: "advise" });
-      const skillSettings = resolveModelSettings({ models, backend, role: "skillCreation" });
+      const explicitModel = input.modelOverrides?.[backend];
+      const fileSettings = resolveModelSettings({ models, backend, role: "advise", explicitModel });
+      const skillSettings = resolveModelSettings({ models, backend, role: "skillCreation", explicitModel });
       let creatorPreparation: Promise<void> | undefined;
       const prepareCreatorOnce = () => {
         creatorPreparation ??= prepareSkillCreator(backend, input.targetDir).then((result) => {

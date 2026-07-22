@@ -40,6 +40,8 @@ export function AdviceApp(props: {
   sessionCounts: AdviceSessionCountInventory;
   sessionInventory: SessionMetadataInventory;
   availability: AgentAvailability;
+  /** The startup pick; seeds the backend control when that CLI is available. */
+  initialBackend?: AgentBackend;
   onBack: () => void;
   onCancel: () => void;
   onRun: (
@@ -62,7 +64,10 @@ export function AdviceApp(props: {
   onDone: () => void;
 }) {
   const initialSessionCount = props.sessionCounts["7d"].reduce((sum, item) => sum + item.count, 0);
-  const [state, dispatch] = useReducer(adviceTuiReducer, createInitialAdviceTuiState(initialSessionCount, props.availability));
+  const [state, dispatch] = useReducer(
+    adviceTuiReducer,
+    createInitialAdviceTuiState(initialSessionCount, props.availability, props.initialBackend)
+  );
   const [selectedRecommendationIndex, setSelectedRecommendationIndex] = useState(0);
   const reportScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const bodyScrollRef = useRef<ScrollBoxRenderable | null>(null);
@@ -395,6 +400,9 @@ export async function runAdviceWizard(
     probeAvailability: () => Promise<AgentAvailability>;
     listSessions: typeof listProjectSessions;
     log: (message: string) => void;
+    /** The confirmed startup pick: initial backend + session model overrides. */
+    initialBackend: AgentBackend;
+    modelOverrides: { claude?: string; codex?: string };
   }> = {}
 ): Promise<AdviceWizardOutcome> {
   const log = dependencies.log ?? ((message: string) => console.error(message));
@@ -414,6 +422,7 @@ export async function runAdviceWizard(
   const actions = createAdviceWizardActions({
     targetDir,
     signal: controller.signal,
+    modelOverrides: dependencies.modelOverrides,
     loadModels: () => loadFarrierConfig({ projectDir: targetDir }).then((loaded) => loaded.config.models).catch(() => ({}))
   });
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
@@ -452,6 +461,7 @@ export async function runAdviceWizard(
           sessionCounts={sessionCounts}
           sessionInventory={sessionInventory}
           availability={availability}
+          initialBackend={dependencies.initialBackend}
           onBack={() => finish("back")}
           onCancel={cancel}
           onDone={() => finish("done")}

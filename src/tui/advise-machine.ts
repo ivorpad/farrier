@@ -50,8 +50,13 @@ export function adjacentAvailableAdviceBackend(
   return available[(currentIndex + direction + available.length) % available.length];
 }
 
-export function createInitialAdviceTuiState(_sessionCount: number, availability: AgentAvailability): AdviceTuiState {
-  const backend = initialAdviceBackend(availability);
+export function createInitialAdviceTuiState(
+  _sessionCount: number,
+  availability: AgentAvailability,
+  /** The startup pick seeds the control; it never overrides availability. */
+  preferredBackend?: AgentBackend
+): AdviceTuiState {
+  const backend = preferredBackend && availability[preferredBackend] ? preferredBackend : initialAdviceBackend(availability);
   if (!backend) throw new Error("No reasoning backend is available.");
   return { availability, backend, includeSessions: false, lookback: "7d", scope: "all", status: "ready", progressHistory: [] };
 }

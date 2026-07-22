@@ -9,6 +9,8 @@ import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 type CreateStepProps = {
   requests: SkillCreationRequest[];
   availability?: AgentAvailability;
+  /** Startup pick: preferred initial agent selection; installed agents only, still toggleable. */
+  defaultAgents?: CreateAgent[];
   /** Standalone create flow (farrier skill new / launcher): own header, harness verb. */
   standalone?: boolean;
   /** When set, renders the "ask clarifying questions first" toggle. */
@@ -96,12 +98,15 @@ export function CreateStep(props: CreateStepProps) {
   const availableAgents = agentRows.filter((agent) => availability?.[agent]);
   const showMode = agents.length > 1;
 
-  // Preselect every working agent once the probe lands; pick a valid default mode.
+  // Preselect the session's agents when they are installed, otherwise every
+  // working agent, once the probe lands; pick a valid default mode.
   useEffect(() => {
     if (availability && agents.length === 0 && availableAgents.length > 0) {
-      setAgents(availableAgents);
-      setMode(availability.claude ? "author-claude" : "author-codex");
-      setModeIndex(availability.claude ? 0 : 1);
+      const preferred = availableAgents.filter((agent) => props.defaultAgents?.includes(agent));
+      const initial = preferred.length > 0 ? preferred : availableAgents;
+      setAgents(initial);
+      setMode(initial.includes("claude") ? "author-claude" : "author-codex");
+      setModeIndex(initial.includes("claude") ? 0 : 1);
     }
   }, [availability]);
 

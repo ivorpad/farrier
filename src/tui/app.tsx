@@ -25,6 +25,7 @@ import { LearnStep } from "./LearnStep";
 import { ReviewStep, WritingStep } from "./ReviewStep";
 import { useHarnessReview } from "./use-harness-review";
 import { idleExitBindings, resolveIntent } from "./keymap";
+import type { SessionAgentContext } from "./session-context";
 import { loadWizardBootstrap } from "./wizard-bootstrap";
 
 type WizardAppProps = {
@@ -37,6 +38,8 @@ type WizardAppProps = {
   catalog: PackCatalog;
   registryWarnings: string[];
   models: ModelsConfig;
+  /** Startup pick: seeds the Agent step default and model overrides; never locks them. */
+  session?: SessionAgentContext;
   onExit: (code: number) => void;
 };
 
@@ -73,8 +76,9 @@ function WizardApp(props: WizardAppProps) {
         contextText: props.contextText,
         contextSource: props.contextSource,
         adviseBackend: props.adviseBackend,
+        defaultAgents: props.session && props.session.agents.length > 0 ? props.session.agents : undefined,
       }),
-    [defaultPackId, packDefaults, packIds, props.adviseBackend, props.contextSource, props.contextText, props.detectedPacks],
+    [defaultPackId, packDefaults, packIds, props.adviseBackend, props.contextSource, props.contextText, props.detectedPacks, props.session],
   );
 
   const [state, dispatch] = useReducer(wizardReducer, initialState);
@@ -219,6 +223,7 @@ function WizardApp(props: WizardAppProps) {
       models: props.models,
       backend: adviseBackend,
       role: "advise",
+      explicitModel: props.session?.models[adviseBackend],
     });
 
     adviseSkills({
@@ -291,11 +296,13 @@ function WizardApp(props: WizardAppProps) {
             models: props.models,
             backend: "claude",
             role: "skillCreation",
+            explicitModel: props.session?.models.claude,
           }),
           codex: resolveModelSettings({
             models: props.models,
             backend: "codex",
             role: "skillCreation",
+            explicitModel: props.session?.models.codex,
           }),
         },
       });
@@ -469,7 +476,7 @@ function WizardApp(props: WizardAppProps) {
   }
 }
 
-export async function runWizard(targetDir: string, options?: { context?: string }): Promise<number> {
+export async function runWizard(targetDir: string, options?: { context?: string; session?: SessionAgentContext }): Promise<number> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
   const bootstrap = await loadWizardBootstrap(targetDir, options?.context);
 
@@ -498,11 +505,12 @@ export async function runWizard(targetDir: string, options?: { context?: string 
           detectedPacks={bootstrap.detectedPacks}
           contextText={bootstrap.context?.text}
           contextSource={bootstrap.context?.source}
-          adviseBackend={bootstrap.adviseBackend}
+          adviseBackend={options?.session?.backend ?? bootstrap.adviseBackend}
           skillQueries={bootstrap.skillQueries}
           catalog={bootstrap.catalog}
           registryWarnings={bootstrap.registryWarnings}
           models={bootstrap.models}
+          session={options?.session}
           onExit={finish}
         />,
       );
