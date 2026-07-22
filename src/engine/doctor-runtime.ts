@@ -4,6 +4,7 @@ import type { EnforcementAgent } from "./agent-selection";
 import type { DoctorProblem } from "./doctor";
 import { readManifest } from "./manifest";
 import { hooksDirectory } from "./render";
+import { resolveToolchain } from "./toolchain";
 import { builtinCatalog, type PackCatalog } from "../registry/catalog";
 
 /**
@@ -233,10 +234,12 @@ export async function createRuntimeReport(input: {
 
   const manifest = await readManifest({ targetDir, catalog });
 
-  // Required executables.
+  // Required executables. The test verb follows the repository's resolved
+  // toolchain, so the probe demands the binary the recipes actually run.
   const pack = catalog.resolvePack(manifest.currentPackId);
+  const toolchain = await resolveToolchain(targetDir, pack);
   const runtimeBinaries = new Set(["python3", "just"]);
-  const firstToken = pack.verbs.test.split(/\s+/)[0];
+  const firstToken = toolchain.verbs.test.split(/\s+/)[0];
   if (firstToken && firstToken !== "echo") {
     runtimeBinaries.add(firstToken);
   }

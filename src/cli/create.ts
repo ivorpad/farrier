@@ -3,6 +3,7 @@ import { applyHarnessChangePlan, HarnessApplyError, inspectHarnessChangePlan, ty
 import { detectPacksWithEvidence, type DetectedPackEvidence, type EvaluatedPackRules } from "../engine/detect";
 import { formatAgents, parseAgents, type EnforcementAgent } from "../engine/agent-selection";
 import { agentsHardRules, createRenderPlan } from "../engine/render";
+import type { ToolchainResolution } from "../engine/toolchain";
 import { installSkills, type InstallSkillResult } from "../engine/skills";
 import type { ResolvedPack } from "../packs/types";
 import type { PackCatalog } from "../registry/catalog";
@@ -247,6 +248,7 @@ type CreationView = {
   plan: HarnessChangePlan;
   catalog: PackCatalog;
   rules?: EvaluatedPackRules;
+  toolchain?: ToolchainResolution;
 };
 
 function creationReport(input: CreationView): Record<string, unknown> {
@@ -276,7 +278,15 @@ function creationReport(input: CreationView): Record<string, unknown> {
       hooks: input.pack.hooks,
       skills: input.pack.skills,
       skillAction: input.options.installSkills ? "install" : "record-only",
-      commands: input.pack.verbs,
+      commands: input.toolchain?.verbs ?? input.pack.verbs,
+      toolchain: input.toolchain
+        ? {
+            packageManager: input.toolchain.packageManager ?? null,
+            testRunner: input.toolchain.testRunner ?? null,
+            evidence: input.toolchain.evidence,
+            notes: input.toolchain.notes,
+          }
+        : null,
       semanticJudges: "disabled-by-default",
       generator: generator
         ? {
@@ -358,11 +368,18 @@ function printCreationPlan(input: CreationView): void {
   console.log(`  - enforcement targets: ${formatAgents(input.options.agents)}`);
   console.log(`  - ${agentsHardRules(input.pack, input.options.agents, input.rules?.agentsRules).length} shared agent rules in AGENTS.md`);
   console.log(`  - ${input.pack.hooks.length} hook(s): ${input.pack.hooks.join(", ") || "none"}`);
-  console.log(`  - check: ${input.pack.verbs.check}`);
-  console.log(`  - test: ${input.pack.verbs.test}`);
-  console.log(`  - format: ${input.pack.verbs.fmt}`);
-  if (input.pack.verbs.konsistent) {
-    console.log(`  - structure: ${input.pack.verbs.konsistent}`);
+  const verbs = input.toolchain?.verbs ?? input.pack.verbs;
+  console.log(`  - check: ${verbs.check}`);
+  console.log(`  - test: ${verbs.test}`);
+  console.log(`  - format: ${verbs.fmt}`);
+  if (verbs.konsistent) {
+    console.log(`  - structure: ${verbs.konsistent}`);
+  }
+  if (input.toolchain?.packageManager) {
+    console.log(`  - toolchain: ${input.toolchain.packageManager} (${input.toolchain.evidence.join(", ")})`);
+  }
+  for (const note of input.toolchain?.notes ?? []) {
+    console.log(`  - warning: ${note}`);
   }
   console.log(`  - ${input.pack.skills.length} selected skill(s): ${input.options.installSkills ? "install for Claude Code and Codex after files are written" : "record only (--no-skills)"}`);
   console.log(`  - advisor skill trees: ${input.options.advisors ? "included (--with-advisors)" : "not generated (opt in with --with-advisors)"}`);
@@ -483,10 +500,10 @@ async function executeCreate(args: string[], usage: () => string): Promise<numbe
     hookCount: pack.hooks.length,
     skillCount: pack.skills.length,
     ruleCount: agentsHardRules(pack, options.agents, renderPlan.rules?.agentsRules).length,
-    verbs: pack.verbs,
+    verbs: renderPlan.toolchain?.verbs ?? pack.verbs,
     konsistentTool: pack.konsistentTool,
   });
-  const view = { options, resolved, pack, plan, catalog, rules: renderPlan.rules };
+  const view = { options, resolved, pack, plan, catalog, rules: renderPlan.rules, toolchain: renderPlan.toolchain };
   const report = creationReport(view);
 
   if (options.dryRun) {

@@ -8,6 +8,7 @@ import {
   renderClaudeMd,
   renderClaudeSettingsJson,
   renderCodexHooksJson,
+  renderJustfile,
   type RenderedFile
 } from "./render";
 
@@ -324,6 +325,10 @@ async function classifyGeneratedSingletons(
       // full check aggregate including the hook self-tests.
       legacyJustfile(pack).replaceAll(legacyHooksDirectory, hooksDirectory),
       legacyJustfile(legacyPack).replaceAll(legacyHooksDirectory, hooksDirectory),
+      // Current layout rendered from the pack's default verbs, before
+      // toolchain resolution derived manager-native verbs from the lockfile
+      // (e.g. bun verbs generated on a pnpm repo).
+      renderJustfile(pack),
       // Current layout rendered before the ruff exclusion existed.
       justfile.content
     ];

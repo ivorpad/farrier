@@ -7,6 +7,7 @@ import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
 import type { RegistryPin } from "../registry/catalog";
 import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
 import { evaluatePackRules, type EvaluatedPackRules } from "./detect";
+import { resolveToolchain, type ToolchainResolution } from "./toolchain";
 import { generateRepoMapSection, spliceRepoMapSection } from "./repo-map";
 
 /** Provider-neutral home for generated hook implementations and their tests. */
@@ -33,6 +34,8 @@ export type RenderPlan = {
   reviewedDigest?: string;
   /** Rule evaluation behind the generated policy, for evidence previews. */
   rules?: EvaluatedPackRules;
+  /** Toolchain evidence behind the generated verbs, for previews and warnings. */
+  toolchain?: ToolchainResolution;
 };
 
 function sha256(value: string): string {
@@ -431,7 +434,7 @@ export function renderCodexHooksJson(pack: ResolvedPack): string {
   return `${JSON.stringify({ hooks }, null, 2)}\n`;
 }
 
-function renderJustfile(pack: ResolvedPack): string {
+export function renderJustfile(pack: ResolvedPack): string {
   // Hook self-tests are deliberately NOT part of the project gate; they are
   // farrier's own tests and run under `farrier doctor`.
   const recipes = [
@@ -756,17 +759,22 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   const advisors = options.advisors ?? existingAdvisors ?? false;
   const existingSecondaryAcknowledged = stringArray(options.existingManifest?.secondaryAcknowledged);
   const secondaryAcknowledged = options.secondaryAcknowledged ?? existingSecondaryAcknowledged ?? [];
-  const [rules, repoMapSection] = await Promise.all([
+  const [rules, toolchain, repoMapSection] = await Promise.all([
     evaluatePackRules(options.targetDir, options.pack),
+    resolveToolchain(options.targetDir, options.pack),
     options.repoMapSection !== undefined
       ? Promise.resolve(options.repoMapSection)
       : generateRepoMapSection(options.targetDir)
   ]);
+  // Verbs follow repository evidence (lockfile, test runner) so generated
+  // commands run with the project's own toolchain; without evidence the
+  // pack's defaults stand.
+  const pack: ResolvedPack = { ...options.pack, verbs: toolchain.verbs };
 
   const files: RenderedFile[] = [
     {
       path: "AGENTS.md",
-      content: spliceRepoMapSection(renderAgentsMd(options.pack, agents, rules.agentsRules), repoMapSection)
+      content: spliceRepoMapSection(renderAgentsMd(pack, agents, rules.agentsRules), repoMapSection)
     }
   ];
 
@@ -778,7 +786,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
       },
       {
         path: ".claude/settings.json",
-        content: renderClaudeSettingsJson(options.pack)
+        content: renderClaudeSettingsJson(pack)
       }
     );
   }
@@ -786,7 +794,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   if (agents.includes("codex")) {
     files.push({
       path: ".codex/hooks.json",
-      content: renderCodexHooksJson(options.pack)
+      content: renderCodexHooksJson(pack)
     });
   }
 
@@ -800,7 +808,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
   // helpers and the JSONL event log). conftest.py keeps the self-tests
   // importable when the host project's pytest config (e.g.
   // --import-mode=importlib) would keep the hooks directory off sys.path.
-  if (options.pack.hooks.some(isBuiltinHookId)) {
+  if (pack.hooks.some(isBuiltinHookId)) {
     for (const fileName of ["_hook_runtime.py", "conftest.py"]) {
       files.push({
         path: posixPath(join(hooksDirectory, fileName)),
@@ -809,7 +817,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     }
   }
 
-  for (const hookId of options.pack.hooks.filter(isBuiltinHookId)) {
+  for (const hookId of pack.hooks.filter(isBuiltinHookId)) {
     for (const fileName of hookTemplateFiles[hookId]) {
       files.push({
         path: posixPath(join(hooksDirectory, fileName)),
@@ -819,7 +827,7 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     }
   }
 
-  for (const remoteHook of options.pack.remoteHooks) {
+  for (const remoteHook of pack.remoteHooks) {
     for (const file of remoteHook.files) {
       files.push({
         path: posixPath(join(hooksDirectory, remoteHook.id, file.path)),
@@ -836,21 +844,21 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     }
   }
 
-  if (options.pack.hooks.includes("tool-policy")) {
+  if (pack.hooks.includes("tool-policy")) {
     files.push({
       path: posixPath(join(hooksDirectory, "tool-policy-rules.json")),
       content: renderToolPolicyRulesJson(rules.toolPolicyRules)
     });
   }
 
-  if (options.pack.hooks.includes("quality-judge")) {
+  if (pack.hooks.includes("quality-judge")) {
     files.push({
       path: posixPath(join(hooksDirectory, "prompts", "quality-judge-v1.txt")),
       content: await readHookTemplate("prompts/quality-judge-v1.txt")
     });
   }
 
-  if (options.pack.hooks.includes("stop-judge")) {
+  if (pack.hooks.includes("stop-judge")) {
     files.push({
       path: posixPath(join(hooksDirectory, "prompts", "stop-judge-v1.txt")),
       content: await readHookTemplate("prompts/stop-judge-v1.txt")
@@ -859,20 +867,20 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
 
   files.push({
     path: "justfile",
-    content: renderJustfile(options.pack)
+    content: renderJustfile(pack)
   });
 
-  if (options.pack.konsistentTemplate) {
+  if (pack.konsistentTemplate) {
     files.push({
-      path: `${konsistentToolName(options.pack)}.json`,
-      content: renderKonsistent(options.pack.konsistentTemplate, options.targetDir)
+      path: `${konsistentToolName(pack)}.json`,
+      content: renderKonsistent(pack.konsistentTemplate, options.targetDir)
     });
   }
 
   files.push(
     {
       path: ".farrier.json",
-      content: await renderManifest(options.pack, {
+      content: await renderManifest(pack, {
         skills: selectedSkills,
         learnEnabled,
         advisors,
@@ -892,7 +900,8 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     targetDir: options.targetDir,
     files,
     reviewedDigest: renderPlanDigest(files),
-    rules
+    rules,
+    toolchain
   };
 }
 
