@@ -11,7 +11,9 @@ import sys
 from typing import Any
 
 from _hook_runtime import (
+    BackendResult,
     file_fingerprint,
+    interpret_backend_output,
     log_event,
     open_project_regular,
     read_project_text,
@@ -41,6 +43,7 @@ MAX_EDIT_SCAN_BYTES = 1024 * 1024
 MAX_REPO_MAP_BYTES = 16 * 1024
 MAX_QUALITY_RULES = 32
 MAX_QUALITY_RULE_BYTES = 1024
+MAX_STDERR_DETAIL_BYTES = 2048
 
 REDACTION_PATTERNS = (
     (re.compile(r"-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
@@ -398,7 +401,7 @@ def backend_command(
     if backend == "claude":
         if shutil.which("claude") is None:
             return None
-        return (["claude", "-p", "--model", model], prompt)
+        return (["claude", "-p", "--output-format", "json", "--model", model], prompt)
 
     if backend == "codex":
         if shutil.which("codex") is None:
@@ -410,50 +413,43 @@ def backend_command(
 
 def run_backend(
     config: dict[str, Any], combined_prompt: str, cwd: str
-) -> tuple[dict[str, Any] | None, str | None]:
-    if config.get("enabled") is not True:
-        return None
-
+) -> BackendResult:
     backend = str_from(config.get("backend"), "claude")
     model = str_from(config.get("model"), "haiku")
     timeout_ms = min(int_from(config.get("timeoutMs"), DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS)
 
     command = backend_command(backend, model, combined_prompt)
     if command is None:
-        return None, "semantic quality backend is unavailable"
+        return BackendResult(None, "not-found", None, "")
 
     args, stdin_text = command
 
-    returncode, output, status = run_bounded_process(
+    returncode, output, status, stderr_tail = run_bounded_process(
         args,
         cwd=cwd,
         timeout_seconds=timeout_ms / 1000,
         max_output_bytes=MAX_BACKEND_OUTPUT_BYTES,
         stdin_text=stdin_text,
+        capture_stderr=True,
     )
-    if status == "overflow":
-        return None, f"semantic quality backend output exceeded {MAX_BACKEND_OUTPUT_BYTES} bytes and was terminated"
-    if status == "timeout":
-        return None, "semantic quality backend timed out and was terminated"
-    if status != "ok" or returncode != 0:
-        return None, None
-
-    try:
-        data = json.loads(strip_code_fence(output))
-    except (json.JSONDecodeError, ValueError, RecursionError):
-        return None, None
-
-    return (data, None) if isinstance(data, dict) else (None, None)
+    return interpret_backend_output(backend, returncode, output, status, stderr_tail)
 
 
-def strip_code_fence(text: str) -> str:
-    """Unwrap a ```json ... ``` fenced response; models add fences despite instructions."""
-    stripped = text.strip()
-    if stripped.startswith("```") and stripped.endswith("```"):
-        first_newline = stripped.find("\n")
-        if first_newline >= 0:
-            return stripped[first_newline + 1 : -3].strip()
-    return stripped
+def backend_error_message(category: str) -> str | None:
+    """Agent-facing note for the backend failures worth surfacing inline.
+
+    exit-<code> and invalid-json stay silent to the agent (they are still logged
+    to events.jsonl); the categories below preserve the prior PostToolUse
+    feedback so a broken backend remains visible.
+    """
+    suffix = "Run the generated check manually or disable judge.perEdit explicitly."
+    if category == "not-found":
+        return f"semantic quality backend is unavailable. {suffix}"
+    if category == "overflow":
+        return f"semantic quality backend output exceeded {MAX_BACKEND_OUTPUT_BYTES} bytes and was terminated. {suffix}"
+    if category == "timeout":
+        return f"semantic quality backend timed out and was terminated. {suffix}"
+    return None
 
 
 def valid_judgement(data: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -554,14 +550,12 @@ def main() -> int:
         if error is not None:
             contexts.append(f"quality hook configuration is malformed: {error}. Run farrier doctor and farrier update --yes.")
         elif files and base_prompt is not None:
-            backend_result, backend_error = run_backend(
+            result = run_backend(
                 config,
                 build_combined_prompt(base_prompt, files, rules, repo_map_text(cwd, config)),
                 cwd,
             )
-            if backend_error is not None:
-                contexts.append(f"{backend_error}. Run the generated check manually or disable judge.perEdit explicitly.")
-            judgement = valid_judgement(backend_result)
+            judgement = valid_judgement(result.judgement)
             if judgement is not None:
                 log_event(
                     cwd,
@@ -569,10 +563,29 @@ def main() -> int:
                     "PostToolUse",
                     str(judgement.get("severity")),
                     detail=redact_text(str(judgement.get("summary"))),
+                    usage=result.usage,
                 )
-            context = judgement_context(judgement) if judgement is not None else None
-            if context is not None:
-                contexts.append(context)
+                context = judgement_context(judgement)
+                if context is not None:
+                    contexts.append(context)
+            else:
+                category = result.error or "invalid-json"
+                detail = (
+                    capped_text(result.stderr_tail, MAX_STDERR_DETAIL_BYTES)
+                    if result.stderr_tail.strip()
+                    else None
+                )
+                log_event(
+                    cwd,
+                    "quality-judge",
+                    "PostToolUse",
+                    f"backend-error:{category}",
+                    detail=detail,
+                    usage=result.usage,
+                )
+                message = backend_error_message(category)
+                if message is not None:
+                    contexts.append(message)
 
     if contexts:
         emit_posttool_context("\n\n".join(contexts))

@@ -53,6 +53,38 @@ def make_fake_executable(tmp_path: Path, name: str, body: str) -> Path:
     return fake
 
 
+CLAUDE_ARG_CHECKS = (
+    'test "$1" = "-p" || exit 7\n'
+    'test "$2" = "--output-format" || exit 7\n'
+    'test "$3" = "json" || exit 7\n'
+    'test "$4" = "--model" || exit 7\n'
+)
+
+
+def claude_envelope_body(
+    verdict: dict, *, usage: dict | None = None, checks: str = "", fenced: bool = False
+) -> str:
+    """Shell body that emits a `claude -p --output-format json` result envelope.
+
+    The verdict JSON is embedded as the envelope's `result` string, mirroring the
+    real Claude Code print-mode output the stop judge now parses. When `fenced`
+    the verdict is wrapped in a ```json code fence inside `result`.
+    """
+    result_text = json.dumps(verdict)
+    if fenced:
+        result_text = f"```json\n{result_text}\n```"
+    envelope: dict = {"type": "result", "subtype": "success", "is_error": False, "result": result_text}
+    if usage is not None:
+        envelope["usage"] = usage
+    literal = json.dumps(envelope).replace("'", "'\\''")
+    return f"{checks}printf '%s' '{literal}'\n"
+
+
+def read_events(tmp_path: Path) -> list[dict]:
+    text = (tmp_path / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
 def run_hook(payload: dict, extra_path: Path | None = None) -> tuple[int, str, str]:
     env = os.environ.copy()
     if extra_path is not None:
@@ -184,14 +216,20 @@ def test_fake_claude_serious_blocks(tmp_path: Path) -> None:
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-test "$1" = "-p" || exit 7
-test "$2" = "--model" || exit 7
-test "$3" = "sonnet" || exit 7
-cat > prompt.txt
-grep -q "diff --git" prompt.txt || exit 8
-printf '{"severity":"serious","summary":"secret-like config added","findings":[{"path":"README.md","message":"serious issue","suggestion":"fix before stopping"}]}'
-""",
+        claude_envelope_body(
+            {
+                "severity": "serious",
+                "summary": "secret-like config added",
+                "findings": [{"path": "README.md", "message": "serious issue", "suggestion": "fix before stopping"}],
+            },
+            usage={"input_tokens": 321, "output_tokens": 44, "cache_read_input_tokens": 100},
+            checks=(
+                CLAUDE_ARG_CHECKS
+                + 'test "$5" = "sonnet" || exit 7\n'
+                + "cat > prompt.txt\n"
+                + 'grep -q "diff --git" prompt.txt || exit 8\n'
+            ),
+        ),
     )
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
@@ -203,6 +241,9 @@ printf '{"severity":"serious","summary":"secret-like config added","findings":[{
     assert "semantic stop judge blocked stop" in data["reason"]
     assert "secret-like config added" in data["reason"]
     assert "README.md" in data["reason"]
+    event = read_events(tmp_path)[-1]
+    assert event["result"] == "serious"
+    assert event["usage"] == {"input_tokens": 321, "output_tokens": 44, "cache_read_input_tokens": 100}
 
 
 def test_fake_codex_serious_blocks_with_prompt_as_single_argument(
@@ -242,16 +283,25 @@ def test_fake_backend_advisory_passes_silently(tmp_path: Path) -> None:
     make_fake_executable(
         tmp_path,
         "claude",
-        """printf '{"severity":"advisory","summary":"minor cleanup","findings":[{"path":"README.md","message":"minor","suggestion":"later"}]}'""",
+        claude_envelope_body(
+            {
+                "severity": "advisory",
+                "summary": "minor cleanup",
+                "findings": [{"path": "README.md", "message": "minor", "suggestion": "later"}],
+            }
+        ),
     )
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
     assert_allowed(stdout, stderr)
+    event = read_events(tmp_path)[-1]
+    assert event["result"] == "advisory"
+    assert "usage" not in event
 
 
-def test_fake_backend_garbage_blocks(tmp_path: Path) -> None:
+def test_fake_backend_garbage_fails_open_and_logs_invalid_json(tmp_path: Path) -> None:
     init_repo_with_head(tmp_path)
     write_manifest(tmp_path, enabled=True)
     (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
@@ -260,11 +310,11 @@ def test_fake_backend_garbage_blocks(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
-    assert stderr == ""
-    assert parse_stdout(stdout)["decision"] == "block"
+    assert_allowed(stdout, stderr)
+    assert read_events(tmp_path)[-1]["result"] == "backend-error:invalid-json"
 
 
-def test_backend_timeout_blocks(tmp_path: Path) -> None:
+def test_backend_timeout_fails_open_and_logs_timeout(tmp_path: Path) -> None:
     init_repo_with_head(tmp_path)
     write_manifest(tmp_path, enabled=True, timeout_ms=50)
     (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
@@ -273,8 +323,8 @@ def test_backend_timeout_blocks(tmp_path: Path) -> None:
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
-    assert stderr == ""
-    assert parse_stdout(stdout)["decision"] == "block"
+    assert_allowed(stdout, stderr)
+    assert read_events(tmp_path)[-1]["result"] == "backend-error:timeout"
 
 
 def test_untracked_paths_are_included_in_prompt_payload(tmp_path: Path) -> None:
@@ -285,11 +335,10 @@ def test_untracked_paths_are_included_in_prompt_payload(tmp_path: Path) -> None:
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > prompt.txt
-grep -q "new_module.py" prompt.txt || exit 8
-printf '{"severity":"pass","summary":"ok","findings":[]}'
-""",
+        claude_envelope_body(
+            {"severity": "pass", "summary": "ok", "findings": []},
+            checks=("cat > prompt.txt\n" + 'grep -q "new_module.py" prompt.txt || exit 8\n'),
+        ),
     )
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
@@ -299,7 +348,7 @@ printf '{"severity":"pass","summary":"ok","findings":[]}'
     assert "new_module.py" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
 
 
-def test_large_diff_fails_closed_before_backend_when_combined_evidence_truncates(tmp_path: Path) -> None:
+def test_oversize_evidence_fails_open_without_backend_call(tmp_path: Path) -> None:
     init_repo_with_head(tmp_path)
     write_manifest(tmp_path, enabled=True)
     (tmp_path / "README.md").write_text("x" * (70 * 1024) + "SERIOUS_BEYOND_64K", encoding="utf-8")
@@ -313,12 +362,9 @@ def test_large_diff_fails_closed_before_backend_when_combined_evidence_truncates
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
-    assert stderr == ""
-    data = parse_stdout(stdout)
-    assert data["decision"] == "block"
-    assert "no backend judgement was accepted" in data["reason"]
-    assert "Split the change" in data["reason"]
+    assert_allowed(stdout, stderr)
     assert not (tmp_path / "called.txt").exists()
+    assert read_events(tmp_path)[-1]["result"] == "evidence-oversize"
 
 
 
@@ -343,19 +389,19 @@ def test_final_prompt_redacts_short_and_truncated_diff_prompt_and_untracked_name
         make_fake_executable(
             case_dir,
             "claude",
-            "cat > prompt.txt\nprintf '{\"severity\":\"pass\",\"summary\":\"ok\",\"findings\":[]}'",
+            claude_envelope_body(
+                {"severity": "pass", "summary": "ok", "findings": []},
+                checks="cat > prompt.txt\n",
+            ),
         )
 
         code, stdout, stderr = run_hook(stop_payload(case_dir), case_dir)
 
         assert code == 0
-        assert stderr == ""
+        assert_allowed(stdout, stderr)
         final_prompt = (case_dir / "prompt.txt").read_text(encoding="utf-8") if label == "short" else ""
-        if label == "short":
-            assert_allowed(stdout, stderr)
-        else:
-            assert parse_stdout(stdout)["decision"] == "block"
-            assert "no backend judgement was accepted" in stdout
+        if label == "truncated":
+            # Oversize evidence fails open: the backend is never invoked.
             assert not (case_dir / "prompt.txt").exists()
         for secret in (
             "prompt-secret",
@@ -369,7 +415,7 @@ def test_final_prompt_redacts_short_and_truncated_diff_prompt_and_untracked_name
             assert "seeded-secret" not in stdout
 
 
-def test_backend_output_overflow_blocks_without_raw_tail_leakage(tmp_path: Path) -> None:
+def test_backend_output_overflow_fails_open_without_leaking_raw_tail(tmp_path: Path) -> None:
     init_repo_with_head(tmp_path)
     write_manifest(tmp_path, enabled=True)
     (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
@@ -382,11 +428,31 @@ def test_backend_output_overflow_blocks_without_raw_tail_leakage(tmp_path: Path)
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
 
     assert code == 0
-    assert stderr == ""
-    data = parse_stdout(stdout)
-    assert data["decision"] == "block"
+    assert_allowed(stdout, stderr)
     assert "raw-tail-secret" not in stdout
-    assert len(data["reason"].encode("utf-8")) <= 16 * 1024
+    assert read_events(tmp_path)[-1]["result"] == "backend-error:overflow"
+
+
+def test_backend_stderr_tail_is_captured_redacted_in_event_never_agent_facing(tmp_path: Path) -> None:
+    init_repo_with_head(tmp_path)
+    write_manifest(tmp_path, enabled=True)
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    # Non-zero exit with a secret-bearing stderr line and no usable stdout.
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        "echo 'boom token=stderr-secret dev@example.com' 1>&2\nexit 3",
+    )
+
+    code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
+    event = read_events(tmp_path)[-1]
+    assert event["result"] == "backend-error:exit-3"
+    assert "boom" in event["detail"]
+    assert "stderr-secret" not in event["detail"]
+    assert "dev@example.com" not in event["detail"]
 
 
 def test_malformed_enabled_config_fields_block_while_disabled_is_inert(
@@ -531,14 +597,16 @@ def test_project_rules_and_repo_map_reach_backend_prompt(tmp_path: Path) -> None
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > prompt.txt
-grep -q "projectRules" prompt.txt || exit 8
-grep -q "utils_module already provides" prompt.txt || exit 8
-grep -q "repoMap" prompt.txt || exit 8
-grep -q "12 files" prompt.txt || exit 8
-printf '{"severity":"pass","summary":"ok","findings":[]}'
-""",
+        claude_envelope_body(
+            {"severity": "pass", "summary": "ok", "findings": []},
+            checks=(
+                "cat > prompt.txt\n"
+                + 'grep -q "projectRules" prompt.txt || exit 8\n'
+                + 'grep -q "utils_module already provides" prompt.txt || exit 8\n'
+                + 'grep -q "repoMap" prompt.txt || exit 8\n'
+                + 'grep -q "12 files" prompt.txt || exit 8\n'
+            ),
+        ),
     )
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
@@ -546,8 +614,7 @@ printf '{"severity":"pass","summary":"ok","findings":[]}'
     assert code == 0
     assert_allowed(stdout, stderr)
     assert "projectRules" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
-    events = (tmp_path / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
-    event = json.loads(events.splitlines()[-1])
+    event = read_events(tmp_path)[-1]
     assert event["hook"] == "stop-judge"
     assert event["result"] == "pass"
 
@@ -565,11 +632,10 @@ def test_include_repo_map_false_omits_map_from_backend_prompt(tmp_path: Path) ->
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > prompt.txt
-grep -q "MAP-SENTINEL-CONTENT" prompt.txt && exit 8
-printf '{"severity":"pass","summary":"ok","findings":[]}'
-""",
+        claude_envelope_body(
+            {"severity": "pass", "summary": "ok", "findings": []},
+            checks=("cat > prompt.txt\n" + 'grep -q "MAP-SENTINEL-CONTENT" prompt.txt && exit 8\n'),
+        ),
     )
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
@@ -618,10 +684,11 @@ def test_fenced_backend_json_is_accepted(tmp_path: Path) -> None:
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > /dev/null
-printf '```json\\n{"severity":"serious","summary":"fenced block","findings":[]}\\n```'
-""",
+        claude_envelope_body(
+            {"severity": "serious", "summary": "fenced block", "findings": []},
+            checks="cat > /dev/null\n",
+            fenced=True,
+        ),
     )
 
     code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)

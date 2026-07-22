@@ -491,8 +491,8 @@ describe("render engine", () => {
     expect(manifest.judge.perEdit.prompt).toBe(".farrier/hooks/prompts/quality-judge-v1.txt");
     expect(manifest.judge.stop.includeRepoMap).toBe(true);
     expect(manifest.versions.prompts).toEqual({ qualityJudge: "v2", stopJudge: "v2" });
-    expect(manifest.versions.hooks["quality-judge"]).toBe(5);
-    expect(manifest.versions.hooks["stop-judge"]).toBe(4);
+    expect(manifest.versions.hooks["quality-judge"]).toBe(6);
+    expect(manifest.versions.hooks["stop-judge"]).toBe(5);
   });
 
   test("renders manifest with pack hook ids skills quality and version defaults", async () => {

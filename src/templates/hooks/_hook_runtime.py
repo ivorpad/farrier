@@ -8,17 +8,30 @@ import stat
 import subprocess
 import time
 from pathlib import Path, PurePosixPath
+from typing import Any, NamedTuple
 
 EVENT_LOG_RELATIVE_PARTS = (".farrier", "runtime", "events.jsonl")
 MAX_EVENT_LOG_BYTES = 1024 * 1024
+MAX_EVENT_DETAIL_CHARS = 2000
+STDERR_TAIL_BYTES = 2048
 
 
-def log_event(cwd: str, hook: str, event: str, result: str, rule: str | None = None, detail: str | None = None) -> None:
+def log_event(
+    cwd: str,
+    hook: str,
+    event: str,
+    result: str,
+    rule: str | None = None,
+    detail: str | None = None,
+    usage: dict[str, int] | None = None,
+) -> None:
     """Append one JSONL runtime event; never raises so logging cannot break a hook.
 
     Rotates the previous log aside once it exceeds MAX_EVENT_LOG_BYTES.
-    `detail` carries a short, caller-redacted description (e.g. the denied
-    target) so blocked events are auditable after the fact.
+    `detail` carries a caller-redacted description (e.g. the denied target or a
+    bounded backend-stderr tail) so blocked or failed events are auditable after
+    the fact. `usage` records provider-reported token counts for judge events
+    (null for the codex backend, which does not surface usage from hooks).
     """
     try:
         directory = os.path.join(cwd, *EVENT_LOG_RELATIVE_PARTS[:-1])
@@ -29,11 +42,13 @@ def log_event(cwd: str, hook: str, event: str, result: str, rule: str | None = N
                 os.replace(path, f"{path}.1")
         except OSError:
             pass
-        entry: dict[str, str] = {"hook": hook, "event": event, "result": result}
+        entry: dict[str, Any] = {"hook": hook, "event": event, "result": result}
         if rule is not None:
             entry["rule"] = rule
         if detail is not None:
-            entry["detail"] = detail[:200]
+            entry["detail"] = detail[:MAX_EVENT_DETAIL_CHARS]
+        if usage is not None:
+            entry["usage"] = usage
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
     except Exception:
@@ -69,9 +84,24 @@ def run_bounded_process(
     max_output_bytes: int,
     stdin_text: str | None = None,
     merge_stderr: bool = False,
-) -> tuple[int | None, str, str]:
+    capture_stderr: bool = False,
+) -> tuple[int | None, str, str, str]:
+    """Run a bounded child process. Returns (returncode, stdout, status, stderr_tail).
+
+    `stderr_tail` is the last STDERR_TAIL_BYTES of the child's stderr, decoded
+    leniently, and is populated only when `capture_stderr` is set and stderr is
+    not merged into stdout; otherwise it is "". stderr bytes never count toward
+    the stdout `max_output_bytes` overflow bound.
+    """
     if timeout_seconds <= 0 or max_output_bytes <= 0:
-        return None, "", "error"
+        return None, "", "error", ""
+
+    if merge_stderr:
+        stderr_dest: int = subprocess.STDOUT
+    elif capture_stderr:
+        stderr_dest = subprocess.PIPE
+    else:
+        stderr_dest = subprocess.DEVNULL
 
     started = time.monotonic()
     try:
@@ -80,16 +110,21 @@ def run_bounded_process(
             cwd=cwd,
             stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
+            stderr=stderr_dest,
             start_new_session=True,
         )
     except OSError:
-        return None, "", "error"
+        return None, "", "error", ""
 
     assert proc.stdout is not None
     selector = selectors.DefaultSelector()
     os.set_blocking(proc.stdout.fileno(), False)
     selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
+
+    stderr_buf = bytearray()
+    if capture_stderr and not merge_stderr and proc.stderr is not None:
+        os.set_blocking(proc.stderr.fileno(), False)
+        selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
 
     pending = stdin_text.encode("utf-8") if stdin_text is not None else b""
     written = 0
@@ -130,6 +165,24 @@ def run_bounded_process(
                     _close_registered(selector, key.fileobj)
                 continue
 
+            if key.data == "stderr":
+                # Bounded tail capture only; a stderr read failure never aborts
+                # the run and stderr bytes never trip the stdout overflow bound.
+                try:
+                    chunk = os.read(key.fileobj.fileno(), 4096)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    _close_registered(selector, key.fileobj)
+                    continue
+                if not chunk:
+                    _close_registered(selector, key.fileobj)
+                    continue
+                stderr_buf.extend(chunk)
+                if len(stderr_buf) > STDERR_TAIL_BYTES:
+                    del stderr_buf[:-STDERR_TAIL_BYTES]
+                continue
+
             try:
                 chunk = os.read(key.fileobj.fileno(), 4096)
             except BlockingIOError:
@@ -158,7 +211,8 @@ def run_bounded_process(
         terminate_process(proc)
         returncode = proc.wait()
     bounded = bytes(output[:max_output_bytes]).decode("utf-8", errors="ignore")
-    return returncode, bounded, status
+    stderr_tail = bytes(stderr_buf).decode("utf-8", errors="ignore")
+    return returncode, bounded, status, stderr_tail
 
 
 def _path_parts(relative: str) -> tuple[list[str] | None, str | None]:
@@ -274,4 +328,113 @@ def read_repo_map(root: str | Path) -> str | None:
         return None
     section = text[start:end].strip()
     return section or None
+
+
+CLAUDE_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+class BackendResult(NamedTuple):
+    """Outcome of one judge backend call.
+
+    judgement: the parsed verdict dict (not yet schema-validated) or None on any
+        failure.
+    error: a short failure category or None on success. One of "timeout",
+        "overflow", "error", "not-found", "invalid-json", or "exit-<code>".
+    usage: normalized Claude token counts, or None (always None for codex and
+        for failures before a parseable envelope).
+    stderr_tail: bounded, unredacted tail of the child's stderr; the caller
+        redacts it before logging and never surfaces it to the agent.
+    """
+
+    judgement: dict[str, Any] | None
+    error: str | None
+    usage: dict[str, int] | None
+    stderr_tail: str
+
+
+def strip_code_fence(text: str) -> str:
+    """Unwrap a ```json ... ``` fenced response; models add fences despite instructions."""
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline >= 0:
+            return stripped[first_newline + 1 : -3].strip()
+    return stripped
+
+
+def normalize_usage(usage: Any) -> dict[str, int] | None:
+    """Keep only present, non-negative integer token fields; None when empty."""
+    if not isinstance(usage, dict):
+        return None
+    normalized: dict[str, int] = {}
+    for field in CLAUDE_USAGE_FIELDS:
+        value = usage.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            continue
+        normalized[field] = value
+    return normalized or None
+
+
+def parse_claude_result_envelope(output: str) -> tuple[str | None, dict[str, int] | None]:
+    """Parse a `claude -p --output-format json` result envelope.
+
+    Returns (result_text, usage). result_text is the assistant's text (the
+    envelope's `result` field) or None when the output is not a JSON object with
+    a string `result`. usage is the normalized token dict or None.
+    """
+    try:
+        envelope = json.loads(output)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return None, None
+    if not isinstance(envelope, dict):
+        return None, None
+    usage = normalize_usage(envelope.get("usage"))
+    result = envelope.get("result")
+    if not isinstance(result, str):
+        return None, usage
+    return result, usage
+
+
+def interpret_backend_output(
+    backend: str,
+    returncode: int | None,
+    output: str,
+    status: str,
+    stderr_tail: str,
+) -> BackendResult:
+    """Categorize a bounded backend run into a verdict dict or a failure category.
+
+    For the claude backend the stdout is the `--output-format json` envelope; the
+    verdict is parsed from its `result` field (a code fence is tolerated) and the
+    token usage is captured. For codex the stdout is the verdict text directly and
+    usage is always None.
+    """
+    if status == "timeout":
+        return BackendResult(None, "timeout", None, stderr_tail)
+    if status == "overflow":
+        return BackendResult(None, "overflow", None, stderr_tail)
+    if status != "ok" or returncode is None:
+        return BackendResult(None, "error", None, stderr_tail)
+    if returncode != 0:
+        return BackendResult(None, f"exit-{returncode}", None, stderr_tail)
+
+    if backend == "claude":
+        body, usage = parse_claude_result_envelope(output)
+        if body is None:
+            return BackendResult(None, "invalid-json", usage, stderr_tail)
+    else:
+        body, usage = output, None
+
+    try:
+        data = json.loads(strip_code_fence(body))
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return BackendResult(None, "invalid-json", usage, stderr_tail)
+    if not isinstance(data, dict):
+        return BackendResult(None, "invalid-json", usage, stderr_tail)
+    return BackendResult(data, None, usage, stderr_tail)
 

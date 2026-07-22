@@ -9,7 +9,12 @@ import time
 from pathlib import Path
 
 import _hook_runtime
-from _hook_runtime import run_bounded_process
+from _hook_runtime import (
+    STDERR_TAIL_BYTES,
+    interpret_backend_output,
+    parse_claude_result_envelope,
+    run_bounded_process,
+)
 
 
 HOOK = Path(__file__).with_name("verb-runner.py")
@@ -293,7 +298,7 @@ def test_skips_edits_inside_claude_hooks_to_avoid_recursion(tmp_path: Path) -> N
 
 def test_backend_stdin_delivery_is_covered_by_timeout(tmp_path: Path) -> None:
     started = time.monotonic()
-    returncode, output, status = run_bounded_process(
+    returncode, output, status, _ = run_bounded_process(
         [sys.executable, "-c", "import time; time.sleep(5)"],
         cwd=str(tmp_path),
         timeout_seconds=0.05,
@@ -305,6 +310,74 @@ def test_backend_stdin_delivery_is_covered_by_timeout(tmp_path: Path) -> None:
     assert returncode is not None
     assert output == ""
     assert time.monotonic() - started < 1
+
+
+def test_capture_stderr_returns_bounded_tail_without_touching_stdout(tmp_path: Path) -> None:
+    returncode, output, status, stderr_tail = run_bounded_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('OUT'); sys.stderr.write('E' * 5000)",
+        ],
+        cwd=str(tmp_path),
+        timeout_seconds=5,
+        max_output_bytes=1024,
+        capture_stderr=True,
+    )
+
+    assert status == "ok"
+    assert returncode == 0
+    assert output == "OUT"
+    # Only the last STDERR_TAIL_BYTES are kept; stdout is unaffected.
+    assert stderr_tail == "E" * STDERR_TAIL_BYTES
+
+
+def test_stderr_tail_is_empty_when_not_captured(tmp_path: Path) -> None:
+    returncode, output, status, stderr_tail = run_bounded_process(
+        [sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.stdout.write('ok')"],
+        cwd=str(tmp_path),
+        timeout_seconds=5,
+        max_output_bytes=1024,
+    )
+
+    assert status == "ok"
+    assert output == "ok"
+    assert stderr_tail == ""
+
+
+def test_parse_claude_result_envelope_extracts_result_and_usage() -> None:
+    envelope = json.dumps(
+        {
+            "type": "result",
+            "result": "{\"severity\":\"pass\"}",
+            "usage": {"input_tokens": 12, "output_tokens": 3, "cache_read_input_tokens": 40, "ignored": 9},
+        }
+    )
+    body, usage = parse_claude_result_envelope(envelope)
+
+    assert body == '{"severity":"pass"}'
+    assert usage == {"input_tokens": 12, "output_tokens": 3, "cache_read_input_tokens": 40}
+
+
+def test_parse_claude_result_envelope_rejects_non_envelope() -> None:
+    assert parse_claude_result_envelope("not json") == (None, None)
+    assert parse_claude_result_envelope(json.dumps({"usage": {"input_tokens": 5}})) == (None, {"input_tokens": 5})
+
+
+def test_interpret_backend_output_categories() -> None:
+    assert interpret_backend_output("claude", None, "", "timeout", "tail").error == "timeout"
+    assert interpret_backend_output("claude", None, "", "overflow", "").error == "overflow"
+    assert interpret_backend_output("claude", 7, "envelope", "ok", "").error == "exit-7"
+    assert interpret_backend_output("claude", 0, "not-json", "ok", "").error == "invalid-json"
+    good = interpret_backend_output(
+        "claude", 0, json.dumps({"result": "{\"severity\":\"pass\"}", "usage": {"output_tokens": 2}}), "ok", ""
+    )
+    assert good.error is None
+    assert good.judgement == {"severity": "pass"}
+    assert good.usage == {"output_tokens": 2}
+    codex = interpret_backend_output("codex", 0, '{"severity":"serious"}', "ok", "")
+    assert codex.judgement == {"severity": "serious"}
+    assert codex.usage is None
 
 
 def test_safe_text_read_rejects_changed_fingerprint(tmp_path: Path, monkeypatch) -> None:

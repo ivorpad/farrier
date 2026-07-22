@@ -139,8 +139,8 @@ export const hookCatalogVersions: Record<HookId, number> = {
     "tool-policy": 3,
     "write-guard": 4,
     "verb-runner": 6,
-    "quality-judge": 5,
-    "stop-judge": 4
+    "quality-judge": 6,
+    "stop-judge": 5
 };
 
 export const hookTemplateFiles: Record<HookId, string[]> = {

@@ -10,7 +10,14 @@ import shutil
 import sys
 from typing import Any
 
-from _hook_runtime import log_event, read_project_text, read_repo_map, run_bounded_process
+from _hook_runtime import (
+    BackendResult,
+    interpret_backend_output,
+    log_event,
+    read_project_text,
+    read_repo_map,
+    run_bounded_process,
+)
 
 
 # Measured: a per-edit haiku judge call takes ~17 s end to end and a stop
@@ -31,6 +38,7 @@ MAX_UNTRACKED_PATH_BYTES = 4096
 MAX_REPO_MAP_BYTES = 16 * 1024
 MAX_QUALITY_RULES = 32
 MAX_QUALITY_RULE_BYTES = 1024
+MAX_STDERR_DETAIL_BYTES = 2048
 
 REDACTION_PATTERNS = (
     (re.compile(r"-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
@@ -217,7 +225,7 @@ def run_git(
     if shutil.which("git") is None:
         return None
 
-    returncode, output, status = run_bounded_process(
+    returncode, output, status, _ = run_bounded_process(
         ["git", *args],
         cwd=cwd,
         timeout_seconds=timeout_seconds,
@@ -291,7 +299,7 @@ def backend_command(
     if backend == "claude":
         if shutil.which("claude") is None:
             return None
-        return (["claude", "-p", "--model", model], prompt)
+        return (["claude", "-p", "--output-format", "json", "--model", model], prompt)
 
     if backend == "codex":
         if shutil.which("codex") is None:
@@ -303,43 +311,26 @@ def backend_command(
 
 def run_backend(
     config: dict[str, Any], combined_prompt: str, cwd: str
-) -> dict[str, Any] | None:
+) -> BackendResult:
     backend = str_from(config.get("backend"), "claude")
     model = str_from(config.get("model"), "sonnet")
     timeout_ms = min(int_from(config.get("timeoutMs"), DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS)
 
     command = backend_command(backend, model, combined_prompt)
     if command is None:
-        return None
+        return BackendResult(None, "not-found", None, "")
 
     args, stdin_text = command
 
-    returncode, output, status = run_bounded_process(
+    returncode, output, status, stderr_tail = run_bounded_process(
         args,
         cwd=cwd,
         timeout_seconds=timeout_ms / 1000,
         max_output_bytes=MAX_BACKEND_OUTPUT_BYTES,
         stdin_text=stdin_text,
+        capture_stderr=True,
     )
-    if status != "ok" or returncode != 0:
-        return None
-
-    try:
-        data = json.loads(strip_code_fence(output))
-    except (json.JSONDecodeError, ValueError, RecursionError):
-        return None
-
-    return data if isinstance(data, dict) else None
-
-
-def strip_code_fence(text: str) -> str:
-    """Unwrap a ```json ... ``` fenced response; models add fences despite instructions."""
-    stripped = text.strip()
-    if stripped.startswith("```") and stripped.endswith("```"):
-        first_newline = stripped.find("\n")
-        if first_newline >= 0:
-            return stripped[first_newline + 1 : -3].strip()
-    return stripped
+    return interpret_backend_output(backend, returncode, output, status, stderr_tail)
 
 
 def valid_judgement(data: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -397,6 +388,16 @@ def emit_stop_block(reason: str) -> None:
             }
         )
     )
+
+
+def log_backend_failure(cwd: str, category: str, stderr_tail: str, usage: dict[str, int] | None) -> None:
+    """Record a categorized, non-blocking stop-judge backend failure.
+
+    The stderr tail is redacted and bounded before it reaches the event log and
+    is never surfaced to the agent.
+    """
+    detail = capped_text(stderr_tail, MAX_STDERR_DETAIL_BYTES) if stderr_tail.strip() else None
+    log_event(cwd, "stop-judge", "Stop", f"backend-error:{category}", detail=detail, usage=usage)
 
 
 def main() -> int:
@@ -457,16 +458,19 @@ def main() -> int:
         base_prompt, diff, untracked_files, rules, repo_map_text(cwd, config)
     )
     if prompt_truncated:
-        emit_stop_block(
-            f"Semantic stop evidence exceeded the {MAX_COMBINED_PROMPT_BYTES}-byte combined review bound; no backend judgement was accepted. "
-            "Split the change into smaller reviewed steps, then retry Stop."
-        )
+        # Fail open: evidence too large to review is a judge limitation, not a
+        # reason to gate Stop. Record it and allow.
+        log_event(cwd, "stop-judge", "Stop", "evidence-oversize")
         return 0
-    judgement = valid_judgement(run_backend(config, combined_prompt, cwd))
+
+    result = run_backend(config, combined_prompt, cwd)
+    judgement = valid_judgement(result.judgement)
 
     if judgement is None:
-        log_event(cwd, "stop-judge", "Stop", "backend-error")
-        emit_stop_block("Semantic stop backend failed, timed out, or returned invalid bounded JSON. Retry or disable judge.stop explicitly.")
+        # Fail open on any backend failure: log the category (with a redacted,
+        # bounded stderr tail and any token usage) and allow Stop. The judge is
+        # advisory, never a fail-closed network gate.
+        log_backend_failure(cwd, result.error or "invalid-json", result.stderr_tail, result.usage)
         return 0
 
     log_event(
@@ -475,6 +479,7 @@ def main() -> int:
         "Stop",
         str(judgement.get("severity")),
         detail=redact_text(str(judgement.get("summary"))),
+        usage=result.usage,
     )
     if judgement.get("severity") == "serious":
         emit_stop_block(block_reason(judgement))

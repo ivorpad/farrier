@@ -110,7 +110,7 @@ def find_just_recipes(cwd: str) -> tuple[set[str], str | None]:
 
 
 def run_command(command: list[str], cwd: str) -> tuple[bool, str]:
-    returncode, captured, status = run_bounded_process(
+    returncode, captured, status, _ = run_bounded_process(
         command,
         cwd=cwd,
         timeout_seconds=COMMAND_TIMEOUT_SECONDS,

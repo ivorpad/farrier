@@ -52,6 +52,38 @@ def make_fake_executable(tmp_path: Path, name: str, body: str) -> Path:
     return fake
 
 
+CLAUDE_ARG_CHECKS = (
+    'test "$1" = "-p" || exit 7\n'
+    'test "$2" = "--output-format" || exit 7\n'
+    'test "$3" = "json" || exit 7\n'
+    'test "$4" = "--model" || exit 7\n'
+)
+
+
+def claude_envelope_body(
+    verdict: dict, *, usage: dict | None = None, checks: str = "", fenced: bool = False
+) -> str:
+    """Shell body emitting a `claude -p --output-format json` result envelope.
+
+    The verdict JSON is embedded as the envelope's `result` string, mirroring the
+    real Claude Code print-mode output the quality judge now parses. When `fenced`
+    the verdict is wrapped in a ```json code fence inside `result`.
+    """
+    result_text = json.dumps(verdict)
+    if fenced:
+        result_text = f"```json\n{result_text}\n```"
+    envelope: dict = {"type": "result", "subtype": "success", "is_error": False, "result": result_text}
+    if usage is not None:
+        envelope["usage"] = usage
+    literal = json.dumps(envelope).replace("'", "'\\''")
+    return f"{checks}printf '%s' '{literal}'\n"
+
+
+def read_events(tmp_path: Path) -> list[dict]:
+    text = (tmp_path / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
 def run_hook(
     payload: dict, tmp_path: Path, extra_path: Path | None = None
 ) -> tuple[int, str, str]:
@@ -205,14 +237,20 @@ def test_enabled_fake_claude_advisory_emits_context_and_reads_prompt_from_stdin(
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-test "$1" = "-p" || exit 7
-test "$2" = "--model" || exit 7
-test "$3" = "haiku" || exit 7
-cat > prompt.txt
-grep -q "CUSTOM QUALITY PROMPT" prompt.txt || exit 8
-printf '{"severity":"advisory","summary":"move logic closer to domain","findings":[{"path":"src/app.py","message":"thin cohesion","suggestion":"extract a service"}]}'
-""",
+        claude_envelope_body(
+            {
+                "severity": "advisory",
+                "summary": "move logic closer to domain",
+                "findings": [{"path": "src/app.py", "message": "thin cohesion", "suggestion": "extract a service"}],
+            },
+            usage={"input_tokens": 210, "output_tokens": 33},
+            checks=(
+                CLAUDE_ARG_CHECKS
+                + 'test "$5" = "haiku" || exit 7\n'
+                + "cat > prompt.txt\n"
+                + 'grep -q "CUSTOM QUALITY PROMPT" prompt.txt || exit 8\n'
+            ),
+        ),
     )
 
     code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
@@ -226,6 +264,9 @@ printf '{"severity":"advisory","summary":"move logic closer to domain","findings
         .read_text(encoding="utf-8")
         .startswith("CUSTOM QUALITY PROMPT")
     )
+    event = read_events(tmp_path)[-1]
+    assert event["result"] == "advisory"
+    assert event["usage"] == {"input_tokens": 210, "output_tokens": 33}
 
 
 def test_enabled_fake_codex_serious_emits_context_and_prompt_is_single_argument(
@@ -257,7 +298,7 @@ printf '{"severity":"serious","summary":"business logic dumped into CLI","findin
     assert_post_context(stdout, "business logic dumped into CLI")
 
 
-def test_backend_garbage_response_passes_silently(tmp_path: Path) -> None:
+def test_backend_garbage_response_is_silent_to_agent_but_logs_invalid_json(tmp_path: Path) -> None:
     write_manifest(tmp_path, manifest(enabled=True, backend="claude"))
     source = tmp_path / "src"
     source.mkdir()
@@ -269,9 +310,10 @@ def test_backend_garbage_response_passes_silently(tmp_path: Path) -> None:
 
     assert code == 0
     assert_allowed(stdout, stderr)
+    assert read_events(tmp_path)[-1]["result"] == "backend-error:invalid-json"
 
 
-def test_backend_timeout_passes_silently(tmp_path: Path) -> None:
+def test_backend_timeout_emits_context_and_logs_timeout(tmp_path: Path) -> None:
     write_manifest(tmp_path, manifest(enabled=True, backend="claude", timeout_ms=50))
     source = tmp_path / "src"
     source.mkdir()
@@ -284,6 +326,7 @@ def test_backend_timeout_passes_silently(tmp_path: Path) -> None:
     assert code == 0
     assert stderr == ""
     assert_post_context(stdout, "timed out and was terminated")
+    assert read_events(tmp_path)[-1]["result"] == "backend-error:timeout"
 
 
 def test_invalid_configured_prompt_emits_actionable_feedback(tmp_path: Path) -> None:
@@ -324,13 +367,15 @@ def test_large_file_content_is_capped_with_truncated_marker(tmp_path: Path) -> N
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > prompt.txt
-grep -q "\\[truncated\\]" prompt.txt || exit 8
-bytes=$(wc -c < prompt.txt)
-test "$bytes" -lt 40000 || exit 9
-printf '{"severity":"pass","summary":"ok","findings":[]}'
-""",
+        claude_envelope_body(
+            {"severity": "pass", "summary": "ok", "findings": []},
+            checks=(
+                "cat > prompt.txt\n"
+                + 'grep -q "\\[truncated\\]" prompt.txt || exit 8\n'
+                + "bytes=$(wc -c < prompt.txt)\n"
+                + 'test "$bytes" -lt 40000 || exit 9\n'
+            ),
+        ),
     )
 
     code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
@@ -360,10 +405,14 @@ def test_final_backend_prompt_and_feedback_redact_under_limit_and_truncated_evid
         make_fake_executable(
             case_dir,
             "claude",
-            """
-cat > prompt.txt
-printf '{"severity":"advisory","summary":"token=feedback-secret feedback@example.com","findings":[]}'
-""",
+            claude_envelope_body(
+                {
+                    "severity": "advisory",
+                    "summary": "token=feedback-secret feedback@example.com",
+                    "findings": [],
+                },
+                checks="cat > prompt.txt\n",
+            ),
         )
 
         code, stdout, stderr = run_hook(
@@ -407,6 +456,31 @@ def test_backend_output_overflow_is_terminated_with_bounded_feedback(
     assert_post_context(stdout, "output exceeded")
     assert "raw-tail-secret" not in stdout
     assert len(stdout.encode("utf-8")) < 20 * 1024
+    assert read_events(tmp_path)[-1]["result"] == "backend-error:overflow"
+
+
+def test_backend_nonzero_exit_logs_category_with_redacted_stderr_and_stays_silent(tmp_path: Path) -> None:
+    write_manifest(tmp_path, manifest(enabled=True, backend="claude"))
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("ok\n", encoding="utf-8")
+    # Exit non-zero with a secret-bearing stderr line and no usable stdout.
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        "echo 'boom token=stderr-secret dev@example.com' 1>&2\nexit 5",
+    )
+
+    code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
+
+    assert code == 0
+    # exit-<code> failures are logged but not surfaced inline to the agent.
+    assert_allowed(stdout, stderr)
+    event = read_events(tmp_path)[-1]
+    assert event["result"] == "backend-error:exit-5"
+    assert "boom" in event["detail"]
+    assert "stderr-secret" not in event["detail"]
+    assert "dev@example.com" not in event["detail"]
 
 
 def test_malformed_enabled_config_fields_emit_feedback_while_disabled_is_inert(
@@ -562,14 +636,16 @@ def test_project_rules_and_repo_map_reach_backend_prompt(tmp_path: Path) -> None
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > prompt.txt
-grep -q "projectRules" prompt.txt || exit 8
-grep -q "utils_module already provides" prompt.txt || exit 8
-grep -q "repoMap" prompt.txt || exit 8
-grep -q "12 files" prompt.txt || exit 8
-printf '{"severity":"pass","summary":"ok","findings":[]}'
-""",
+        claude_envelope_body(
+            {"severity": "pass", "summary": "ok", "findings": []},
+            checks=(
+                "cat > prompt.txt\n"
+                + 'grep -q "projectRules" prompt.txt || exit 8\n'
+                + 'grep -q "utils_module already provides" prompt.txt || exit 8\n'
+                + 'grep -q "repoMap" prompt.txt || exit 8\n'
+                + 'grep -q "12 files" prompt.txt || exit 8\n'
+            ),
+        ),
     )
 
     code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
@@ -577,8 +653,7 @@ printf '{"severity":"pass","summary":"ok","findings":[]}'
     assert code == 0
     assert_allowed(stdout, stderr)
     assert "projectRules" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
-    events = (tmp_path / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
-    event = json.loads(events.splitlines()[-1])
+    event = read_events(tmp_path)[-1]
     assert event["hook"] == "quality-judge"
     assert event["result"] == "pass"
 
@@ -598,11 +673,10 @@ def test_include_repo_map_false_omits_map_from_backend_prompt(tmp_path: Path) ->
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > prompt.txt
-grep -q "MAP-SENTINEL-CONTENT" prompt.txt && exit 8
-printf '{"severity":"pass","summary":"ok","findings":[]}'
-""",
+        claude_envelope_body(
+            {"severity": "pass", "summary": "ok", "findings": []},
+            checks=("cat > prompt.txt\n" + 'grep -q "MAP-SENTINEL-CONTENT" prompt.txt && exit 8\n'),
+        ),
     )
 
     code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
@@ -652,10 +726,11 @@ def test_fenced_backend_json_is_accepted(tmp_path: Path) -> None:
     make_fake_executable(
         tmp_path,
         "claude",
-        """
-cat > /dev/null
-printf '```json\\n{"severity":"advisory","summary":"fenced finding","findings":[]}\\n```'
-""",
+        claude_envelope_body(
+            {"severity": "advisory", "summary": "fenced finding", "findings": []},
+            checks="cat > /dev/null\n",
+            fenced=True,
+        ),
     )
 
     code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
