@@ -376,7 +376,7 @@ describe("CLI e2e", () => {
     const rulesPath = join(dir, ".farrier", "hooks", "tool-policy-rules.json");
     const before = await readFile(rulesPath, "utf8");
 
-    const result = await runCli(["learn", "--dir", dir, "--transcripts", join(dir, "missing-transcripts"), "--no-llm"]);
+    const result = await runCli(["learn", "--dir", dir, "--transcripts", join(dir, "missing-transcripts"), "--codex-sessions", join(dir, "missing-codex-sessions"), "--no-llm"]);
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");

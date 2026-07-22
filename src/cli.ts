@@ -7,6 +7,7 @@ import type { LearnBackend } from "./engine/learn";
 type LearnCliOptions = {
   dir: string;
   transcripts?: string;
+  codexSessions?: string;
   yes: boolean;
   json: boolean;
   noLlm: boolean;
@@ -27,7 +28,7 @@ Usage:
   farrier update --dir <target> [--yes] [--json]
   farrier map --dir <target> [--json]
   farrier registry list [--dir <target>] [--json]
-  farrier learn --dir <target> [--transcripts <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
+  farrier learn --dir <target> [--transcripts <dir>] [--codex-sessions <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
   farrier doctor --dir <target> [--json] [--static] [--live]
   farrier ab-gate --result <result.json> [--json]
   farrier audit-panel prepare --manifest <panel.json> --output <new-directory> [--json]
@@ -50,6 +51,7 @@ Options:
   --with-advisors     Also generate the opt-in advisor skill trees for the selected agents.
   --json              Emit a machine-readable report, including creation previews and results.
   --transcripts <dir> Claude JSONL transcript directory for learn. Defaults to ~/.claude/projects/<target-slug>.
+  --codex-sessions <dir> Codex rollout directory for learn. Defaults to ~/.codex/sessions.
   --no-llm            Use deterministic learn proposals without calling claude or codex.
   --sessions <mode>   Advice session evidence: auto or none. Exact project directories only.
   --since <window>    Advice session lookback: 7d (default), 14d, or all.
@@ -148,6 +150,21 @@ function parseLearnArgs(args: string[]): LearnCliOptions {
       continue;
     }
 
+    if (arg === "--codex-sessions") {
+      const value = args[i + 1];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--codex-sessions requires a value");
+      }
+      options.codexSessions = value;
+      i += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--codex-sessions=")) {
+      options.codexSessions = arg.slice("--codex-sessions=".length);
+      continue;
+    }
+
     if (arg === "--backend") {
       const value = args[i + 1];
       if (!value || value.startsWith("--")) {
@@ -194,6 +211,7 @@ async function runLearn(args: string[]): Promise<number> {
 
   const targetDir = resolve(options.dir);
   const transcriptsDir = options.transcripts ? resolve(options.transcripts) : undefined;
+  const codexSessionsDir = options.codexSessions ? resolve(options.codexSessions) : undefined;
 
   const { loadFarrierConfig, resolveModelSettings } = await import("./config/farrier-config");
   const { applyLearn, createLearnReport, formatLearnApplyResult, formatLearnReport } = await import("./engine/learn");
@@ -212,6 +230,7 @@ async function runLearn(args: string[]): Promise<number> {
     const result = await applyLearn({
       targetDir,
       transcriptsDir,
+      codexSessionsDir,
       yes: true,
       json: options.json,
       noLlm: options.noLlm,
@@ -245,6 +264,7 @@ async function runLearn(args: string[]): Promise<number> {
   const report = await createLearnReport({
     targetDir,
     transcriptsDir,
+    codexSessionsDir,
     yes: false,
     json: options.json,
     noLlm: options.noLlm,

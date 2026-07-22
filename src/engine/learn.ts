@@ -17,7 +17,8 @@ import {
   type BackendCommandRunnerOutput
 } from "./backend";
 import { compareEvidence, createEvidenceSet, type EvidenceComparison } from "./behavior-evidence";
-import { mineFailureSignals, toolResultsFromRecord, toolUseFromRecord, type FailureSignal } from "./learn-signals";
+import { toolResultsFromRecord, toolUseFromRecord, type FailureSignal } from "./learn-signals";
+import { mineFailureSignalsFromSources } from "./learn-signals-codex";
 import { routeFailureSignals, type PrimitiveProposal } from "./failure-router";
 
 export type CandidateEvent = {
@@ -40,6 +41,8 @@ export type DroppedProposal = {
 export type LearnOptions = {
   targetDir: string;
   transcriptsDir?: string;
+  /** Override for the codex rollout directory; defaults to ~/.codex/sessions. */
+  codexSessionsDir?: string;
   yes?: boolean;
   json?: boolean;
   noLlm?: boolean;
@@ -800,7 +803,11 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
   const [candidateResult, existingRules, signalScan] = await Promise.all([
     extractCandidateEvents(transcriptsDir),
     readToolPolicyRulesDocument(targetDir),
-    mineFailureSignals(transcriptsDir)
+    mineFailureSignalsFromSources({
+      claudeTranscriptsDir: transcriptsDir,
+      codexProjectDir: targetDir,
+      codexSessionsDir: options.codexSessionsDir
+    })
   ]);
 
   notes.push(...candidateResult.notes);

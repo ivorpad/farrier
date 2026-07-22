@@ -171,7 +171,7 @@ describe("learn LLM proposal validation", () => {
       return { exitCode: 0, stdout: JSON.stringify({ rules: [] }), stderr: "" };
     };
 
-    const report = await createLearnReport({ targetDir: project, transcriptsDir: transcripts, backend: "claude", runner });
+    const report = await createLearnReport({ targetDir: project, transcriptsDir: transcripts, codexSessionsDir: join(transcripts, "no-codex-sessions"), backend: "claude", runner });
     const json = JSON.stringify(report);
     for (const raw of [seeded, "dev@example.com", "sk-abcdefghijklmnop"]) {
       expect(backendInput).not.toContain(raw);
@@ -200,6 +200,7 @@ describe("learn LLM proposal validation", () => {
     const report = await createLearnReport({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       backend: "claude",
       runner
     });
@@ -287,6 +288,7 @@ describe("learn LLM proposal validation", () => {
     const report = await createLearnReport({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       runner
     });
 
@@ -330,6 +332,7 @@ describe("learn LLM proposal validation", () => {
     await createLearnReport({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       backend: "codex",
       reasoningEffort: "xhigh",
       runner
@@ -361,6 +364,7 @@ describe("learn LLM proposal validation", () => {
     const report = await createLearnReport({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       runner
     });
 
@@ -396,7 +400,7 @@ describe("learn append behavior", () => {
       return { exitCode: 0, stdout: JSON.stringify({ rules: [] }), stderr: "" };
     };
 
-    await expect(applyLearn({ targetDir: project, transcriptsDir: transcripts, yes: true, runner })).rejects.toThrow("changed after review");
+    await expect(applyLearn({ targetDir: project, transcriptsDir: transcripts, codexSessionsDir: join(transcripts, "no-codex-sessions"), yes: true, runner })).rejects.toThrow("changed after review");
     expect((await readRules(project)).rules.at(-1)).toEqual(concurrent);
   });
 
@@ -423,6 +427,7 @@ describe("learn append behavior", () => {
     const result = await applyLearn({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       noLlm: true,
       yes: true
     });
@@ -441,6 +446,7 @@ describe("learn append behavior", () => {
     const second = await applyLearn({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       noLlm: true,
       yes: true
     });
@@ -468,6 +474,7 @@ describe("learn append behavior", () => {
     const report = await createLearnReport({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       noLlm: true
     });
 
@@ -498,6 +505,7 @@ describe("learn append behavior", () => {
     const result = await applyLearn({
       targetDir: project,
       transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       noLlm: true,
       yes: true
     });
@@ -518,6 +526,7 @@ describe("learn append behavior", () => {
     const report = await createLearnReport({
       targetDir: project,
       transcriptsDir: join(project, "missing-transcripts"),
+      codexSessionsDir: join(project, "no-codex-sessions"),
       noLlm: true
     });
 
