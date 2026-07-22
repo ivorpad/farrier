@@ -2,7 +2,6 @@ import { useKeyboard } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import type { ApplyHarnessChangePlanResult, HarnessChangePlan } from "../engine/create-plan";
 import type { AdviceCreationPlan } from "../engine/advice-apply";
-import type { AdviceRecommendation } from "../engine/advice-types";
 import { DetailPane, KeyHints, palette, scrollWindow, truncateTo, useSpinner } from "./chrome";
 import { fileActionLegend, fileActionMarker } from "./file-action-markers";
 import { binding, bindingsHint, defineBindings, destructiveConfirmationBindings, resolveIntent, runningCancellationBindings } from "./keymap";
@@ -23,7 +22,8 @@ export function advicePlanPreviewLines(content: string, width = previewWidth): s
 }
 
 export function AdviceApplyFlow(props: {
-  recommendation: AdviceRecommendation;
+  /** Only the display id is needed; learn proposals reuse this flow with a title. */
+  recommendation: { id: string };
   onPlan: () => Promise<{ plan: AdviceCreationPlan; inspection: HarnessChangePlan }>;
   onApply: (plan: AdviceCreationPlan, force: boolean) => Promise<ApplyHarnessChangePlanResult>;
   onBack: () => void;

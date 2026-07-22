@@ -360,6 +360,12 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
             continue;
           }
 
+          if (choice === "learn") {
+            const { runLearnApp } = await import("./tui/learn-app");
+            await runLearnApp(targetDir);
+            continue;
+          }
+
           if (choice === "doctor") {
             const { runDoctorApp } = await import("./tui/doctor-app");
             await runDoctorApp(targetDir);
