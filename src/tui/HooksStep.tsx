@@ -51,8 +51,8 @@ const hookDescriptions: Record<HookId, string> = {
   "tool-policy": "redirects banned shell tools to stack-approved ones",
   "write-guard": "blocks direct writes to protected/generated files",
   "verb-runner": "`just check` after edits; structure check at Stop",
-  "quality-judge": "warns on LOC and optional per-edit review",
-  "stop-judge": "optional full-diff semantic review before yield"
+  "quality-judge": "LOC budget + per-edit review vs your quality.rules + repo map",
+  "stop-judge": "full-diff review vs your rules before yield"
 };
 
 /**
@@ -103,20 +103,20 @@ function agentSeesLines(hook: PackHookRef, rules: ToolPolicyRule[]): PaneLine[] 
 
     case "quality-judge":
       return [
-        { fg: palette.success, text: "warns when an edit balloons past the LOC budget" },
-        { fg: palette.muted, text: "optional per-edit semantic review" }
+        { fg: palette.success, text: "reviews each edit against quality.rules and the repo map" },
+        { fg: palette.muted, text: "catches recreated helpers/types; LOC budget from quality.maxFileLines" }
       ];
 
     case "stop-judge":
       return [
-        { fg: palette.success, text: "full-diff semantic review before the agent yields" },
+        { fg: palette.success, text: "full-diff review against your rules before the agent yields" },
         { fg: palette.muted, text: "the last gate between “done” and “actually done”" }
       ];
 
     default:
       return [
         { fg: palette.gold, text: "registry hook payload" },
-        { fg: palette.muted, text: "review the rendered hook files before forging" }
+        { fg: palette.muted, text: "review the rendered hook files before applying" }
       ];
   }
 }

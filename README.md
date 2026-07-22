@@ -154,17 +154,23 @@ Four deterministic hooks ship by default; the two LLM judges are opt-in:
 | `tool-policy` | PreToolUse | Denies wrong-tool commands per the declarative rules file; every denial names the right tool. |
 | `write-guard` | PreToolUse | Denies writes to lockfiles, `.git/`, `skills-lock.json`, `.farrier.json`. |
 | `verb-runner` | PostToolUse + Stop | Runs `just check-fast` (with related test files) after edits; `just check-full` once plus the structure check at Stop. Records a normalized fingerprint of a check-full failure so an identical pre-existing failure blocks once and is then reported instead of retried. |
-| `quality-judge` (opt-in) | PostToolUse | Warns when a file exceeds `quality.maxFileLines` (500); optional haiku judge for gross cohesion violations. |
-| `stop-judge` (opt-in) | Stop | Optional sonnet/gpt-5.5 review of the whole turn's diff; blocks only *serious* findings. |
+| `quality-judge` (opt-in) | PostToolUse | Warns when a file exceeds `quality.maxFileLines` (a preference: default 500, `null` disables); optional haiku judge reviews each edit against your `quality.rules` and the repository map, so "this helper already exists in `_internal/…`" surfaces at write time. |
+| `stop-judge` (opt-in) | Stop | Optional sonnet/gpt-5.5 review of the whole turn's diff against the same rules and map; blocks only *serious* findings (clear-cut rule violations, recreated helpers/types, secret exposure). |
 
-**Opt-in judges emit zero files until selected**, and their model tiers additionally ship disabled — a generated project never surprise-calls an LLM. Enable in `.farrier.json`:
+**Opt-in judges emit zero files until selected**, and their model tiers additionally ship disabled — a generated project never surprise-calls an LLM. What the judges enforce is yours, not farrier's: `quality.rules` is a list of plain-language preferences seeded with two editable examples (reuse-before-recreate, no obvious security risks), and both judges receive it verbatim along with the repo-map section of AGENTS.md (`includeRepoMap`, default true). Enable in `.farrier.json`:
 
 ```jsonc
+"quality": {
+  "maxFileLines": 500,            // or null to disable the length check
+  "rules": ["Reuse existing helpers and types instead of recreating them; …"]
+},
 "judge": {
-  "perEdit": { "enabled": true, "backend": "claude", "model": "haiku" },
-  "stop":    { "enabled": true, "backend": "claude", "model": "sonnet" }   // or "codex" + "gpt-5.5"
+  "perEdit": { "enabled": true, "backend": "claude", "model": "haiku" },   // ~17 s, ~$0.04 per edit
+  "stop":    { "enabled": true, "backend": "claude", "model": "sonnet" }   // ~44 s per stop; or "codex" + "gpt-5.5"
 }
 ```
+
+Enabling after creation: add the two hook ids to `hookIds`, run `farrier update --yes` (materializes the hook files and prompts), then add the judge entries to your binding file — update never rewrites an existing `.claude/settings.json`/`.codex/hooks.json`, though it will regenerate a deleted one. Every verdict lands in `.farrier/runtime/events.jsonl`. Measured honestly in `docs/evaluations/judge-eval-2026-07-22/`: the judge catches seeded duplication citing the map, at real cost — on a repo where the map plus AGENTS.md rules already kept the agent honest, it changed nothing, which is why it ships off.
 
 Judge failures follow the selected hook event. PostToolUse quality feedback is non-destructive. A selected Stop judge fails closed on malformed input, invalid configuration, timeout, or internal failure and reports how to retry or disable the judge through Farrier's managed configuration.
 
@@ -457,7 +463,10 @@ bun test              # engine + CLI + wizard-machine tests
 bun run typecheck     # tsc --noEmit
 bun run test:hooks    # pytest for the hook templates (needs uv)
 bun run check         # all of the above — the verb the harness itself would run
+just eval-smoke       # one live cell per fixture repo: harness generates, agent runs, hooks fire
 ```
+
+Grid evals (A/B arms, seeds, verdicts) live in `docs/evaluations/` — see its README for the kit and every round's evidence.
 
 Architecture in one breath: **packs are declarative data** (`src/packs/`), the **engine** renders/detects/updates/learns/doctors (`src/engine/`), **hook templates** are self-contained Python scripts with tests (`src/templates/hooks/`), and the **TUI** is a pure reducer (`src/tui/machine.ts`, zero opentui imports) with thin opentui-react components around it.
 

@@ -83,7 +83,7 @@ function WizardApp(props: WizardAppProps) {
 
   // exitOnCtrlC is off (the default handler destroys the renderer and orphans
   // spawned agent runs), so ctrl+c is handled here: quit on ordinary steps,
-  // abort-and-kill skill authoring while forging.
+  // abort-and-kill skill authoring while the harness is being created.
   useKeyboard((key) => {
     if (resolveIntent(idleExitBindings, key) !== "quit") {
       return;
