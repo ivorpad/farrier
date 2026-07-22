@@ -290,6 +290,16 @@ function guardProblem(problems: DoctorProblem[], message: string, remediation: s
   });
 }
 
+/**
+ * The guard-shape validation as a standalone check, so proposal apply can
+ * refuse a merge that doctor would immediately flag as invalid.
+ */
+export function guardShapeProblems(guards: unknown): DoctorProblem[] {
+  const problems: DoctorProblem[] = [];
+  validateGuards(guards, problems);
+  return problems;
+}
+
 // The guards record is user-owned (like quality); doctor validates only the
 // shapes the installed guard hooks read, so a typo fails loudly here instead
 // of silently failing open at hook time.
