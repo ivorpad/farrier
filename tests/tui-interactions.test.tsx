@@ -367,6 +367,60 @@ describe("TUI keyboard interactions", () => {
     }
   });
 
+  test("advice setup and running states keep text intact in a short terminal", async () => {
+    let progress: ((event: { message: string }) => void) | undefined;
+    const now = Date.now();
+    const props = adviceAppProps((_backend, _consent, _lookback, _scope, onProgress) => {
+      progress = onProgress;
+      return new Promise<AdviceReport>(() => undefined); // never resolves — stay in "running"
+    });
+    props.sessionCounts = {
+      "7d": [{ source: "claude", count: 21 }, { source: "codex", count: 0 }],
+      "14d": [{ source: "claude", count: 21 }, { source: "codex", count: 0 }],
+      all: [{ source: "claude", count: 21 }, { source: "codex", count: 0 }]
+    };
+    props.sessionInventory = {
+      entries: Array.from({ length: 21 }, (_, index) => ({
+        opaqueId: `claude-session-${index + 1}`,
+        provider: "claude" as const,
+        updatedAt: new Date(now - index).toISOString(),
+        projectMatch: "directory" as const,
+        sourceFingerprint: `claude-fingerprint-${index + 1}`
+      })),
+      notes: [],
+      limits: [{ provider: "claude", discovered: 21, retained: 21, omitted: 0, invalid: 0 }],
+      projectRootDigest: "project-digest"
+    };
+    // A real terminal is routinely shorter than this screen's full content; opentui
+    // overlaps overflowing flex siblings (spaces render transparent, so old glyphs
+    // bleed through) unless the body is a bounded scroll region.
+    const view = await testRender(<AdviceApp {...props} />, { width: 110, height: 26 });
+    try {
+      await view.waitForFrame((frame) => frame.includes("Analyze with:"));
+      // Turn on sessions: the consent notice is the text most prone to overlap.
+      await interact(view, () => view.mockInput.pressTab());
+      await interact(view, () => view.mockInput.pressEnter());
+      const setup = await view.waitForFrame((frame) => frame.includes("[x] Use 20 recent Claude sessions"));
+      expect(setup).toContain("Passwords, tokens, and keys are removed on this computer first.");
+      expect(setup).not.toMatch(/Passwords,\S/);
+
+      // Start the run and stream progress; the live worker line must stay legible.
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() => progress !== undefined);
+      for (const message of [
+        "Starting Claude analysis…",
+        "Settled skills recommendation worker (1/6 settled)",
+        "Running mcp recommendation worker (3/6 settled)"
+      ]) await interact(view, () => progress?.({ message }));
+      await view.waitForVisualIdle();
+      const running = view.captureCharFrame();
+      expect(running).toContain("Reading your project and asking Claude Code for suggestions…");
+      expect(running).toContain("▸ Running mcp recommendation worker (3/6 settled)");
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
   test("advice report focuses Create selected and Create all, and batch cancellation uses super+z or Ctrl+C", async () => {
     let finishRun: (() => void) | undefined;
     let selectedPlans = 0;

@@ -65,6 +65,7 @@ export function AdviceApp(props: {
   const [state, dispatch] = useReducer(adviceTuiReducer, createInitialAdviceTuiState(initialSessionCount, props.availability));
   const [selectedRecommendationIndex, setSelectedRecommendationIndex] = useState(0);
   const reportScrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const bodyScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const [setupFocus, setSetupFocus] = useState(0);
   const [creatingRecommendation, setCreatingRecommendation] = useState<AdviceRecommendation>();
   const [inspectingRecommendation, setInspectingRecommendation] = useState<AdviceRecommendation>();
@@ -89,16 +90,28 @@ export function AdviceApp(props: {
     const interval = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
     return () => clearInterval(interval);
   }, [state.status]);
-  const runningBindings = defineBindings(...runningCancellationBindings, binding(["escape", "b"], "back", "cancel"), binding("q", "quit", "quit"));
-  const errorBindings = defineBindings(binding("r", "retry", "options"), binding(["escape", "b"], "back", "launcher"), binding(["q", "ctrl+c"], "quit", "quit"));
+  // On a short terminal the body scrolls; keep the live progress (and any
+  // failure) in view by pinning to the bottom whenever new progress lands or the
+  // run finishes. stickyStart only *holds* the bottom once reached — this is what
+  // gets us there. RESET returns to "ready", where the body sticks to the top.
+  useEffect(() => {
+    if (state.status !== "running" && state.status !== "error") return;
+    const body = bodyScrollRef.current;
+    if (body) body.scrollTo({ x: 0, y: body.scrollHeight });
+  }, [state.status, state.progressHistory.length]);
+  const runningBindings = defineBindings(...runningCancellationBindings, binding(["pageup", "pagedown"], "scroll", "scroll"), binding(["escape", "b"], "back", "cancel"), binding("q", "quit", "quit"));
+  const errorBindings = defineBindings(binding("r", "retry", "options"), binding(["pageup", "pagedown"], "scroll", "scroll"), binding(["escape", "b"], "back", "launcher"), binding(["q", "ctrl+c"], "quit", "quit"));
   const setupBindings = defineBindings(
     binding(["up", "down", "tab", "shift+tab"], "focus", "focus control"),
     binding(["left", "right"], "adjust", "change value"),
     binding("space", "toggle", "toggle option"),
     binding("enter", "activate", "activate"),
+    binding(["pageup", "pagedown"], "scroll", "scroll"),
     binding(["escape", "b"], "back", "launcher"),
     binding(["q", "ctrl+c"], "quit", "quit")
   );
+  const scrollBody = (key: { name: string }) =>
+    bodyScrollRef.current?.scrollBy(key.name === "pagedown" ? 0.85 : -0.85, "viewport");
 
   const start = () => {
     if (state.status !== "ready") return;
@@ -192,7 +205,8 @@ export function AdviceApp(props: {
     }
     if (state.status === "running") {
       const intent = resolveIntent(runningBindings, key);
-      if (intent) props.onCancel();
+      if (intent === "scroll") scrollBody(key);
+      else if (intent) props.onCancel();
       return;
     }
     if (state.status === "error") {
@@ -201,13 +215,15 @@ export function AdviceApp(props: {
         setSetupFocus(0);
         dispatch({ type: "RESET" });
       }
+      else if (intent === "scroll") scrollBody(key);
       else if (intent === "back") props.onBack();
       else if (intent === "quit") props.onCancel();
       return;
     }
     const intent = resolveIntent(setupBindings, key);
     const focusedControl = adviceSetupControls[setupFocus];
-    if (intent === "back") props.onBack();
+    if (intent === "scroll") scrollBody(key);
+    else if (intent === "back") props.onBack();
     else if (intent === "quit") props.onCancel();
     else if (intent === "focus") {
       const delta = key.name === "up" || key.shift ? -1 : 1;
@@ -308,42 +324,67 @@ export function AdviceApp(props: {
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <box style={{ flexDirection: "column" }}>
+      <box style={{ flexDirection: "column", flexShrink: 0 }}>
         <text fg={palette.accent}>✦ Advise this project</text>
         <text fg={palette.muted}>Read-only analysis of guidance, hooks, skills, subagents, plugins, and MCP.</text>
       </box>
-      {setupLabels.map((label, index) => (
-        <text key={adviceSetupControls[index]!} bg={setupFocus === index ? palette.selBg : undefined}>
-          <span fg={palette.accent}>{setupFocus === index ? "▸ " : "  "}</span><span fg={palette.text}>{label}</span>
-        </text>
-      ))}
-      <text fg={palette.faint}>Which AI reads your project and writes the suggestions.</text>
-      {state.includeSessions && state.sessionConsent ? (
-        <box style={{ flexDirection: "column", gap: 0 }}>
-          {adviceSessionConsentNotice({ backend: state.backend, sessionCount: state.sessionConsent.selected.length }).map((line, index) => (
-            <text key={`consent-${index}`} fg={index === 0 ? palette.warn : palette.muted}>{line}</text>
-          ))}
-        </box>
-      ) : (
-        <text fg={palette.faint}>Sessions off: analysis uses your project files only.</text>
-      )}
-      <text fg={palette.faint}>Recent work helps find repeated instructions, corrections, failed checks, and missing project automation.</text>
-      <text fg={palette.faint}>Secrets are stripped on this computer before anything is sent. One selected category is one {backendName(state.backend)} call; all categories run six workers (three at a time) and usually one coordinator.</text>
-      {setupNotice ? <text fg={setupNotice.tone === "success" ? palette.success : palette.warn}>{setupNotice.text}</text> : null}
-      {state.status === "running" ? (
-        <box style={{ flexDirection: "column", gap: 0 }}>
-          <text fg={palette.agent}>{`${spinner}  ${elapsedSeconds}s  Reading your project and asking ${adviceBackendProductName(state.backend)} for suggestions…`}</text>
-          <text fg={palette.faint}>{`Usually takes 1–3 minutes and uses your ${backendName(state.backend)} account.`}</text>
-          {state.progressHistory.slice(-7).map((message, index, visible) => (
-            <text key={`${index}-${message}`} fg={index === visible.length - 1 ? palette.text : palette.success}>
-              {`${index === visible.length - 1 ? "  ▸" : "  ✓"} ${message}`}
-            </text>
-          ))}
-        </box>
-      ) : null}
-      {state.status === "error" ? <text fg={palette.warn}>Advice failed: {state.error}</text> : null}
-      <text fg={palette.muted}>Analysis is read-only. Creating a recommendation requires a separate review and confirmation.</text>
-      <KeyHints hint={bindingsHint(state.status === "error" ? errorBindings : state.status === "running" ? runningBindings : setupBindings)} />
+      {/*
+        The body is a scroll region, not a plain stack. On a short terminal the
+        setup controls, the consent notice, and the running progress together
+        exceed the frame; without a bounded viewport opentui shrinks each flex
+        child while its text keeps its rows, so siblings overwrite one another
+        (spaces render transparent, so old glyphs bleed through). flexShrink:0
+        on every child plus a flexGrow scrollbox keeps each line intact and
+        scrolls the overflow. It sticks to the top while choosing options and to
+        the bottom once running/errored so the latest progress or the failure
+        stays visible.
+      */}
+      <scrollbox
+        ref={bodyScrollRef}
+        focused={false}
+        scrollX={false}
+        scrollY
+        stickyScroll
+        stickyStart={state.status === "ready" ? "top" : "bottom"}
+        viewportCulling
+        style={{ flexGrow: 1, flexShrink: 1, width: "100%" }}
+        contentOptions={{ flexDirection: "column", gap: 1, width: "100%" }}
+      >
+        {setupLabels.map((label, index) => (
+          <text key={adviceSetupControls[index]!} style={{ flexShrink: 0 }} bg={setupFocus === index ? palette.selBg : undefined}>
+            <span fg={palette.accent}>{setupFocus === index ? "▸ " : "  "}</span><span fg={palette.text}>{label}</span>
+          </text>
+        ))}
+        <text style={{ flexShrink: 0 }} fg={palette.faint}>Which AI reads your project and writes the suggestions.</text>
+        {state.includeSessions && state.sessionConsent ? (
+          <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
+            {adviceSessionConsentNotice({ backend: state.backend, sessionCount: state.sessionConsent.selected.length }).map((line, index) => (
+              <text key={`consent-${index}`} style={{ flexShrink: 0 }} fg={index === 0 ? palette.warn : palette.muted}>{line}</text>
+            ))}
+          </box>
+        ) : (
+          <text style={{ flexShrink: 0 }} fg={palette.faint}>Sessions off: analysis uses your project files only.</text>
+        )}
+        <text style={{ flexShrink: 0 }} fg={palette.faint}>Recent work helps find repeated instructions, corrections, failed checks, and missing project automation.</text>
+        <text style={{ flexShrink: 0 }} fg={palette.faint}>Secrets are stripped on this computer before anything is sent. One selected category is one {backendName(state.backend)} call; all categories run six workers (three at a time) and usually one coordinator.</text>
+        {setupNotice ? <text style={{ flexShrink: 0 }} fg={setupNotice.tone === "success" ? palette.success : palette.warn}>{setupNotice.text}</text> : null}
+        {state.status === "running" ? (
+          <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
+            <text fg={palette.agent}>{`${spinner}  ${elapsedSeconds}s  Reading your project and asking ${adviceBackendProductName(state.backend)} for suggestions…`}</text>
+            <text fg={palette.faint}>{`Usually takes 1–3 minutes and uses your ${backendName(state.backend)} account.`}</text>
+            {state.progressHistory.slice(-7).map((message, index, visible) => (
+              <text key={`${index}-${message}`} style={{ flexShrink: 0 }} fg={index === visible.length - 1 ? palette.text : palette.success}>
+                {`${index === visible.length - 1 ? "  ▸" : "  ✓"} ${message}`}
+              </text>
+            ))}
+          </box>
+        ) : null}
+        {state.status === "error" ? <text style={{ flexShrink: 0 }} fg={palette.warn}>Advice failed: {state.error}</text> : null}
+      </scrollbox>
+      <box style={{ flexDirection: "column", flexShrink: 0 }}>
+        <text fg={palette.muted}>Analysis is read-only. Creating a recommendation requires a separate review and confirmation.</text>
+        <KeyHints hint={bindingsHint(state.status === "error" ? errorBindings : state.status === "running" ? runningBindings : setupBindings)} />
+      </box>
     </box>
   );
 }

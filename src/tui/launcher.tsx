@@ -8,12 +8,19 @@ export type LaunchChoice = "harness" | "create" | "advise" | "doctor" | "cancel"
 export type LauncherState = { index: number };
 export type LauncherEvent = { type: "up" | "down" | "choose" | "cancel" };
 
+// No per-row glyphs: the dingbats (⚒ ✚ ✦ ⟳) have ambiguous terminal width —
+// some render double-wide while opentui advances one column, so they overwrite
+// the next cell and break the detail-column alignment. The ember ▸ cursor is the
+// row marker (chrome palette rule), and labels stay pure ASCII so padEnd aligns
+// by display width, not just UTF-16 length.
 export const launcherRows: ReadonlyArray<{ choice: Exclude<LaunchChoice, "cancel">; label: string; detail: string }> = [
-  { choice: "harness", label: "⚒ Create harness", detail: "detect the stack; generate AGENTS.md, hooks, and skills" },
-  { choice: "create", label: "✚ Create skill", detail: "author a new skill (SKILL.md) with your agent's skill creator" },
-  { choice: "advise", label: "✦ Advise", detail: "analyze repo + recent sessions; recommend hooks, skills, MCP" },
-  { choice: "doctor", label: "⟳ Doctor & update", detail: "check harness health; repair drift after upgrades" }
+  { choice: "harness", label: "Create harness", detail: "detect the stack; generate AGENTS.md, hooks, and skills" },
+  { choice: "create", label: "Create skill", detail: "author a new skill (SKILL.md) with your agent's skill creator" },
+  { choice: "advise", label: "Advise", detail: "analyze repo + recent sessions; recommend hooks, skills, MCP" },
+  { choice: "doctor", label: "Doctor & update", detail: "check harness health; repair drift after upgrades" }
 ];
+
+const labelColumn = Math.max(...launcherRows.map((row) => row.label.length)) + 2;
 
 export function launcherReducer(state: LauncherState, event: LauncherEvent): { state: LauncherState; choice?: LaunchChoice } {
   if (event.type === "cancel") return { state, choice: "cancel" };
@@ -61,7 +68,7 @@ export function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void })
           return (
             <text key={row.choice} bg={focused ? palette.selBg : undefined}>
               <span fg={palette.accent}>{focused ? "▸ " : "  "}</span>
-              <span fg={palette.text}>{row.label.padEnd(28)}</span>
+              <span fg={palette.text}>{row.label.padEnd(labelColumn)}</span>
               <span fg={palette.faint}>{row.detail}</span>
             </text>
           );

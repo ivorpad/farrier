@@ -4,11 +4,18 @@ import { launcherReducer, launcherRows } from "../src/tui/launcher";
 describe("primary launcher", () => {
   test("exposes exactly the four primary workflows with the required labels", () => {
     expect(launcherRows.map((row) => row.label)).toEqual([
-      "⚒ Create harness",
-      "✚ Create skill",
-      "✦ Advise",
-      "⟳ Doctor & update"
+      "Create harness",
+      "Create skill",
+      "Advise",
+      "Doctor & update"
     ]);
+  });
+
+  test("labels are ASCII so the detail column aligns by display width", () => {
+    for (const row of launcherRows) {
+      // Non-ASCII dingbats render at ambiguous terminal widths and break alignment.
+      expect(row.label).toMatch(/^[\x20-\x7E]+$/);
+    }
   });
 
   test("routes all four choices through the visible list", () => {

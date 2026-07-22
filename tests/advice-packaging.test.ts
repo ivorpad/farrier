@@ -64,5 +64,7 @@ describe("advice package inventory", () => {
       expect(output).toContain(path);
     }
     expect(output).not.toContain(join(".agents", "skills", "remotion-best-practices"));
-  });
+    // `bun pm pack` walks the whole working tree, including gitignored
+    // eval-workspaces/ (tens of GB after an eval round), so give it real time.
+  }, 90000);
 });
