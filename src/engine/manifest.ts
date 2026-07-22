@@ -5,7 +5,7 @@ import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
 import { hookCatalogVersions, type FarrierManifestInput } from "./render";
 import { openContainedRepository, readContainedFile } from "./repository-paths";
 
-export const notFarrierProjectMessage = "not a farrier project; run farrier first";
+export const notFarrierProjectMessage = "not a farrier project; run farrier create first";
 const manifestByteLimit = 1024 * 1024;
 
 export type ManifestReadInput = {

@@ -316,7 +316,7 @@ describe("CLI e2e", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("not a farrier project; run farrier first");
+    expect(result.stderr).toContain("not a farrier project; run farrier create first");
   });
 
   test("doctor errors for non-farrier projects with grouped report", async () => {
@@ -328,7 +328,7 @@ describe("CLI e2e", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Farrier doctor report");
     expect(result.stdout).toContain("Health: unhealthy");
-    expect(result.stdout).toContain("not a farrier project; run farrier first");
+    expect(result.stdout).toContain("not a farrier project; run farrier create first");
   });
 
   test("update --json emits machine-readable report", async () => {

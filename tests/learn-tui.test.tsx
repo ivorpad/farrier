@@ -240,13 +240,13 @@ describe("learn proposal surface", () => {
   test("mining failure names the reason and applies nothing", async () => {
     const props = learnAppProps({
       onMine: async () => {
-        throw new Error("not a farrier project; run farrier first");
+        throw new Error("not a farrier project; run farrier create first");
       }
     });
     const view = await renderLearn(props);
     try {
       const frame = await view.waitForFrame((value) => value.includes("Learn failed:"));
-      expect(frame).toContain("not a farrier project; run farrier first");
+      expect(frame).toContain("not a farrier project; run farrier create first");
     } finally {
       await interact(view, () => view.renderer.destroy());
     }

@@ -305,6 +305,30 @@ describe("failure→primitive router", () => {
 });
 
 describe("learn report integration", () => {
+  test("mining and proposing work without a .farrier.json; applying rules does not", async () => {
+    const project = await tempDir("farrier-signals-bare-");
+    const transcripts = await tempDir("farrier-signals-bare-transcripts-");
+    await writeTranscript(transcripts, "rewrite.jsonl", [
+      bashUse("r1", "git filter-repo --strip-blobs-bigger-than 50M", "2026-07-20T10:00:00.000Z")
+    ]);
+
+    const report = await createLearnReport({
+      targetDir: project,
+      transcriptsDir: transcripts,
+      noLlm: true
+    });
+
+    expect(report.learnEnabled).toBe(false);
+    expect(report.signals.map((item) => item.class)).toEqual(["oversized-commit"]);
+    expect(report.primitiveProposals.map((proposal) => proposal.id)).toEqual(["guard-large-file-commit"]);
+    expect(report.notes.some((note) => note.includes("run farrier create first"))).toBe(true);
+
+    const { applyLearn } = await import("../src/engine/learn");
+    await expect(
+      applyLearn({ targetDir: project, transcriptsDir: transcripts, noLlm: true, yes: true })
+    ).rejects.toThrow("not a farrier project; run farrier create first");
+  });
+
   test("createLearnReport carries mined signals and routed proposals into the formatted report", async () => {
     const project = await tempDir("farrier-signals-project-");
     const pack = resolvePack("python-fastapi");

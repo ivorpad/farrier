@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { readManifest } from "./manifest";
+import { notFarrierProjectMessage, readManifest, type NormalizedManifest } from "./manifest";
 import { hooksDirectory } from "./render";
 import type { ToolPolicyRule } from "../packs/types";
 import type { ReasoningEffort } from "../config/farrier-config";
@@ -795,14 +795,31 @@ function validateProposals(input: {
 
 export async function createLearnReport(options: LearnOptions): Promise<LearnReport> {
   const targetDir = resolve(options.targetDir);
-  const manifest = await readManifest(targetDir);
   const manifestPath = join(targetDir, ".farrier.json");
   const transcriptsDir = options.transcriptsDir ? resolve(options.transcriptsDir) : defaultTranscriptDir(targetDir);
   const notes: string[] = [];
   const errors: string[] = [];
 
-  if (!manifest.learn.enabled) {
-    notes.push("learn.enabled is false in .farrier.json; proceeding because farrier learn was invoked explicitly.");
+  // Mining and proposing need no harness; a repo without .farrier.json is the
+  // growth model's entry case, and every proposal is a reason to create one.
+  // Only APPLYING hook-dependent artifacts requires the manifest (applyLearn
+  // and the proposal-apply path still refuse without it).
+  let installedHookIds: NormalizedManifest["hookIds"] = [];
+  let installedGuards: unknown;
+  let learnEnabled = false;
+  try {
+    const manifest = await readManifest(targetDir);
+    installedHookIds = manifest.hookIds;
+    installedGuards = manifest.guards;
+    learnEnabled = manifest.learn.enabled;
+    if (!manifest.learn.enabled) {
+      notes.push("learn.enabled is false in .farrier.json; proceeding because farrier learn was invoked explicitly.");
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== notFarrierProjectMessage) {
+      throw error;
+    }
+    notes.push("No .farrier.json here yet: mined sessions only. Applying a proposal installs into the harness, so run farrier create first.");
   }
 
   const [candidateResult, existingRules, signalScan] = await Promise.all([
@@ -820,8 +837,8 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
   const signals = signalScan.signals;
   let primitiveProposals = routeFailureSignals({
     signals,
-    installedHookIds: manifest.hookIds,
-    guards: manifest.guards
+    installedHookIds,
+    guards: installedGuards
   });
   for (const note of signalScan.notes) {
     if (!notes.includes(note)) notes.push(note);
@@ -852,7 +869,7 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
     return {
       targetDir,
       manifestPath,
-      learnEnabled: manifest.learn.enabled,
+      learnEnabled,
       transcriptsDir,
       candidateEvents,
       proposedRules: [],
@@ -945,7 +962,7 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
   return {
     targetDir,
     manifestPath,
-    learnEnabled: manifest.learn.enabled,
+    learnEnabled,
     transcriptsDir,
     candidateEvents,
     proposedRules: validation.accepted,
@@ -962,6 +979,11 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
 
 export async function applyLearn(options: LearnOptions): Promise<LearnApplyResult> {
   const targetDir = resolve(options.targetDir);
+  if (options.yes) {
+    // Reporting works without a harness; writing rules into .farrier/hooks/
+    // does not — the tool-policy hook that reads them must exist.
+    await readManifest(targetDir);
+  }
   const reviewedRulesFingerprint = await fingerprintPath(join(targetDir, rulesRelativePath));
   const report = await createLearnReport({
     ...options,
