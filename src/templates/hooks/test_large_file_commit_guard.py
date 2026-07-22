@@ -115,6 +115,28 @@ def test_git_add_of_small_files_is_allowed_and_logged(tmp_path: Path) -> None:
     assert any(event["result"] == "allowed" for event in events(repo))
 
 
+def test_git_add_capital_a_catches_untracked_oversized_file(tmp_path: Path) -> None:
+    # 2026-07-22 guard outcome eval, offline finding: `-A` (capital) was not
+    # recognized, so a single-call `git add -A && git commit` passed unchecked.
+    repo = init_repo(tmp_path, max_bytes=1000)
+    write_file(repo, "big.bin", 2000)
+
+    code, stdout, _ = run_hook(bash_payload(repo, "git add -A"))
+
+    assert code == 0
+    assert_denied(stdout, "big.bin")
+
+
+def test_single_call_add_all_and_commit_is_denied(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path, max_bytes=1000)
+    write_file(repo, "big.bin", 2000)
+
+    code, stdout, _ = run_hook(bash_payload(repo, 'git add -A && git commit -m "sweep"'))
+
+    assert code == 0
+    assert_denied(stdout, "big.bin")
+
+
 def test_git_add_dot_catches_untracked_oversized_file(tmp_path: Path) -> None:
     repo = init_repo(tmp_path, max_bytes=1000)
     write_file(repo, "small.txt", 10)

@@ -519,7 +519,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.guards.largeFileCommit.maxBytes).toBe(5 * 1024 * 1024);
     expect(manifest.guards.processTeardown.patterns).toEqual([]);
-    expect(manifest.versions.hooks["large-file-commit-guard"]).toBe(1);
+    expect(manifest.versions.hooks["large-file-commit-guard"]).toBe(2);
     expect(manifest.versions.hooks["process-teardown-audit"]).toBe(1);
   });
 

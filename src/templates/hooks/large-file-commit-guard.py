@@ -215,7 +215,11 @@ def parse_git_invocations(command: str, cwd: str) -> list[GitInvocation]:
                 pass
             elif token.startswith("-"):
                 flags = combined_short_flags(token)
-                if "a" in flags:
+                # git short flags are case-sensitive and subcommand-specific:
+                # `add -A` (capital) is --all, `commit -a` (lowercase) is --all.
+                if invocation.subcommand == "add" and "A" in flags:
+                    invocation.all_flag = True
+                if invocation.subcommand == "commit" and "a" in flags:
                     invocation.all_flag = True
                 if "u" in flags:
                     invocation.update_flag = True

@@ -146,7 +146,7 @@ export const hookCatalogVersions: Record<HookId, number> = {
     "verb-runner": 6,
     "quality-judge": 6,
     "stop-judge": 5,
-    "large-file-commit-guard": 1,
+    "large-file-commit-guard": 2,
     "process-teardown-audit": 1
 };
 
