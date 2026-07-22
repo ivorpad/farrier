@@ -66,14 +66,20 @@ export function redactExactValues(value: string, exactValues: readonly string[])
   return redacted;
 }
 
+/**
+ * Deterministic denylist: known provider token shapes plus assignments to
+ * secret-named variables. Prose PII (names, addresses, secrets written as
+ * free text) is not detectable with regexes and remains out of scope pending
+ * its own design; the TUI consent notice states this to users.
+ */
 export function redactPatternText(value: string): string {
   return value
     .replace(/-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\n]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]")
-    .replace(/\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|gl(?:pat|rt)-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{8,})\b/g, "[REDACTED_TOKEN]")
+    .replace(/\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|gl(?:pat|rt)-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|npm_[A-Za-z0-9]{36}|sk-[A-Za-z0-9_-]{8,})\b/g, "[REDACTED_TOKEN]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}={0,2}/gi, "$1[REDACTED_TOKEN]")
     .replace(/(^|[^a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1$2[REDACTED_CREDENTIALS]@")
-    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|credential|authorization|private[_-]?key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[REDACTED]")
+    .replace(/\b((?:[A-Za-z0-9]+[_.-])*(?:api[_-]?key|access[_-]?key|secret[_-]?key|signing[_-]?key|private[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|credentials?|authorization))["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[REDACTED]")
     .replace(/^\s*(?:api[_ -]?key|token|secret|password|authorization|username)\s+[A-Za-z0-9._~+/-]{8,}\s*$/gim, "[REDACTED_CREDENTIAL_ROW]")
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
 }

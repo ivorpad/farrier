@@ -491,8 +491,8 @@ describe("render engine", () => {
     expect(manifest.judge.perEdit.prompt).toBe(".farrier/hooks/prompts/quality-judge-v1.txt");
     expect(manifest.judge.stop.includeRepoMap).toBe(true);
     expect(manifest.versions.prompts).toEqual({ qualityJudge: "v2", stopJudge: "v2" });
-    expect(manifest.versions.hooks["quality-judge"]).toBe(6);
-    expect(manifest.versions.hooks["stop-judge"]).toBe(5);
+    expect(manifest.versions.hooks["quality-judge"]).toBe(7);
+    expect(manifest.versions.hooks["stop-judge"]).toBe(6);
   });
 
   test("renders guard scripts, tests, and seeded guards config only when guard hooks are selected", async () => {
@@ -519,8 +519,8 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.guards.largeFileCommit.maxBytes).toBe(5 * 1024 * 1024);
     expect(manifest.guards.processTeardown.patterns).toEqual([]);
-    expect(manifest.versions.hooks["large-file-commit-guard"]).toBe(2);
-    expect(manifest.versions.hooks["process-teardown-audit"]).toBe(1);
+    expect(manifest.versions.hooks["large-file-commit-guard"]).toBe(3);
+    expect(manifest.versions.hooks["process-teardown-audit"]).toBe(2);
   });
 
   test("existing guards record is preserved across re-renders like quality", async () => {
@@ -568,9 +568,9 @@ describe("render engine", () => {
     expect(manifest.versions.farrierManifest).toBe(3);
     expect(manifest.versions.hooks).toEqual({
       "secret-shield": 7,
-      "tool-policy": 3,
+      "tool-policy": 4,
       "write-guard": 4,
-      "verb-runner": 6
+      "verb-runner": 7
     });
     expect(manifest.versions.prompts).toBeUndefined();
     expect(manifest.registry).toBeUndefined();

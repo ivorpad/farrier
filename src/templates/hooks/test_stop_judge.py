@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import stat
@@ -698,3 +699,59 @@ def test_fenced_backend_json_is_accepted(tmp_path: Path) -> None:
     data = parse_stdout(stdout)
     assert data["decision"] == "block"
     assert "fenced block" in data["reason"]
+
+
+def test_redaction_patterns_cover_provider_credentials_and_spare_ordinary_text() -> None:
+    """Positive/negative contract for the shared REDACTION_PATTERNS tuple.
+
+    Fixtures are assembled from parts so no token-shaped literal lands in the
+    repo. Prose PII (names, addresses, secrets written as free text) is out of
+    scope for these deterministic patterns by design.
+    """
+    spec = importlib.util.spec_from_file_location("hook_redaction_under_test", HOOK)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    redacted_values = [
+        "".join(("AK", "IA", "7" * 16)),
+        "".join(("AS", "IA", "8" * 16)),
+        "_".join(("ghp", "a" * 36)),
+        "_".join(("ghs", "a" * 36)),
+        "_".join(("github", "pat", "b" * 24)),
+        "-".join(("xoxb", "1" * 10, "c" * 12)),
+        "".join(("AIza", "SyA", "d" * 32)),
+        "_".join(("npm", "e" * 36)),
+        "-".join(("sk", "f" * 20)),
+        "-".join(("sk", "ant", "api03", "g" * 24)),
+        ".".join(("eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxIn0", "h" * 12)),
+        "Bearer " + "i" * 16,
+        "dev@example.com",
+        "-----BEGIN RSA PRIVATE KEY-----\nseeded\n-----END RSA PRIVATE KEY-----",
+    ]
+    for value in redacted_values:
+        assert "REDACTED" in module.redact_text(value), value
+
+    secret = "j" * 30
+    for assignment in (
+        "aws_secret_access_key = " + secret,
+        "GITHUB_TOKEN=" + secret,
+        '"password": "' + secret + '"',
+        "signing_key: '" + secret + "'",
+    ):
+        redacted = module.redact_text(assignment)
+        assert secret not in redacted, assignment
+        assert "=[REDACTED]" in redacted, assignment
+
+    untouched = (
+        "commit " + "3f78" * 10 + " tagged for release",
+        "deploy_commit = " + "ab12" * 10,
+        "the task-scheduler and risk-assessment jobs run nightly",
+        "https://github.com/owner/repo/pull/42",
+        '"integrity": "sha512-C7x8CXm9E6vXjMLC0Ap5nqWaEzFJ9lKAJgtcQPP=="',
+        "max_tokens: 4096",
+        "sort_key=lambda item: item.name",
+        "short id ab12cd",
+    )
+    for text in untouched:
+        assert module.redact_text(text) == text, text

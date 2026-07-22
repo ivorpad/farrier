@@ -21,6 +21,12 @@ function decodeUtf8Prefix(bytes: Uint8Array, maxBytes: number): string {
   return "";
 }
 
+/**
+ * Session prose is redacted with the shared deterministic denylist plus a few
+ * session-only shapes (inline base64 payloads). Prose PII (names, addresses,
+ * secrets typed as ordinary sentences) is out of scope for denylist regexes
+ * and needs its own design before session text gains new provider-bound uses.
+ */
 export function redactSessionText(value: string, exactValues: readonly string[] = []): string {
   return redactPatternText(
     redactExactValues(value, exactValues)

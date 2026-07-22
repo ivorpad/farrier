@@ -44,6 +44,41 @@ describe("behavior evidence contract", () => {
     expect(redacted.prose).toBe("The secret garden uses ordinary prose.");
   });
 
+  test("redacts provider key shapes and prefixed secret assignments while leaving ordinary code alone", () => {
+    // Token fixtures are assembled from parts so no credential-shaped literal
+    // lands in the repo. Prose PII stays out of scope for these patterns.
+    const secretValue = "j".repeat(30);
+    const positives = [
+      ["AIza", "SyA", "d".repeat(32)].join(""),
+      ["npm", "e".repeat(36)].join("_"),
+      ["AS", "IA", "8".repeat(16)].join(""),
+      ["sk", "ant", "api03", "g".repeat(24)].join("-"),
+      `aws_secret_access_key = ${secretValue}`,
+      `GITHUB_TOKEN=${secretValue}`,
+      `"password": "${secretValue}"`,
+      `signing_key: '${secretValue}'`
+    ];
+    for (const sample of positives) {
+      const redacted = redactEvidence({ text: sample }).text;
+      expect(redacted).toContain("REDACTED");
+      expect(redacted).not.toContain(secretValue);
+    }
+
+    const negatives = [
+      `commit ${"3f78".repeat(10)} tagged for release`,
+      `deploy_commit = ${"ab12".repeat(10)}`,
+      "the task-scheduler and risk-assessment jobs run nightly",
+      "https://github.com/owner/repo/pull/42",
+      '"integrity": "sha512-C7x8CXm9E6vXjMLC0Ap5nqWaEzFJ9lKAJgtcQPP=="',
+      "max_tokens: 4096",
+      "sort_key=lambda item: item.name",
+      "short id ab12cd"
+    ];
+    for (const sample of negatives) {
+      expect(redactEvidence({ text: sample }).text).toBe(sample);
+    }
+  });
+
   test("removes supplied exact values longest-first before pattern redaction", () => {
     const redacted = redactEvidence(
       { message: "prefix violet horse battery suffix violet horse" },
