@@ -71,7 +71,7 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
-function defaultUserConfigPath(env: FarrierConfigEnv): string {
+export function defaultUserConfigPath(env: FarrierConfigEnv): string {
   if (env.FARRIER_CONFIG && env.FARRIER_CONFIG.length > 0) {
     return env.FARRIER_CONFIG;
   }

@@ -47,7 +47,7 @@ export function backendEnvironmentOverrides(
     : { HOME: home };
 }
 
-function directBackendEnvironment(backend: AgentBackend): Record<string, string> {
+export function directBackendEnvironment(backend: AgentBackend): Record<string, string> {
   const environment: Record<string, string> = {};
   for (const name of [...backendSafeEnvironmentNames, ...backendEnvironmentNames[backend]]) {
     const value = process.env[name];

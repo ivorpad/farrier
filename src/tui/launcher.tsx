@@ -23,6 +23,15 @@ export const launcherRows: ReadonlyArray<{ choice: Exclude<LaunchChoice, "cancel
 
 const labelColumn = Math.max(...launcherRows.map((row) => row.label.length)) + 2;
 
+/** Per-row capability note; when present it replaces the detail column (warn color). */
+export type LauncherRowNotes = Partial<Record<Exclude<LaunchChoice, "cancel">, string>>;
+
+export type LauncherContext = {
+  /** One line under the header naming the confirmed working agent (or its absence). */
+  statusLine?: string;
+  rowNotes?: LauncherRowNotes;
+};
+
 export function launcherReducer(state: LauncherState, event: LauncherEvent): { state: LauncherState; choice?: LaunchChoice } {
   if (event.type === "cancel") return { state, choice: "cancel" };
   if (event.type === "choose") return { state, choice: launcherRows[state.index]!.choice };
@@ -31,7 +40,7 @@ export function launcherReducer(state: LauncherState, event: LauncherEvent): { s
   return { state };
 }
 
-export function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void }) {
+export function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void; context?: LauncherContext }) {
   const [state, setState] = useState<LauncherState>({ index: 0 });
 
   const apply = (event: LauncherEvent) => {
@@ -61,16 +70,18 @@ export function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void })
         <text fg={palette.muted}>
           Generates the agent harness for this repo: AGENTS.md/CLAUDE.md, hooks, and skills, so coding agents follow your project's rules.
         </text>
+        {props.context?.statusLine ? <text fg={palette.gold}>{props.context.statusLine}</text> : null}
         <text fg={palette.faint}>What would you like to do?</text>
       </box>
       <box style={{ flexDirection: "column", gap: 0 }}>
         {launcherRows.map((row, rowIndex) => {
           const focused = rowIndex === state.index;
+          const note = props.context?.rowNotes?.[row.choice];
           return (
             <text key={row.choice} bg={focused ? palette.selBg : undefined}>
               <span fg={palette.accent}>{focused ? "▸ " : "  "}</span>
               <span fg={palette.text}>{row.label.padEnd(labelColumn)}</span>
-              <span fg={palette.faint}>{row.detail}</span>
+              {note ? <span fg={palette.warn}>{note}</span> : <span fg={palette.faint}>{row.detail}</span>}
             </text>
           );
         })}
@@ -80,7 +91,7 @@ export function LauncherApp(props: { onChoice: (choice: LaunchChoice) => void })
   );
 }
 
-export async function runLauncher(): Promise<LaunchChoice> {
+export async function runLauncher(context?: LauncherContext): Promise<LaunchChoice> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
   try {
     renderer = await createCliRenderer();
@@ -93,7 +104,7 @@ export async function runLauncher(): Promise<LaunchChoice> {
         cliRenderer.destroy();
         done(choice);
       };
-      createRoot(cliRenderer).render(<LauncherApp onChoice={finish} />);
+      createRoot(cliRenderer).render(<LauncherApp onChoice={finish} context={context} />);
     });
   } catch (error) {
     renderer?.destroy();
