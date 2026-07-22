@@ -285,6 +285,16 @@ describe("session evidence", () => {
       now: Date.now(),
     });
     const indexed = index.sessions[0] ?? (() => { throw new Error("Claude entry missing"); })();
+    // Stage the replacement fully BEFORE starting the read so only one rename
+    // syscall sits inside the race window. Both orderings must reject: a swap
+    // before open trips O_NOFOLLOW ("disappeared or changed"), a swap mid-read
+    // trips the post-read fingerprint checks ("changed while reading"). With
+    // mkdtemp/writeFile/symlink inside the window, a loaded machine sometimes
+    // let the 16MB read finish first and the test flaked on a benign ordering.
+    const outside = join(await tempDir("farrier-session-replaced-outside-"), "outside.jsonl");
+    await writeFile(outside, `${JSON.stringify({ cwd: project, type: "user", message: { content: "Outside" } })}\n`);
+    const replacement = join(transcripts, "replacement");
+    await symlink(outside, replacement);
     const reading = readClaudeSelection({
       indexed,
       selection: {
@@ -297,14 +307,17 @@ describe("session evidence", () => {
       categories: allCategories,
       targetDir: project,
     });
-    const outside = join(await tempDir("farrier-session-replaced-outside-"), "outside.jsonl");
-    await writeFile(outside, `${JSON.stringify({ cwd: project, type: "user", message: { content: "Outside" } })}\n`);
-    const replacement = join(transcripts, "replacement");
-    await symlink(outside, replacement);
-    await Bun.sleep(0);
-    await rename(replacement, path);
+    const renamed = rename(replacement, path);
 
-    await expect(reading).rejects.toThrow(/Consented Claude session source (?:disappeared or changed|changed while reading)/);
+    // Every ordering must reject, each through its own check: swap before
+    // open fails O_NOFOLLOW ("disappeared or changed"); swap between open and
+    // the first fd stat drops the inode's link count, bumping ctime past the
+    // indexed fingerprint ("changed"); swap mid-read trips the post-read
+    // checks ("changed while reading").
+    await expect(reading).rejects.toThrow(
+      /Consented Claude session source (?:disappeared or changed|changed(?: while reading)?):/
+    );
+    await renamed;
   });
 
   test("skips internal Farrier Claude sessions without losing readable project sessions", async () => {
