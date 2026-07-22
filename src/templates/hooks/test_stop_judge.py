@@ -546,6 +546,10 @@ printf '{"severity":"pass","summary":"ok","findings":[]}'
     assert code == 0
     assert_allowed(stdout, stderr)
     assert "projectRules" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
+    events = (tmp_path / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
+    event = json.loads(events.splitlines()[-1])
+    assert event["hook"] == "stop-judge"
+    assert event["result"] == "pass"
 
 
 def test_include_repo_map_false_omits_map_from_backend_prompt(tmp_path: Path) -> None:

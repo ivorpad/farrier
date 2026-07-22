@@ -10,7 +10,7 @@ import shutil
 import sys
 from typing import Any
 
-from _hook_runtime import read_project_text, read_repo_map, run_bounded_process
+from _hook_runtime import log_event, read_project_text, read_repo_map, run_bounded_process
 
 
 DEFAULT_TIMEOUT_MS = 30000
@@ -453,9 +453,17 @@ def main() -> int:
     judgement = valid_judgement(run_backend(config, combined_prompt, cwd))
 
     if judgement is None:
+        log_event(cwd, "stop-judge", "Stop", "backend-error")
         emit_stop_block("Semantic stop backend failed, timed out, or returned invalid bounded JSON. Retry or disable judge.stop explicitly.")
         return 0
 
+    log_event(
+        cwd,
+        "stop-judge",
+        "Stop",
+        str(judgement.get("severity")),
+        detail=redact_text(str(judgement.get("summary"))),
+    )
     if judgement.get("severity") == "serious":
         emit_stop_block(block_reason(judgement))
 

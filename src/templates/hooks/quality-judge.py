@@ -10,7 +10,14 @@ import shutil
 import sys
 from typing import Any
 
-from _hook_runtime import file_fingerprint, open_project_regular, read_project_text, read_repo_map, run_bounded_process
+from _hook_runtime import (
+    file_fingerprint,
+    log_event,
+    open_project_regular,
+    read_project_text,
+    read_repo_map,
+    run_bounded_process,
+)
 
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
@@ -543,6 +550,14 @@ def main() -> int:
             if backend_error is not None:
                 contexts.append(f"{backend_error}. Run the generated check manually or disable judge.perEdit explicitly.")
             judgement = valid_judgement(backend_result)
+            if judgement is not None:
+                log_event(
+                    cwd,
+                    "quality-judge",
+                    "PostToolUse",
+                    str(judgement.get("severity")),
+                    detail=redact_text(str(judgement.get("summary"))),
+                )
             context = judgement_context(judgement) if judgement is not None else None
             if context is not None:
                 contexts.append(context)
