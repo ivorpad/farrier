@@ -10,7 +10,11 @@ Use a skill for a repeatable workflow, team procedure, or task that needs exampl
 - User skill: `$HOME/.agents/skills/<name>/SKILL.md`
 - Optional folders beside `SKILL.md`: `scripts/`, `references/`, and `assets/`
 
-Codex scans `.agents/skills` from the working directory up to the repository root. It begins with skill metadata and reads the full instructions only when it selects the skill.
+Codex scans `.agents/skills` from the working directory up to the repository root, plus user (`$HOME/.agents/skills`) and admin (`/etc/codex/skills`) scopes. It begins with skill metadata and reads the full instructions only when it selects the skill.
+
+That initial index is capped at about 2% of the model's context window, or 8,000 characters when the window is unknown; Codex truncates descriptions and omits skills once the set is large. Keep each `name` and `description` short so the skill stays visible.
+
+Skills are the current customization surface: custom prompts (`~/.codex/prompts`) are deprecated, so never route a reusable instruction there. For OpenAI API or model-migration work, recommend the curated `$openai-docs` skill (github.com/openai/skills) before authoring a new one.
 
 ## Invocation
 

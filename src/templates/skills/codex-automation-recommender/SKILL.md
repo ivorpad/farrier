@@ -25,6 +25,13 @@ For a focused report, pass `--only guidance`, `--only hooks`, `--only skills`, `
 
 A single useful session task can support a recommendation. Repetition raises confidence; it is not a prerequisite.
 
+## Guidance recommendations
+
+Codex runs on GPT-5.6-class models, where leaner instructions win: OpenAI's own coding-agent evals improved ~10-15% while total tokens dropped 41-66% once system prompts were trimmed ([GPT-5.6 model guidance](https://developers.openai.com/api/docs/guides/prompt-guidance-gpt-5p6)). When advising on `AGENTS.md`:
+
+- Prefer removing or merging instructions over adding them. State each rule once; a rule repeated across sections is a defect to flag, not reinforce.
+- Recommend one explicit autonomy block that names the local actions Codex may take without asking (read, build, run tests, format) and the classes that always need confirmation (external calls, destructive or irreversible changes, costly work, anything that expands the agreed scope). State the boundary once instead of scattering "ask first" through every section.
+
 ## Boundaries
 
 - Advice is report-only. Do not install or create anything unless the user asks in a separate step.

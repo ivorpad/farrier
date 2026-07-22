@@ -18,4 +18,6 @@ Review only. Cite files and return findings to the parent task.
 
 Optional fields include `nickname_candidates`, `model`, `model_reasoning_effort`, `sandbox_mode`, `mcp_servers`, and `skills.config`. Omitted values inherit from the parent session. The `name` field, not the filename, identifies the agent.
 
+Global `[agents]` settings bound the fan-out: `agents.max_threads` (default 6) caps concurrent threads and `agents.max_depth` (default 1) caps nesting. Built-in `default`, `worker`, and `explorer` agents already exist; do not re-create them.
+
 Good roles include focused security review, read-heavy codebase exploration, log analysis, or independent test-gap review. Parallel agents cost more tokens and simultaneous writers can conflict, so do not recommend delegation just to split an ordinary edit.
