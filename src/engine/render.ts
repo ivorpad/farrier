@@ -141,13 +141,13 @@ export const farrierManifestVersion = 3;
 
 export const hookCatalogVersions: Record<HookId, number> = {
     "secret-shield": 7,
-    "tool-policy": 3,
+    "tool-policy": 4,
     "write-guard": 4,
-    "verb-runner": 6,
-    "quality-judge": 6,
-    "stop-judge": 5,
-    "large-file-commit-guard": 2,
-    "process-teardown-audit": 1
+    "verb-runner": 7,
+    "quality-judge": 7,
+    "stop-judge": 6,
+    "large-file-commit-guard": 3,
+    "process-teardown-audit": 2
 };
 
 export const hookTemplateFiles: Record<HookId, string[]> = {

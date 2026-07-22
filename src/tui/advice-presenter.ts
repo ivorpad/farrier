@@ -48,6 +48,7 @@ export function adviceSessionConsentNotice(input: {
   return [
     `Sessions on: short excerpts from ${input.sessionCount} recent ${service} session(s) will be sent to ${service}.`,
     "Passwords, tokens, and keys are removed on this computer first.",
+    "Personal details or secrets written as ordinary sentences are not detected. Leave sessions off if yours may contain them.",
     "Sent: what you asked for, corrections you made, commands that ran, file names touched, and pass/fail outcomes (from up to 20 recent sessions).",
     "Nothing is written to your project.",
   ];

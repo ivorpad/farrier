@@ -16,12 +16,16 @@ from _hook_runtime import log_event, read_project_text
 RULES_RELATIVE_PATH = Path(".farrier") / "hooks" / "tool-policy-rules.json"
 MAX_PAYLOAD_BYTES = 256 * 1024
 RULE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+# Deterministic denylist: known provider token shapes plus assignments to
+# secret-named variables. Prose PII (names, addresses, secrets written as free
+# text) is not detectable here and stays out of scope pending its own design.
 REDACTION_PATTERNS = (
     (re.compile(r"-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"), "[REDACTED_TOKEN]"),
+    (re.compile(r"\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|gl(?:pat|rt)-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|npm_[A-Za-z0-9]{36}|sk-[A-Za-z0-9_-]{8,})\b"), "[REDACTED_TOKEN]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"), "[REDACTED_JWT]"),
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{8,}={0,2}"), "Bearer [REDACTED_TOKEN]"),
     (re.compile(r"(?i)\b([A-Z0-9._%+-]+)@([A-Z0-9.-]+\.[A-Z]{2,})\b"), "[REDACTED_EMAIL]"),
-    (re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)\b((?:[A-Za-z0-9]+[_.-])*(?:api[_-]?key|access[_-]?key|secret[_-]?key|signing[_-]?key|private[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|credentials?|authorization))[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"), r"\1=[REDACTED]"),
 )
 
 

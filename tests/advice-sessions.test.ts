@@ -85,6 +85,30 @@ describe("session evidence", () => {
     expect(redacted).toContain("[REDACTED_KEY]");
     expect(redacted).not.toContain("super-secret");
 
+    // Session prose inherits the shared pattern upgrades (built from parts so
+    // no token-shaped literal lands in the repo).
+    const providerSecrets = [
+      ["AK", "IA", "7".repeat(16)].join(""),
+      ["ghp", "a".repeat(36)].join("_"),
+      ["github", "pat", "b".repeat(24)].join("_"),
+      ["xoxb", "1".repeat(10), "c".repeat(12)].join("-"),
+      ["AIza", "SyA", "d".repeat(32)].join(""),
+      ["npm", "e".repeat(36)].join("_"),
+      ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxIn0", "h".repeat(12)].join("."),
+      `aws_secret_access_key = ${"j".repeat(30)}`
+    ];
+    for (const sample of providerSecrets) {
+      expect(redactSessionText(sample)).toContain("REDACTED");
+    }
+    for (const ordinary of [
+      `commit ${"3f78".repeat(10)} tagged for release`,
+      "the task-scheduler and risk-assessment jobs run nightly",
+      "https://github.com/owner/repo/pull/42",
+      "max_tokens: 4096"
+    ]) {
+      expect(redactSessionText(ordinary)).toBe(ordinary);
+    }
+
     const wrapped = "<in-app-browser-context>payload</in-app-browser-context>\n"
       + "# AGENTS.md instructions\n<INSTRUCTIONS>rules</INSTRUCTIONS>\n"
       + "## My request for Codex:\nCreate a reusable goal-oriented metaprompt";

@@ -551,6 +551,7 @@ test("session consent notice names the destination and what leaves before analyz
   const notice = adviceSessionConsentNotice({ backend: "claude", sessionCount: 3 }).join("\n");
   expect(notice).toContain("3 recent Claude session(s) will be sent to Claude");
   expect(notice).toContain("Passwords, tokens, and keys are removed on this computer first");
+  expect(notice).toContain("secrets written as ordinary sentences are not detected");
   expect(notice).toContain("what you asked for");
   expect(notice).toContain("corrections you made");
   expect(notice).toContain("commands that ran");
