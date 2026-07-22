@@ -72,7 +72,7 @@ def test_out_of_root_and_ambiguous_recognized_mutations_fail_closed(tmp_path: Pa
 
 
 def test_blocking_hooks_reject_malformed_and_oversize_payloads() -> None:
-    for hook in ("secret-shield.py", "tool-policy.py", "write-guard.py"):
+    for hook in ("secret-shield.py", "tool-policy.py", "write-guard.py", "large-file-commit-guard.py"):
         if not (ROOT / hook).is_file():
             continue
         assert denied(run(hook, {}, raw="{not-json"))
@@ -87,7 +87,7 @@ def installed(name: str) -> bool:
 
 def test_every_hook_handles_huge_integer_json_as_bounded_malformed_input() -> None:
     raw = '{"value":' + ("9" * 10_000) + "}"
-    for hook in ("secret-shield.py", "tool-policy.py", "write-guard.py"):
+    for hook in ("secret-shield.py", "tool-policy.py", "write-guard.py", "large-file-commit-guard.py"):
         if not installed(hook):
             continue
         output = run(hook, {}, raw=raw)
@@ -98,6 +98,10 @@ def test_every_hook_handles_huge_integer_json_as_bounded_malformed_input() -> No
         stop = run("stop-judge.py", {}, raw=raw)
         assert stop and stop.get("decision") == "block"
         assert "9" * 100 not in json.dumps(stop)
+
+    if installed("process-teardown-audit.py"):
+        # Advisory Stop hook: malformed input fails OPEN and leaks nothing.
+        assert run("process-teardown-audit.py", {}, raw=raw) is None
 
     for hook in ("quality-judge.py", "verb-runner.py"):
         if not installed(hook):

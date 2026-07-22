@@ -105,6 +105,7 @@ export type FarrierManifest = {
     enabled: boolean;
   };
   judge?: Record<string, unknown>;
+  guards?: Record<string, unknown>;
   quality: Record<string, unknown>;
   versions: FarrierManifestVersions;
   registry?: {
@@ -112,8 +113,9 @@ export type FarrierManifest = {
   };
 };
 
-export type FarrierManifestInput = Partial<Omit<FarrierManifest, "judge" | "quality" | "versions">> & {
+export type FarrierManifestInput = Partial<Omit<FarrierManifest, "judge" | "guards" | "quality" | "versions">> & {
   judge?: unknown;
+  guards?: unknown;
   quality?: unknown;
   versions?: unknown;
 };
@@ -140,7 +142,9 @@ export const hookCatalogVersions: Record<HookId, number> = {
     "write-guard": 4,
     "verb-runner": 6,
     "quality-judge": 6,
-    "stop-judge": 5
+    "stop-judge": 5,
+    "large-file-commit-guard": 1,
+    "process-teardown-audit": 1
 };
 
 export const hookTemplateFiles: Record<HookId, string[]> = {
@@ -149,8 +153,17 @@ export const hookTemplateFiles: Record<HookId, string[]> = {
   "write-guard": ["write-guard.py", "test_write_guard.py"],
   "verb-runner": ["verb-runner.py", "test_verb_runner.py"],
   "quality-judge": ["quality-judge.py", "test_quality_judge.py"],
-  "stop-judge": ["stop-judge.py", "test_stop_judge.py"]
+  "stop-judge": ["stop-judge.py", "test_stop_judge.py"],
+  "large-file-commit-guard": ["large-file-commit-guard.py", "test_large_file_commit_guard.py"],
+  "process-teardown-audit": ["process-teardown-audit.py", "test_process_teardown_audit.py"]
 };
+
+/** Hooks parameterized by the user-owned `guards` record in .farrier.json. */
+export const guardHookIds: readonly HookId[] = ["large-file-commit-guard", "process-teardown-audit"];
+
+export function hasGuardHooks(hookIds: readonly PackHookRef[]): boolean {
+  return guardHookIds.some((hookId) => hookIds.includes(hookId));
+}
 
 function isBuiltinHookId(value: PackHookRef): value is HookId {
   return value in hookTemplateFiles;
@@ -469,6 +482,21 @@ function defaultJudgeConfig(): Record<string, unknown> {
   };
 }
 
+// Guard parameters are project preferences like `quality`: seeded once per
+// selected guard hook, then owned by the user (updates never overwrite the
+// guards record). processTeardown ships with no patterns — inert until
+// evidence (farrier learn) or the user supplies them.
+function defaultGuardsConfig(hookIds: readonly PackHookRef[]): Record<string, unknown> {
+  return {
+    ...(hookIds.includes("large-file-commit-guard")
+      ? { largeFileCommit: { maxBytes: 5 * 1024 * 1024 } }
+      : {}),
+    ...(hookIds.includes("process-teardown-audit")
+      ? { processTeardown: { patterns: [] } }
+      : {})
+  };
+}
+
 // Every entry here is a project preference, not a farrier rule: seeded once at
 // generate time, then owned by the user (updates never overwrite the quality
 // record). maxFileLines: null disables the length check.
@@ -536,6 +564,7 @@ async function renderManifest(
   );
   const registryPins = options.registryPins ?? {};
   const judgeSelected = hasJudgeHooks(pack.hooks);
+  const guardsSelected = hasGuardHooks(pack.hooks);
   const manifest: FarrierManifest = {
     farrierVersion: await getFarrierVersion(),
     agents: [...options.agents],
@@ -549,6 +578,9 @@ async function renderManifest(
     },
     ...(judgeSelected
       ? { judge: manifestRecord(options.existingManifest?.judge, defaultJudgeConfig()) }
+      : {}),
+    ...(guardsSelected
+      ? { guards: manifestRecord(options.existingManifest?.guards, defaultGuardsConfig(pack.hooks)) }
       : {}),
     quality: manifestRecord(options.existingManifest?.quality, defaultQualityConfig()),
     versions: {

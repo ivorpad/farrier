@@ -19,6 +19,7 @@ export type DoctorGroup =
   | "konsistent"
   | "learn"
   | "judge"
+  | "guards"
   | "quality"
   | "skills"
   | "runtime";
@@ -54,6 +55,7 @@ const allGroups: DoctorGroup[] = [
   "konsistent",
   "learn",
   "judge",
+  "guards",
   "quality",
   "skills",
   "runtime"
@@ -240,6 +242,8 @@ function addManifestShapeProblems(raw: unknown, problems: DoctorProblem[], targe
     validateJudgeTier("stop", judge.stop, problems, targetDir);
   }
 
+  validateGuards(raw.guards, problems);
+
   const quality = raw.quality;
   if (quality !== undefined && !isRecord(quality)) {
     problems.push({
@@ -273,6 +277,76 @@ function addManifestShapeProblems(raw: unknown, problems: DoctorProblem[], targe
         remediation: "Write each project quality preference as a non-empty string in quality.rules."
       });
     }
+  }
+}
+
+function guardProblem(problems: DoctorProblem[], message: string, remediation: string): void {
+  problems.push({
+    group: "guards",
+    severity: "error",
+    path: ".farrier.json",
+    message,
+    remediation
+  });
+}
+
+// The guards record is user-owned (like quality); doctor validates only the
+// shapes the installed guard hooks read, so a typo fails loudly here instead
+// of silently failing open at hook time.
+function validateGuards(guards: unknown, problems: DoctorProblem[]): void {
+  if (guards === undefined) {
+    return;
+  }
+
+  if (!isRecord(guards)) {
+    guardProblem(problems, "guards must be an object when present", "Run farrier update --yes or fix the guards configuration.");
+    return;
+  }
+
+  const largeFileCommit = guards.largeFileCommit;
+  if (largeFileCommit !== undefined) {
+    if (!isRecord(largeFileCommit)) {
+      guardProblem(problems, "guards.largeFileCommit must be an object when present", "Fix the guards.largeFileCommit configuration.");
+    } else {
+      if (largeFileCommit.maxBytes !== undefined && !(Number.isInteger(largeFileCommit.maxBytes) && (largeFileCommit.maxBytes as number) > 0)) {
+        guardProblem(problems, "guards.largeFileCommit.maxBytes must be a positive integer", "Set guards.largeFileCommit.maxBytes to a byte count such as 5242880.");
+      }
+      if (largeFileCommit.message !== undefined && !isNonEmptyString(largeFileCommit.message)) {
+        guardProblem(problems, "guards.largeFileCommit.message must be a non-empty string when present", "Write the extra teaching line as a non-empty string, or remove it.");
+      }
+      if (largeFileCommit.enabled !== undefined && typeof largeFileCommit.enabled !== "boolean") {
+        guardProblem(problems, "guards.largeFileCommit.enabled must be a boolean when present", "Set guards.largeFileCommit.enabled to true or false.");
+      }
+    }
+  }
+
+  const processTeardown = guards.processTeardown;
+  if (processTeardown !== undefined) {
+    if (!isRecord(processTeardown)) {
+      guardProblem(problems, "guards.processTeardown must be an object when present", "Fix the guards.processTeardown configuration.");
+      return;
+    }
+    if (processTeardown.patterns !== undefined) {
+      const patterns = processTeardown.patterns;
+      if (!Array.isArray(patterns) || !patterns.every((pattern) => isNonEmptyString(pattern) && compiles(pattern))) {
+        guardProblem(problems, "guards.processTeardown.patterns must be an array of valid regular expressions", "Write each teardown pattern as a non-empty regular expression string.");
+      }
+    }
+    if (processTeardown.message !== undefined && !isNonEmptyString(processTeardown.message)) {
+      guardProblem(problems, "guards.processTeardown.message must be a non-empty string when present", "Write the extra teaching line as a non-empty string, or remove it.");
+    }
+    if (processTeardown.enabled !== undefined && typeof processTeardown.enabled !== "boolean") {
+      guardProblem(problems, "guards.processTeardown.enabled must be a boolean when present", "Set guards.processTeardown.enabled to true or false.");
+    }
+  }
+}
+
+function compiles(pattern: string): boolean {
+  try {
+    new RegExp(pattern);
+    return true;
+  } catch {
+    return false;
   }
 }
 

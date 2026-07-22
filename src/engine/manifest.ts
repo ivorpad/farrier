@@ -26,6 +26,7 @@ export type NormalizedManifest = {
     enabled: boolean;
   };
   judge?: unknown;
+  guards?: unknown;
   quality?: unknown;
   versions: {
     farrierManifest: number | null;
@@ -167,6 +168,7 @@ export function normalizeManifest(raw: unknown, catalog: PackCatalog = builtinCa
     secondaryAcknowledged: stringArray(raw.secondaryAcknowledged) ?? [],
     learn: parseLearn(raw.learn),
     judge: raw.judge,
+    guards: raw.guards,
     quality: raw.quality,
     versions: parseVersions(raw.versions),
     registry: parseRegistry(raw.registry),
@@ -196,6 +198,7 @@ export function manifestToInput(manifest: NormalizedManifest): FarrierManifestIn
       enabled: manifest.learn.enabled,
     },
     judge: manifest.judge,
+    guards: manifest.guards,
     quality: manifest.quality,
     versions: {
       farrierManifest: manifest.versions.farrierManifest ?? undefined,

@@ -69,6 +69,18 @@ export const hookCapabilities: Record<HookId, HookCapability> = {
       claude: [{ event: "Stop", fileName: "stop-judge.py" }],
       codex: [{ event: "Stop", fileName: "stop-judge.py" }]
     }
+  },
+  "large-file-commit-guard": {
+    agents: {
+      claude: [{ event: "PreToolUse", matcher: "Bash", fileName: "large-file-commit-guard.py" }],
+      codex: [{ event: "PreToolUse", matcher: "^Bash$", fileName: "large-file-commit-guard.py" }]
+    }
+  },
+  "process-teardown-audit": {
+    agents: {
+      claude: [{ event: "Stop", fileName: "process-teardown-audit.py" }],
+      codex: [{ event: "Stop", fileName: "process-teardown-audit.py" }]
+    }
   }
 };
 

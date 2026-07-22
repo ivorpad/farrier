@@ -495,6 +495,54 @@ describe("render engine", () => {
     expect(manifest.versions.hooks["stop-judge"]).toBe(5);
   });
 
+  test("renders guard scripts, tests, and seeded guards config only when guard hooks are selected", async () => {
+    const dir = await tempDir();
+    const basePack = resolvePack("python-fastapi");
+
+    const withoutGuards = await createRenderPlan({ targetDir: dir, pack: basePack });
+    const bareManifest = JSON.parse(withoutGuards.files.find((file) => file.path === ".farrier.json")!.content);
+    expect(bareManifest.guards).toBeUndefined();
+    expect(withoutGuards.files.map((file) => file.path)).not.toContain(".farrier/hooks/large-file-commit-guard.py");
+
+    const pack: ResolvedPack = {
+      ...basePack,
+      hooks: [...basePack.hooks, "large-file-commit-guard", "process-teardown-audit"]
+    };
+    const plan = await createRenderPlan({ targetDir: dir, pack });
+    const paths = plan.files.map((file) => file.path);
+
+    expect(paths).toContain(".farrier/hooks/large-file-commit-guard.py");
+    expect(paths).toContain(".farrier/hooks/test_large_file_commit_guard.py");
+    expect(paths).toContain(".farrier/hooks/process-teardown-audit.py");
+    expect(paths).toContain(".farrier/hooks/test_process_teardown_audit.py");
+
+    const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
+    expect(manifest.guards.largeFileCommit.maxBytes).toBe(5 * 1024 * 1024);
+    expect(manifest.guards.processTeardown.patterns).toEqual([]);
+    expect(manifest.versions.hooks["large-file-commit-guard"]).toBe(1);
+    expect(manifest.versions.hooks["process-teardown-audit"]).toBe(1);
+  });
+
+  test("existing guards record is preserved across re-renders like quality", async () => {
+    const dir = await tempDir();
+    const basePack = resolvePack("python-fastapi");
+    const pack: ResolvedPack = {
+      ...basePack,
+      hooks: [...basePack.hooks, "large-file-commit-guard"]
+    };
+    const plan = await createRenderPlan({
+      targetDir: dir,
+      pack,
+      existingManifest: {
+        guards: { largeFileCommit: { maxBytes: 42, message: "seen 3x in sessions" } }
+      }
+    });
+
+    const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
+    expect(manifest.guards.largeFileCommit.maxBytes).toBe(42);
+    expect(manifest.guards.largeFileCommit.message).toBe("seen 3x in sessions");
+  });
+
   test("renders manifest with pack hook ids skills quality and version defaults", async () => {
     const dir = await tempDir();
     const pack = resolvePack("python-fastapi");

@@ -27,7 +27,7 @@ const hooksBindings = defineBindings(
  * Two hook families mirror farrier's two hook jobs: Protect blocks the move
  * and teaches the right one; Verify runs checks the tested engine wrote.
  */
-const protectHooks: readonly HookId[] = ["secret-shield", "tool-policy", "write-guard"];
+const protectHooks: readonly HookId[] = ["secret-shield", "tool-policy", "write-guard", "large-file-commit-guard"];
 
 function isBuiltinHook(hook: PackHookRef): hook is HookId {
   return !hook.startsWith("@");
@@ -47,7 +47,9 @@ const hookDescriptions: Record<HookId, string> = {
   "write-guard": "denies edits to lockfiles and other generated files",
   "verb-runner": "runs `just check` after edits and before the agent finishes",
   "quality-judge": "experimental AI review of each edit (ships off)",
-  "stop-judge": "experimental AI review of the full diff (ships off)"
+  "stop-judge": "experimental AI review of the full diff (ships off)",
+  "large-file-commit-guard": "denies git add/commit of files over a size limit you set",
+  "process-teardown-audit": "flags leftover test/automation processes before the agent finishes"
 };
 
 /**
@@ -106,6 +108,18 @@ function agentSeesLines(hook: PackHookRef, rules: ToolPolicyRule[]): PaneLine[] 
       return [
         { fg: palette.success, text: "full-diff review against your rules before the agent yields" },
         { fg: palette.muted, text: "the last gate between “done” and “actually done”" }
+      ];
+
+    case "large-file-commit-guard":
+      return [
+        { fg: palette.warn, text: "✗ Blocked: git add — big.bin (12.4 MiB) is over the 5.0 MiB limit." },
+        { fg: palette.gold, text: "→ Add it to .gitignore or use Git LFS; the limit lives in .farrier.json." }
+      ];
+
+    case "process-teardown-audit":
+      return [
+        { fg: palette.warn, text: "✗ Before finishing: 2 leftover processes match your teardown patterns." },
+        { fg: palette.gold, text: "→ kill 4211 4230 — or say why they must stay. Asks once, then allows." }
       ];
 
     default:

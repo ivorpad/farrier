@@ -479,6 +479,52 @@ describe("doctor engine", () => {
     });
   });
 
+  test("flags invalid guards shapes and accepts a valid guards record", async () => {
+    const dir = await tempDir();
+    await renderPack(dir);
+
+    const manifestPath = join(dir, ".farrier.json");
+    const manifest = await readJson(manifestPath);
+    manifest.guards = {
+      largeFileCommit: { maxBytes: 0, message: "", enabled: "yes" },
+      processTeardown: { patterns: ["(", ""], message: 7 }
+    };
+    await writeJson(manifestPath, manifest);
+
+    const report = await createDoctorReport({ targetDir: dir });
+
+    expect(report.healthy).toBe(false);
+    expectProblem(report, "guards", {
+      path: ".farrier.json",
+      message: "guards.largeFileCommit.maxBytes must be a positive integer"
+    });
+    expectProblem(report, "guards", {
+      path: ".farrier.json",
+      message: "guards.largeFileCommit.message must be a non-empty string when present"
+    });
+    expectProblem(report, "guards", {
+      path: ".farrier.json",
+      message: "guards.largeFileCommit.enabled must be a boolean when present"
+    });
+    expectProblem(report, "guards", {
+      path: ".farrier.json",
+      message: "guards.processTeardown.patterns must be an array of valid regular expressions"
+    });
+    expectProblem(report, "guards", {
+      path: ".farrier.json",
+      message: "guards.processTeardown.message must be a non-empty string when present"
+    });
+
+    manifest.guards = {
+      largeFileCommit: { maxBytes: 1048576, message: "large blobs forced 3 history rewrites", enabled: true },
+      processTeardown: { patterns: ["playwright", "electron.*test"] }
+    };
+    await writeJson(manifestPath, manifest);
+
+    const clean = await createDoctorReport({ targetDir: dir });
+    expect(clean.problems.filter((problem) => problem.group === "guards")).toEqual([]);
+  });
+
   test("accepts null maxFileLines and flags non-boolean includeRepoMap", async () => {
     const dir = await tempDir();
     await renderPack(dir);

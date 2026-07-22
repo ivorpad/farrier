@@ -4,7 +4,9 @@ export type HookId =
   | "write-guard"
   | "verb-runner"
   | "quality-judge"
-  | "stop-judge";
+  | "stop-judge"
+  | "large-file-commit-guard"
+  | "process-teardown-audit";
 
 export type PackHookRef = HookId | `@${string}`;
 
