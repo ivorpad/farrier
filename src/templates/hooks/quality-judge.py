@@ -26,7 +26,9 @@ PATCH_HEADER = re.compile(
     r"^\*\*\* (?:Update|Add|Delete) File: (?P<path>.+?)\s*$", re.MULTILINE
 )
 DEFAULT_MAX_FILE_LINES = 500
-DEFAULT_TIMEOUT_MS = 15000
+# Measured: a real `claude -p --model haiku` judge call takes ~17 s end to end
+# (CLI startup + API); 15 s timed out constantly.
+DEFAULT_TIMEOUT_MS = 30000
 MAX_EMBEDDED_CONTENT_BYTES = 30 * 1024
 MAX_PAYLOAD_BYTES = 256 * 1024
 MAX_CONTEXT_BYTES = 16 * 1024
@@ -437,11 +439,21 @@ def run_backend(
         return None, None
 
     try:
-        data = json.loads(output)
+        data = json.loads(strip_code_fence(output))
     except (json.JSONDecodeError, ValueError, RecursionError):
         return None, None
 
     return (data, None) if isinstance(data, dict) else (None, None)
+
+
+def strip_code_fence(text: str) -> str:
+    """Unwrap a ```json ... ``` fenced response; models add fences despite instructions."""
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline >= 0:
+            return stripped[first_newline + 1 : -3].strip()
+    return stripped
 
 
 def valid_judgement(data: dict[str, Any] | None) -> dict[str, Any] | None:

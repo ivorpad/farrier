@@ -608,3 +608,26 @@ def test_invalid_include_repo_map_blocks(tmp_path: Path) -> None:
     data = parse_stdout(stdout)
     assert data["decision"] == "block"
     assert "judge.stop.includeRepoMap must be a boolean" in data["reason"]
+
+
+def test_fenced_backend_json_is_accepted(tmp_path: Path) -> None:
+    init_repo_with_head(tmp_path)
+    write_manifest(tmp_path, enabled=True)
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        """
+cat > /dev/null
+printf '```json\\n{"severity":"serious","summary":"fenced block","findings":[]}\\n```'
+""",
+    )
+
+    code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
+
+    assert code == 0
+    assert stderr == ""
+    data = parse_stdout(stdout)
+    assert data["decision"] == "block"
+    assert "fenced block" in data["reason"]

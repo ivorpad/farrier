@@ -452,7 +452,7 @@ function defaultJudgeConfig(): Record<string, unknown> {
       enabled: false,
       backend: "claude",
       model: "haiku",
-      timeoutMs: 15000,
+      timeoutMs: 30000,
       includeRepoMap: true,
       prompt: `${hooksDirectory}/prompts/quality-judge-v1.txt`
     },
@@ -460,7 +460,7 @@ function defaultJudgeConfig(): Record<string, unknown> {
       enabled: false,
       backend: "claude",
       model: "sonnet",
-      timeoutMs: 30000,
+      timeoutMs: 60000,
       includeRepoMap: true,
       prompt: `${hooksDirectory}/prompts/stop-judge-v1.txt`,
       maxDiffBytes: 120000,

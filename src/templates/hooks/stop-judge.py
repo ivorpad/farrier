@@ -13,7 +13,9 @@ from typing import Any
 from _hook_runtime import log_event, read_project_text, read_repo_map, run_bounded_process
 
 
-DEFAULT_TIMEOUT_MS = 30000
+# Measured: a per-edit haiku judge call takes ~17 s end to end; the stop judge
+# reviews full diffs on a larger model and needs more headroom.
+DEFAULT_TIMEOUT_MS = 60000
 DEFAULT_MAX_DIFF_BYTES = 120000
 DEFAULT_MAX_UNTRACKED_FILES = 50
 MAX_EMBEDDED_CONTENT_BYTES = 30 * 1024
@@ -323,11 +325,21 @@ def run_backend(
         return None
 
     try:
-        data = json.loads(output)
+        data = json.loads(strip_code_fence(output))
     except (json.JSONDecodeError, ValueError, RecursionError):
         return None
 
     return data if isinstance(data, dict) else None
+
+
+def strip_code_fence(text: str) -> str:
+    """Unwrap a ```json ... ``` fenced response; models add fences despite instructions."""
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline >= 0:
+            return stripped[first_newline + 1 : -3].strip()
+    return stripped
 
 
 def valid_judgement(data: dict[str, Any] | None) -> dict[str, Any] | None:

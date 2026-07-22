@@ -641,3 +641,25 @@ def test_invalid_include_repo_map_emits_config_context(tmp_path: Path) -> None:
     assert code == 0
     assert stderr == ""
     assert_post_context(stdout, "judge.perEdit.includeRepoMap must be a boolean")
+
+
+def test_fenced_backend_json_is_accepted(tmp_path: Path) -> None:
+    write_manifest(tmp_path, manifest(enabled=True))
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        """
+cat > /dev/null
+printf '```json\\n{"severity":"advisory","summary":"fenced finding","findings":[]}\\n```'
+""",
+    )
+
+    code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
+
+    assert code == 0
+    assert stderr == ""
+    assert_post_context(stdout, "fenced finding")
