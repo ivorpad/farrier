@@ -252,14 +252,27 @@ function addManifestShapeProblems(raw: unknown, problems: DoctorProblem[], targe
     return;
   }
 
-  if (isRecord(quality) && !isPositiveNumber(quality.maxFileLines)) {
+  if (isRecord(quality) && quality.maxFileLines !== null && !isPositiveNumber(quality.maxFileLines)) {
     problems.push({
       group: "quality",
       severity: "error",
       path: ".farrier.json",
-      message: "quality.maxFileLines must be a positive number",
-      remediation: "Set quality.maxFileLines to a positive number."
+      message: "quality.maxFileLines must be a positive number or null to disable the length check",
+      remediation: "Set quality.maxFileLines to a positive number, or null to disable it."
     });
+  }
+
+  if (isRecord(quality) && quality.rules !== undefined) {
+    const rules = quality.rules;
+    if (!Array.isArray(rules) || !rules.every((rule) => isNonEmptyString(rule))) {
+      problems.push({
+        group: "quality",
+        severity: "error",
+        path: ".farrier.json",
+        message: "quality.rules must be an array of non-empty strings",
+        remediation: "Write each project quality preference as a non-empty string in quality.rules."
+      });
+    }
   }
 }
 
@@ -330,6 +343,16 @@ function validateJudgeTier(
       path: ".farrier.json",
       message: `judge.${tier}.timeoutMs exceeds the 120000 ms runtime bound`,
       remediation: `Set judge.${tier}.timeoutMs to 120000 or less.`
+    });
+  }
+
+  if (value.includeRepoMap !== undefined && typeof value.includeRepoMap !== "boolean") {
+    problems.push({
+      group: "judge",
+      severity: "error",
+      path: ".farrier.json",
+      message: `judge.${tier}.includeRepoMap must be a boolean`,
+      remediation: `Set judge.${tier}.includeRepoMap to true or false.`
     });
   }
 

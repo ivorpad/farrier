@@ -531,3 +531,109 @@ def test_ignores_unrelated_tool(tmp_path: Path) -> None:
 
     assert code == 0
     assert_allowed(stdout, stderr)
+
+
+def test_null_max_file_lines_disables_length_finding(tmp_path: Path) -> None:
+    data = manifest(enabled=False)
+    data["quality"]["maxFileLines"] = None
+    write_manifest(tmp_path, data)
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("line\n" * 600, encoding="utf-8")
+
+    code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path)
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
+
+
+def test_project_rules_and_repo_map_reach_backend_prompt(tmp_path: Path) -> None:
+    data = manifest(enabled=True)
+    data["quality"]["rules"] = ["Never recreate helpers that utils_module already provides"]
+    write_manifest(tmp_path, data)
+    (tmp_path / "AGENTS.md").write_text(
+        "# Project\n\n<!-- farrier:repo-map:begin -->\n## Layout\n- src/ (12 files)\n<!-- farrier:repo-map:end -->\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        """
+cat > prompt.txt
+grep -q "projectRules" prompt.txt || exit 8
+grep -q "utils_module already provides" prompt.txt || exit 8
+grep -q "repoMap" prompt.txt || exit 8
+grep -q "12 files" prompt.txt || exit 8
+printf '{"severity":"pass","summary":"ok","findings":[]}'
+""",
+    )
+
+    code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
+    assert "projectRules" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
+
+
+def test_include_repo_map_false_omits_map_from_backend_prompt(tmp_path: Path) -> None:
+    data = manifest(enabled=True)
+    data["judge"]["perEdit"]["includeRepoMap"] = False
+    write_manifest(tmp_path, data)
+    (tmp_path / "AGENTS.md").write_text(
+        "<!-- farrier:repo-map:begin -->\nMAP-SENTINEL-CONTENT\n<!-- farrier:repo-map:end -->\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        """
+cat > prompt.txt
+grep -q "MAP-SENTINEL-CONTENT" prompt.txt && exit 8
+printf '{"severity":"pass","summary":"ok","findings":[]}'
+""",
+    )
+
+    code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
+
+
+def test_invalid_quality_rules_emit_config_context_without_backend_call(tmp_path: Path) -> None:
+    data = manifest(enabled=True)
+    data["quality"]["rules"] = ["fine", ""]
+    write_manifest(tmp_path, data)
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    make_fake_executable(tmp_path, "claude", "echo called > called.txt\nexit 0")
+
+    code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path, tmp_path)
+
+    assert code == 0
+    assert stderr == ""
+    assert_post_context(stdout, "quality.rules must be an array of non-empty strings")
+    assert not (tmp_path / "called.txt").exists()
+
+
+def test_invalid_include_repo_map_emits_config_context(tmp_path: Path) -> None:
+    data = manifest(enabled=True)
+    data["judge"]["perEdit"]["includeRepoMap"] = "yes"
+    write_manifest(tmp_path, data)
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    code, stdout, stderr = run_hook(post_payload(tmp_path), tmp_path)
+
+    assert code == 0
+    assert stderr == ""
+    assert_post_context(stdout, "judge.perEdit.includeRepoMap must be a boolean")

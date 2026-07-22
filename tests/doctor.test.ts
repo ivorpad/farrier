@@ -449,7 +449,8 @@ describe("doctor engine", () => {
       }
     };
     manifest.quality = {
-      maxFileLines: 0
+      maxFileLines: 0,
+      rules: ["reuse helpers", ""]
     };
     await writeJson(manifestPath, manifest);
 
@@ -470,8 +471,39 @@ describe("doctor engine", () => {
     });
     expectProblem(report, "quality", {
       path: ".farrier.json",
-      message: "quality.maxFileLines must be a positive number"
+      message: "quality.maxFileLines must be a positive number or null to disable the length check"
     });
+    expectProblem(report, "quality", {
+      path: ".farrier.json",
+      message: "quality.rules must be an array of non-empty strings"
+    });
+  });
+
+  test("accepts null maxFileLines and flags non-boolean includeRepoMap", async () => {
+    const dir = await tempDir();
+    await renderPack(dir);
+
+    const manifestPath = join(dir, ".farrier.json");
+    const manifest = await readJson(manifestPath);
+    manifest.quality = {
+      maxFileLines: null,
+      rules: ["reuse existing helpers instead of recreating them"]
+    };
+    manifest.judge = {
+      perEdit: {
+        enabled: false,
+        includeRepoMap: "yes"
+      }
+    };
+    await writeJson(manifestPath, manifest);
+
+    const report = await createDoctorReport({ targetDir: dir });
+
+    expectProblem(report, "judge", {
+      path: ".farrier.json",
+      message: "judge.perEdit.includeRepoMap must be a boolean"
+    });
+    expect(report.problems.filter((problem) => problem.group === "quality")).toEqual([]);
   });
 
 

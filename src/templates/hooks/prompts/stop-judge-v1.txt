@@ -14,15 +14,22 @@ Review the whole turn diff and untracked file list provided in the input JSON. R
   ]
 }
 
+The input JSON may also contain:
+- "projectRules": the project owner's quality preferences from .farrier.json. Treat them as the authoritative review checklist for this repository; a clear-cut violation of one is a serious finding. Cite the rule you applied.
+- "repoMap": the repository's generated map (layout, test conventions, coupling). Use it to spot duplication or missed reuse in the diff: a function, type, or helper recreated when an existing module or an installed dependency likely already provides it. Name the existing location in the finding so the agent can go look.
+
 Use "pass" when the diff is acceptable.
 
 Use "advisory" for real concerns that should be mentioned but must not block the user from stopping, such as:
+- likely duplication that needs confirming against the module you named,
 - small cohesion issues,
 - minor stack-practice drift,
 - follow-up tests or cleanup that are helpful but not critical.
 
 Use "serious" only for problems worth blocking Stop, such as:
 - secret exposure or attempts to commit sensitive data,
+- a clear-cut violation of a stated project rule,
+- recreating a helper or type that an existing module or dependency named in the repo map already provides,
 - destructive architecture drift,
 - large unrelated rewrites,
 - obvious broken best practices likely to fail runtime or tests,

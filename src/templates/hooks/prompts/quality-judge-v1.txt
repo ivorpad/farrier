@@ -14,14 +14,22 @@ Review the edited file content provided in the input JSON. Return JSON only with
   ]
 }
 
+The input JSON may also contain:
+- "projectRules": the project owner's quality preferences from .farrier.json. Treat them as the authoritative review checklist for this repository; flag an edit that violates one and cite the rule you applied.
+- "repoMap": the repository's generated map (layout, test conventions, coupling). Use it to spot likely duplication or missed reuse: a function, type, or helper being recreated when an existing module or an installed dependency likely already provides it. Name the existing location in the finding so the agent can go look.
+
 Use "pass" when the edit looks acceptable.
 
 Use "advisory" for meaningful but non-blocking concerns, such as:
+- a violated project rule whose blast radius is small,
+- likely duplication that needs confirming against the module you named,
 - a file starting to mix unrelated responsibilities,
 - business logic drifting into a transport, CLI, UI, or infrastructure layer,
 - language best-practice issues that should be fixed soon but are not immediately dangerous.
 
 Use "serious" only for gross problems likely to cause real correctness, maintainability, or architecture harm, such as:
+- a clear-cut violation of a stated project rule,
+- recreating a helper or type that an existing module or dependency named in the repo map already provides,
 - business logic dumped into an unrelated module,
 - a change that obviously violates the project's layer boundaries,
 - a large incohesive edit that should be split before continuing,

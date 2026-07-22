@@ -506,3 +506,101 @@ def test_no_changes_passes_without_backend_call(tmp_path: Path) -> None:
     assert code == 0
     assert_allowed(stdout, stderr)
     assert not (tmp_path / "called.txt").exists()
+
+
+def set_manifest_extras(tmp_path: Path, *, quality: dict | None = None, include_repo_map: bool | str | None = None) -> None:
+    path = tmp_path / ".farrier.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if quality is not None:
+        data["quality"] = quality
+    if include_repo_map is not None:
+        data["judge"]["stop"]["includeRepoMap"] = include_repo_map
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_project_rules_and_repo_map_reach_backend_prompt(tmp_path: Path) -> None:
+    init_repo_with_head(tmp_path)
+    write_manifest(tmp_path, enabled=True)
+    set_manifest_extras(tmp_path, quality={"rules": ["Never recreate helpers that utils_module already provides"]})
+    (tmp_path / "AGENTS.md").write_text(
+        "<!-- farrier:repo-map:begin -->\n## Layout\n- src/ (12 files)\n<!-- farrier:repo-map:end -->\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        """
+cat > prompt.txt
+grep -q "projectRules" prompt.txt || exit 8
+grep -q "utils_module already provides" prompt.txt || exit 8
+grep -q "repoMap" prompt.txt || exit 8
+grep -q "12 files" prompt.txt || exit 8
+printf '{"severity":"pass","summary":"ok","findings":[]}'
+""",
+    )
+
+    code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
+    assert "projectRules" in (tmp_path / "prompt.txt").read_text(encoding="utf-8")
+
+
+def test_include_repo_map_false_omits_map_from_backend_prompt(tmp_path: Path) -> None:
+    init_repo_with_head(tmp_path)
+    write_manifest(tmp_path, enabled=True)
+    set_manifest_extras(tmp_path, include_repo_map=False)
+    (tmp_path / "AGENTS.md").write_text(
+        "<!-- farrier:repo-map:begin -->\nMAP-SENTINEL-CONTENT\n<!-- farrier:repo-map:end -->\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+
+    make_fake_executable(
+        tmp_path,
+        "claude",
+        """
+cat > prompt.txt
+grep -q "MAP-SENTINEL-CONTENT" prompt.txt && exit 8
+printf '{"severity":"pass","summary":"ok","findings":[]}'
+""",
+    )
+
+    code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
+
+    assert code == 0
+    assert_allowed(stdout, stderr)
+
+
+def test_invalid_quality_rules_block_without_backend_call(tmp_path: Path) -> None:
+    init_repo_with_head(tmp_path)
+    write_manifest(tmp_path, enabled=True)
+    set_manifest_extras(tmp_path, quality={"rules": "reuse things"})
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    make_fake_executable(tmp_path, "claude", "echo called > called.txt\nexit 0")
+
+    code, stdout, stderr = run_hook(stop_payload(tmp_path), tmp_path)
+
+    assert code == 0
+    assert stderr == ""
+    data = parse_stdout(stdout)
+    assert data["decision"] == "block"
+    assert "quality.rules must be an array of non-empty strings" in data["reason"]
+    assert not (tmp_path / "called.txt").exists()
+
+
+def test_invalid_include_repo_map_blocks(tmp_path: Path) -> None:
+    init_repo_with_head(tmp_path)
+    write_manifest(tmp_path, enabled=True)
+    set_manifest_extras(tmp_path, include_repo_map="yes")
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+
+    code, stdout, stderr = run_hook(stop_payload(tmp_path))
+
+    assert code == 0
+    assert stderr == ""
+    data = parse_stdout(stdout)
+    assert data["decision"] == "block"
+    assert "judge.stop.includeRepoMap must be a boolean" in data["reason"]

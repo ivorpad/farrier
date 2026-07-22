@@ -10,7 +10,7 @@ import shutil
 import sys
 from typing import Any
 
-from _hook_runtime import read_project_text, run_bounded_process
+from _hook_runtime import read_project_text, read_repo_map, run_bounded_process
 
 
 DEFAULT_TIMEOUT_MS = 30000
@@ -26,6 +26,9 @@ MAX_DIFF_BYTES = 120000
 MAX_COMBINED_PROMPT_BYTES = 64 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_UNTRACKED_PATH_BYTES = 4096
+MAX_REPO_MAP_BYTES = 16 * 1024
+MAX_QUALITY_RULES = 32
+MAX_QUALITY_RULE_BYTES = 1024
 
 REDACTION_PATTERNS = (
     (re.compile(r"-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
@@ -57,10 +60,16 @@ Review the whole turn diff and untracked file list provided in the input JSON. R
   ]
 }
 
+When the input includes "projectRules", treat them as the project owner's review checklist; a
+clear-cut violation of one is serious. When the input includes "repoMap", use it to spot
+duplication: a helper or type recreated when an existing module likely already provides it; name
+the existing location in the finding.
+
 Use "serious" only for problems worth blocking Stop: secret exposure, destructive architecture
 drift, large unrelated rewrites, obvious broken best practices likely to fail runtime or tests,
-business logic dumped into unrelated modules, or generated/owned files edited by bypassing the
-proper tool. Advisory findings must not block Stop. Return JSON only.
+business logic dumped into unrelated modules, clear-cut projectRules violations, or
+generated/owned files edited by bypassing the proper tool. Advisory findings must not block Stop.
+Return JSON only.
 """
 
 
@@ -116,6 +125,29 @@ def stop_config(manifest: dict[str, Any]) -> dict[str, Any]:
     return stop if isinstance(stop, dict) else {}
 
 
+def quality_rules(manifest: dict[str, Any]) -> tuple[list[str], str | None]:
+    quality = manifest.get("quality")
+    if not isinstance(quality, dict):
+        return [], None
+    value = quality.get("rules")
+    if value is None:
+        return [], None
+    if not isinstance(value, list) or not all(isinstance(rule, str) and rule.strip() for rule in value):
+        return [], "quality.rules must be an array of non-empty strings"
+    if len(value) > MAX_QUALITY_RULES:
+        return [], f"quality.rules must contain at most {MAX_QUALITY_RULES} rules"
+    return [capped_text(rule, MAX_QUALITY_RULE_BYTES) for rule in value], None
+
+
+def repo_map_text(cwd: str, config: dict[str, Any]) -> str | None:
+    if config.get("includeRepoMap") is False:
+        return None
+    section = read_repo_map(cwd)
+    if section is None:
+        return None
+    return capped_text(section, MAX_REPO_MAP_BYTES)
+
+
 def validate_stop_config(config: dict[str, Any]) -> str | None:
     if config.get("enabled") is not True:
         return "judge.stop.enabled must be true or false"
@@ -139,6 +171,9 @@ def validate_stop_config(config: dict[str, Any]) -> str | None:
             or value > maximum
         ):
             return f"judge.stop.{field} must be greater than zero and at most {maximum}"
+    include_map = config.get("includeRepoMap")
+    if include_map is not None and not isinstance(include_map, bool):
+        return "judge.stop.includeRepoMap must be a boolean"
     prompt = config.get("prompt")
     if prompt is not None and (not isinstance(prompt, str) or not prompt.strip()):
         return "judge.stop.prompt must be a non-empty project-relative path"
@@ -227,13 +262,21 @@ def collect_untracked(cwd: str, max_files: int) -> list[str] | None:
 
 
 def build_combined_prompt(
-    base_prompt: str, diff: str, untracked_files: list[str]
+    base_prompt: str,
+    diff: str,
+    untracked_files: list[str],
+    project_rules: list[str] | None = None,
+    repo_map: str | None = None,
 ) -> tuple[str, bool]:
-    payload = {
+    payload: dict[str, Any] = {
         "event": "Stop",
         "diff": capped_text(diff, MAX_DIFF_BYTES),
         "untrackedFiles": [capped_text(path, MAX_UNTRACKED_PATH_BYTES) for path in untracked_files],
     }
+    if project_rules:
+        payload["projectRules"] = project_rules
+    if repo_map is not None:
+        payload["repoMap"] = repo_map
 
     combined = f"{capped_text(base_prompt).strip()}\n\nInput JSON:\n{json.dumps(payload, indent=2)}\n"
     truncated = len(redact_text(combined).encode("utf-8")) > MAX_COMBINED_PROMPT_BYTES
@@ -376,6 +419,10 @@ def main() -> int:
     if prompt_error is not None or base_prompt is None:
         emit_stop_block(f"Semantic stop configuration is malformed: {prompt_error}. Run farrier doctor and farrier update --yes.")
         return 0
+    rules, rules_error = quality_rules(manifest)
+    if rules_error is not None:
+        emit_stop_block(f"Semantic stop configuration is malformed: {rules_error}. Run farrier doctor and farrier update --yes.")
+        return 0
 
     if not has_valid_git_head(cwd):
         emit_stop_block("Semantic stop could not establish a valid Git HEAD. Initialize/repair Git or disable the semantic judge explicitly.")
@@ -394,7 +441,9 @@ def main() -> int:
     if not diff.strip() and not untracked_files:
         return 0
 
-    combined_prompt, prompt_truncated = build_combined_prompt(base_prompt, diff, untracked_files)
+    combined_prompt, prompt_truncated = build_combined_prompt(
+        base_prompt, diff, untracked_files, rules, repo_map_text(cwd, config)
+    )
     if prompt_truncated:
         emit_stop_block(
             f"Semantic stop evidence exceeded the {MAX_COMBINED_PROMPT_BYTES}-byte combined review bound; no backend judgement was accepted. "

@@ -139,8 +139,8 @@ export const hookCatalogVersions: Record<HookId, number> = {
     "tool-policy": 3,
     "write-guard": 4,
     "verb-runner": 6,
-    "quality-judge": 4,
-    "stop-judge": 3
+    "quality-judge": 5,
+    "stop-judge": 4
 };
 
 export const hookTemplateFiles: Record<HookId, string[]> = {
@@ -249,6 +249,7 @@ export function agentsHardRules(
     `Verification is automatic: hooks run \`just check-fast\` after each code edit and ${stopChecks} when you stop. Run these manually only to debug a failure the hooks reported.`,
     "If the Stop check fails for reasons that predate your changes, name each pre-existing failing test explicitly in your final summary and stop again; do not re-run the full check yourself — an identical known failure does not re-block.",
     "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
+    "Follow the project quality preferences in `quality.rules` of `.farrier.json`; reuse existing helpers and types before writing new ones.",
     "Keep generated hook scripts and their tests together.",
     `Do not bypass ${hookNames} hooks; every agent must also follow these rules from AGENTS.md and the justfile.`
   ];
@@ -452,6 +453,7 @@ function defaultJudgeConfig(): Record<string, unknown> {
       backend: "claude",
       model: "haiku",
       timeoutMs: 15000,
+      includeRepoMap: true,
       prompt: `${hooksDirectory}/prompts/quality-judge-v1.txt`
     },
     stop: {
@@ -459,6 +461,7 @@ function defaultJudgeConfig(): Record<string, unknown> {
       backend: "claude",
       model: "sonnet",
       timeoutMs: 30000,
+      includeRepoMap: true,
       prompt: `${hooksDirectory}/prompts/stop-judge-v1.txt`,
       maxDiffBytes: 120000,
       maxUntrackedFiles: 50
@@ -466,9 +469,16 @@ function defaultJudgeConfig(): Record<string, unknown> {
   };
 }
 
+// Every entry here is a project preference, not a farrier rule: seeded once at
+// generate time, then owned by the user (updates never overwrite the quality
+// record). maxFileLines: null disables the length check.
 function defaultQualityConfig(): Record<string, unknown> {
   return {
-    maxFileLines: 500
+    maxFileLines: 500,
+    rules: [
+      "Reuse existing helpers, types, and utilities instead of recreating them; when a module in this repository or an installed dependency already provides one, import it.",
+      "Do not introduce security risks: no secrets or credentials in source, no shell or SQL built from unsanitized input, no disabled certificate or auth checks."
+    ]
   };
 }
 
@@ -550,8 +560,8 @@ async function renderManifest(
       ...(judgeSelected
         ? {
             prompts: {
-              qualityJudge: "v1",
-              stopJudge: "v1"
+              qualityJudge: "v2",
+              stopJudge: "v2"
             }
           }
         : {})

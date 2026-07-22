@@ -479,14 +479,20 @@ describe("render engine", () => {
     const stopPrompt = plan.files.find((file) => file.path === ".farrier/hooks/prompts/stop-judge-v1.txt");
 
     expect(qualityPrompt?.content).toContain("Farrier's per-edit semantic quality judge");
+    expect(qualityPrompt?.content).toContain("projectRules");
+    expect(qualityPrompt?.content).toContain("repoMap");
     expect(stopPrompt?.content).toContain("Farrier's full-turn semantic stop judge");
+    expect(stopPrompt?.content).toContain("projectRules");
+    expect(stopPrompt?.content).toContain("repoMap");
 
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.judge.perEdit.enabled).toBe(false);
+    expect(manifest.judge.perEdit.includeRepoMap).toBe(true);
     expect(manifest.judge.perEdit.prompt).toBe(".farrier/hooks/prompts/quality-judge-v1.txt");
-    expect(manifest.versions.prompts).toEqual({ qualityJudge: "v1", stopJudge: "v1" });
-    expect(manifest.versions.hooks["quality-judge"]).toBe(4);
-    expect(manifest.versions.hooks["stop-judge"]).toBe(3);
+    expect(manifest.judge.stop.includeRepoMap).toBe(true);
+    expect(manifest.versions.prompts).toEqual({ qualityJudge: "v2", stopJudge: "v2" });
+    expect(manifest.versions.hooks["quality-judge"]).toBe(5);
+    expect(manifest.versions.hooks["stop-judge"]).toBe(4);
   });
 
   test("renders manifest with pack hook ids skills quality and version defaults", async () => {
@@ -508,7 +514,9 @@ describe("render engine", () => {
     expect(manifest.secondaryAcknowledged).toEqual([]);
     expect(manifest.learn).toEqual({ enabled: false });
     expect(manifest.judge).toBeUndefined();
-    expect(manifest.quality).toEqual({ maxFileLines: 500 });
+    expect(manifest.quality.maxFileLines).toBe(500);
+    expect(manifest.quality.rules).toHaveLength(2);
+    expect(manifest.quality.rules.every((rule: unknown) => typeof rule === "string" && rule.length > 0)).toBe(true);
     expect(manifest.versions.farrierManifest).toBe(3);
     expect(manifest.versions.hooks).toEqual({
       "secret-shield": 7,

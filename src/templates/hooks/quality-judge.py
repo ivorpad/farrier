@@ -10,7 +10,7 @@ import shutil
 import sys
 from typing import Any
 
-from _hook_runtime import file_fingerprint, open_project_regular, read_project_text, run_bounded_process
+from _hook_runtime import file_fingerprint, open_project_regular, read_project_text, read_repo_map, run_bounded_process
 
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
@@ -29,6 +29,9 @@ MAX_COMBINED_PROMPT_BYTES = 64 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_FILE_LINES = 100000
 MAX_EDIT_SCAN_BYTES = 1024 * 1024
+MAX_REPO_MAP_BYTES = 16 * 1024
+MAX_QUALITY_RULES = 32
+MAX_QUALITY_RULE_BYTES = 1024
 
 REDACTION_PATTERNS = (
     (re.compile(r"-----BEGIN [^-]+PRIVATE KEY-----[\s\S]*?-----END [^-]+PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
@@ -60,9 +63,12 @@ Review the edited file content and return JSON only with this exact shape:
   ]
 }
 
-Judge only gross issues: misplaced business logic, poor cohesion, obvious language-practice problems,
-or changes that appear unrelated to the edited module. Avoid nitpicks. Use "serious" only when the
-change is likely to cause real maintenance or correctness harm.
+When the input includes "projectRules", treat them as the project owner's review checklist and flag
+edits that violate one, citing the rule. When the input includes "repoMap", use it to flag likely
+duplication: a helper or type recreated when an existing module likely already provides it; name the
+existing location. Otherwise judge only gross issues: misplaced business logic, poor cohesion,
+obvious language-practice problems, or changes that appear unrelated to the edited module. Avoid
+nitpicks. Use "serious" only when the change is likely to cause real maintenance or correctness harm.
 """
 
 
@@ -181,9 +187,25 @@ def max_file_lines(manifest: dict[str, Any]) -> tuple[int | None, str | None]:
     if not isinstance(quality, dict):
         return DEFAULT_MAX_FILE_LINES, None
     value = quality.get("maxFileLines", DEFAULT_MAX_FILE_LINES)
+    if value is None:
+        return None, None
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > MAX_FILE_LINES:
-        return None, f"quality.maxFileLines must be an integer from 1 through {MAX_FILE_LINES}"
+        return None, f"quality.maxFileLines must be null or an integer from 1 through {MAX_FILE_LINES}"
     return value, None
+
+
+def quality_rules(manifest: dict[str, Any]) -> tuple[list[str], str | None]:
+    quality = manifest.get("quality")
+    if not isinstance(quality, dict):
+        return [], None
+    value = quality.get("rules")
+    if value is None:
+        return [], None
+    if not isinstance(value, list) or not all(isinstance(rule, str) and rule.strip() for rule in value):
+        return [], "quality.rules must be an array of non-empty strings"
+    if len(value) > MAX_QUALITY_RULES:
+        return [], f"quality.rules must contain at most {MAX_QUALITY_RULES} rules"
+    return [capped_text(rule, MAX_QUALITY_RULE_BYTES) for rule in value], None
 
 
 def per_edit_config(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -212,6 +234,9 @@ def validate_per_edit_config(config: dict[str, Any]) -> str | None:
         or timeout > MAX_TIMEOUT_MS
     ):
         return f"judge.perEdit.timeoutMs must be greater than zero and at most {MAX_TIMEOUT_MS}"
+    include_map = config.get("includeRepoMap")
+    if include_map is not None and not isinstance(include_map, bool):
+        return "judge.perEdit.includeRepoMap must be a boolean"
     prompt = config.get("prompt")
     if prompt is not None and (not isinstance(prompt, str) or not prompt.strip()):
         return "judge.perEdit.prompt must be a non-empty project-relative path"
@@ -304,13 +329,15 @@ def edited_files(cwd: str, payload: dict[str, Any], max_lines: int) -> tuple[lis
     return files, None
 
 
-def deterministic_findings(files: list[dict[str, Any]], max_lines: int) -> list[str]:
+def deterministic_findings(files: list[dict[str, Any]], max_lines: int | None) -> list[str]:
     findings: list[str] = []
 
     for file in files:
         warning = file.get("warning")
         if isinstance(warning, str):
             findings.append(f"{file.get('path')}: {warning}; verify the mutation target manually.")
+            continue
+        if max_lines is None:
             continue
         line_count = file.get("lineCount")
         path = file.get("path")
@@ -328,11 +355,29 @@ def deterministic_findings(files: list[dict[str, Any]], max_lines: int) -> list[
     return findings
 
 
-def build_combined_prompt(base_prompt: str, files: list[dict[str, Any]]) -> str:
-    payload = {
+def repo_map_text(cwd: str, config: dict[str, Any]) -> str | None:
+    if config.get("includeRepoMap") is False:
+        return None
+    section = read_repo_map(cwd)
+    if section is None:
+        return None
+    return capped_text(section, MAX_REPO_MAP_BYTES)
+
+
+def build_combined_prompt(
+    base_prompt: str,
+    files: list[dict[str, Any]],
+    project_rules: list[str] | None = None,
+    repo_map: str | None = None,
+) -> str:
+    payload: dict[str, Any] = {
         "event": "PostToolUse",
         "files": files,
     }
+    if project_rules:
+        payload["projectRules"] = project_rules
+    if repo_map is not None:
+        payload["repoMap"] = repo_map
 
     combined = f"{capped_text(base_prompt).strip()}\n\nInput JSON:\n{json.dumps(payload, indent=2)}\n"
     return capped_text(combined, MAX_COMBINED_PROMPT_BYTES)
@@ -471,10 +516,10 @@ def main() -> int:
         emit_posttool_context(f"quality hook configuration is missing or malformed{detail}; run farrier doctor and just check.")
         return 0
     max_lines, max_lines_error = max_file_lines(manifest)
-    if max_lines_error is not None or max_lines is None:
+    if max_lines_error is not None:
         emit_posttool_context(f"quality hook configuration is malformed: {max_lines_error}. Run farrier doctor and farrier update --yes.")
         return 0
-    files, input_error = edited_files(cwd, payload, max_lines)
+    files, input_error = edited_files(cwd, payload, max_lines if max_lines is not None else MAX_FILE_LINES)
     if input_error is not None:
         emit_posttool_context(f"quality hook received malformed or ambiguous input: {input_error}. Run just check manually.")
         return 0
@@ -484,12 +529,17 @@ def main() -> int:
     config = per_edit_config(manifest)
     if config.get("enabled") is not False:
         config_error = validate_per_edit_config(config)
+        rules, rules_error = quality_rules(manifest)
         base_prompt, prompt_error = prompt_text(cwd, config) if config_error is None else (None, None)
-        error = config_error or prompt_error
+        error = config_error or prompt_error or rules_error
         if error is not None:
             contexts.append(f"quality hook configuration is malformed: {error}. Run farrier doctor and farrier update --yes.")
         elif files and base_prompt is not None:
-            backend_result, backend_error = run_backend(config, build_combined_prompt(base_prompt, files), cwd)
+            backend_result, backend_error = run_backend(
+                config,
+                build_combined_prompt(base_prompt, files, rules, repo_map_text(cwd, config)),
+                cwd,
+            )
             if backend_error is not None:
                 contexts.append(f"{backend_error}. Run the generated check manually or disable judge.perEdit explicitly.")
             judgement = valid_judgement(backend_result)

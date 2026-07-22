@@ -251,3 +251,27 @@ def read_project_text(
 def file_fingerprint(stats: os.stat_result) -> tuple[int, int, int, int, int]:
     return (stats.st_dev, stats.st_ino, stats.st_size, stats.st_mtime_ns, stats.st_ctime_ns)
 
+
+REPO_MAP_BEGIN_MARKER = "<!-- farrier:repo-map:begin -->"
+REPO_MAP_END_MARKER = "<!-- farrier:repo-map:end -->"
+MAX_AGENTS_MD_BYTES = 256 * 1024
+
+
+def read_repo_map(root: str | Path) -> str | None:
+    """Return the generated repo-map section of AGENTS.md, or None when absent.
+
+    Callers bound and redact the returned text before embedding it anywhere.
+    """
+    text, error = read_project_text(root, "AGENTS.md", MAX_AGENTS_MD_BYTES)
+    if error is not None or text is None:
+        return None
+    start = text.find(REPO_MAP_BEGIN_MARKER)
+    if start < 0:
+        return None
+    start += len(REPO_MAP_BEGIN_MARKER)
+    end = text.find(REPO_MAP_END_MARKER, start)
+    if end < 0:
+        return None
+    section = text[start:end].strip()
+    return section or None
+
