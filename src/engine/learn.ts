@@ -20,6 +20,7 @@ import { compareEvidence, createEvidenceSet, type EvidenceComparison } from "./b
 import { toolResultsFromRecord, toolUseFromRecord, type FailureSignal } from "./learn-signals";
 import { mineFailureSignalsFromSources } from "./learn-signals-codex";
 import { routeFailureSignals, type PrimitiveProposal } from "./failure-router";
+import { refineProposalText, type DroppedRefinement } from "./proposal-authoring";
 
 export type CandidateEvent = {
   command: string;
@@ -64,6 +65,10 @@ export type LearnReport = {
   signals: FailureSignal[];
   /** Failure→primitive router output; review-only, never auto-applied. */
   primitiveProposals: PrimitiveProposal[];
+  /** Proposal ids whose text the refinement backend rewrote (wording only). */
+  refinedProposalIds: string[];
+  /** Rejected text refinements, with reasons; the deterministic text stays. */
+  droppedRefinements: DroppedRefinement[];
   evidence?: EvidenceComparison;
   notes: string[];
   errors: string[];
@@ -813,7 +818,7 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
   notes.push(...candidateResult.notes);
   errors.push(...existingRules.errors);
   const signals = signalScan.signals;
-  const primitiveProposals = routeFailureSignals({
+  let primitiveProposals = routeFailureSignals({
     signals,
     installedHookIds: manifest.hookIds,
     guards: manifest.guards
@@ -854,6 +859,8 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
       droppedProposals: [],
       signals,
       primitiveProposals,
+      refinedProposalIds: [],
+      droppedRefinements: [],
       evidence: compareEvidence({
         beforeSet: evidenceSet,
         afterSet: evidenceSet,
@@ -896,6 +903,33 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
     }
   }
 
+  let refinedProposalIds: string[] = [];
+  let droppedRefinements: DroppedRefinement[] = [];
+
+  if (!options.noLlm && primitiveProposals.length > 0) {
+    const backend = options.backend ?? "claude";
+
+    try {
+      const refined = await refineProposalText({
+        targetDir,
+        proposals: primitiveProposals,
+        backend,
+        model: options.model,
+        reasoningEffort: options.reasoningEffort,
+        runner: options.runner ?? defaultBackendRunner
+      });
+      primitiveProposals = refined.proposals;
+      refinedProposalIds = refined.refinedIds;
+      droppedRefinements = refined.dropped;
+      notes.push(refinedProposalIds.length > 0
+        ? `Used ${backend} backend to refine proposal text for: ${refinedProposalIds.join(", ")}.`
+        : `Used ${backend} backend for proposal text refinement; no refinement was accepted.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notes.push(`Proposal text refinement backend failed (${message}); kept deterministic proposal text.`);
+    }
+  }
+
   const validation = validateProposals({
     proposals: rawProposals,
     existingIds: existingRules.existingIds,
@@ -918,6 +952,8 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
     droppedProposals: validation.dropped,
     signals,
     primitiveProposals,
+    refinedProposalIds,
+    droppedRefinements,
     evidence,
     notes,
     errors
@@ -1030,10 +1066,27 @@ export function formatLearnReport(report: LearnReport): string {
     "",
     "Primitive proposals (review in the TUI; nothing is applied automatically):",
     ...renderList(
-      report.primitiveProposals.map((proposal) => `[${proposal.kind}] ${proposal.id}: ${proposal.title}`),
+      report.primitiveProposals.map((proposal) => {
+        const refined = report.refinedProposalIds.includes(proposal.id);
+        const head = `[${proposal.kind}] ${proposal.id}: ${proposal.title}${refined ? " (text refined)" : ""}`;
+        return refined ? `${head}\n    ${proposal.message}` : head;
+      }),
       "none"
     )
   ];
+
+  if (report.droppedRefinements.length > 0) {
+    lines.push(
+      "",
+      "Dropped text refinements (deterministic text kept):",
+      ...renderList(
+        report.droppedRefinements.map((refinement) =>
+          refinement.id ? `${refinement.id}: ${refinement.reason}` : refinement.reason
+        ),
+        "none"
+      )
+    );
+  }
 
   if (report.evidence) {
     lines.push("", `Behavior evidence: ${report.evidence.result} (digest ${report.evidence.inputDigest}; before ${report.evidence.before.passed} pass/${report.evidence.before.failed} fail, after ${report.evidence.after.passed} pass/${report.evidence.after.failed} fail).`);
