@@ -35,22 +35,31 @@ export function adviceBackendControlLabel(
   return `Analyze with: ${segment("claude")} / ${segment("codex")}`;
 }
 
+export type AdviceConsentLine = {
+  /** Key-column label; the headline and the closing line carry none. */
+  label?: string;
+  text: string;
+  /** "caution" flags the one risk local redaction cannot remove. */
+  tone?: "caution";
+};
+
 /**
  * The explicit "your data leaves this machine" notice shown before Analyze when
  * the sessions toggle is on. It names the destination service and spells out
- * exactly what is sent, so consent is informed rather than implied.
+ * exactly what is sent, so consent is informed rather than implied. Labeled
+ * rows let the TUI render a scannable card instead of a wall of sentences.
  */
 export function adviceSessionConsentNotice(input: {
   backend: AgentBackend;
   sessionCount: number;
-}): string[] {
+}): AdviceConsentLine[] {
   const service = backendName(input.backend);
   return [
-    `Sessions on: short excerpts from ${input.sessionCount} recent ${service} session(s) will be sent to ${service}.`,
-    "Passwords, tokens, and keys are removed on this computer first.",
-    "Personal details or secrets written as ordinary sentences are not detected. Leave sessions off if yours may contain them.",
-    "Sent: what you asked for, corrections you made, commands that ran, file names touched, and pass/fail outcomes (from up to 20 recent sessions).",
-    "Nothing is written to your project.",
+    { text: `Short excerpts from your ${input.sessionCount} selected ${service} session(s) will be sent to ${service}.` },
+    { label: "Sent", text: "what you asked for, corrections you made, commands that ran, file names touched, and pass/fail outcomes." },
+    { label: "Removed", text: "Passwords, tokens, and keys are removed on this computer first." },
+    { label: "Caution", tone: "caution", text: "Personal details or secrets written as ordinary sentences are not detected. Leave sessions off if yours may contain them." },
+    { text: "Nothing is written to your project." },
   ];
 }
 

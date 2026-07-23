@@ -23,6 +23,7 @@ import {
   type ProviderSessionIndex,
   recordArray,
   resultRecord,
+  sessionPreviewLabel,
   sessionProjectRoot,
   sha256,
   sourceFingerprint,
@@ -229,6 +230,12 @@ export async function listCodexSessions(input: {
       sortKey: "updated_at",
       sortDirection: "desc",
       sourceKinds: rootSessionSourceKinds,
+      // Codex ≥0.145 defaults thread/list to threads recorded under the
+      // *currently configured* model_provider, hiding every session created
+      // under another provider id (e.g. after switching providers with
+      // cc-switch). An empty list means all providers; servers that predate
+      // the field ignore it.
+      modelProviders: [],
     }, { maxResponseBytes: listResponseBytes, signal: input.signal }));
     abortIfNeeded(input.signal);
     const page = recordArray(result.data).slice(0, remaining);
@@ -252,6 +259,8 @@ export async function listCodexSessions(input: {
         && summary.turnCount >= 0
         ? summary.turnCount
         : undefined;
+      const label = sessionPreviewLabel(
+        typeof summary.name === "string" && summary.name.trim() ? summary.name : summary.preview);
       sessions.push({
         updatedAt,
         entry: {
@@ -261,6 +270,7 @@ export async function listCodexSessions(input: {
           projectMatch: "provider-index",
           ...(approximateTurns === undefined ? {} : { approximateTurns }),
           sourceFingerprint: summaryFingerprint(summary, project.root),
+          ...(label ? { label } : {}),
         },
         locator: { threadId: summary.id, summary },
       });

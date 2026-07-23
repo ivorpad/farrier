@@ -21,6 +21,7 @@ export type KeyChord =
   | "pagedown"
   | "ctrl+c"
   | "super+z"
+  | "a"
   | "b"
   | "q"
   | "r"
@@ -78,6 +79,7 @@ const keyLabels: Record<KeyChord, string> = {
   pagedown: "pgdn",
   "ctrl+c": "ctrl+c",
   "super+z": "cmd+z",
+  a: "a",
   b: "b",
   q: "q",
   r: "r",

@@ -9,6 +9,7 @@ import {
   adviceSessionConsentNotice,
   adviceSessionCountsFromMetadata,
   adviceSetupControls,
+  adviceSetupControlsFor,
   adviceSkillCreationRequest,
   adviceSupportOutcome,
   createAdviceWizardActions,
@@ -24,6 +25,7 @@ import {
   createInitialAdviceTuiState,
   initialAdviceBackend
 } from "../src/tui/advise-machine";
+import { adviceSessionPickerRowLabel, toggledSessionSelection } from "../src/tui/AdviceSessionPicker";
 import type { ProjectAdviceInput } from "../src/engine/project-advice";
 
 const bothAvailable = { claude: true, codex: true };
@@ -193,6 +195,34 @@ test("reasoning backend selection prefers Claude and cycles only through availab
   expect(adjacentAvailableAdviceBackend("claude", unavailable, 1)).toBeUndefined();
   expect(() => createInitialAdviceTuiState(0, unavailable)).toThrow("No reasoning backend is available");
   expect(adviceSetupControls).toEqual(["backend", "sessions", "lookback", "scope", "analyze"]);
+});
+
+test("a single-agent startup pick removes the backend picker; Both keeps it", () => {
+  expect(adviceSetupControlsFor(true)).toEqual(["sessions", "lookback", "scope", "analyze"]);
+  expect(adviceSetupControlsFor(false)).toEqual(["backend", "sessions", "lookback", "scope", "analyze"]);
+});
+
+test("session picker rows show recency plus the provider-native preview and toggling respects the cap", () => {
+  expect(adviceSessionPickerRowLabel({
+    opaqueId: "one",
+    provider: "codex",
+    updatedAt: "2026-07-22T15:39:07.000Z",
+    projectMatch: "provider-index",
+    approximateTurns: 14,
+    sourceFingerprint: "fp",
+    label: "Run the CUA regression pass",
+  })).toBe("2026-07-22 15:39 · 14 turn(s) · Run the CUA regression pass");
+  expect(adviceSessionPickerRowLabel({
+    opaqueId: "two",
+    provider: "claude",
+    updatedAt: "2026-07-23T07:47:00.000Z",
+    projectMatch: "directory",
+    sourceFingerprint: "fp",
+  })).toBe("2026-07-23 07:47 · no preview available");
+
+  expect(toggledSessionSelection(["a", "b"], "b", 2)).toEqual({ selected: ["a"], capped: false });
+  expect(toggledSessionSelection(["a"], "b", 2)).toEqual({ selected: ["a", "b"], capped: false });
+  expect(toggledSessionSelection(["a", "b"], "c", 2)).toEqual({ selected: ["a", "b"], capped: true });
 });
 
 test("advice wizard preserves the actionable no-backend startup failure", async () => {
@@ -579,8 +609,9 @@ test("advice report selection explains why the recommendation is useful before c
 });
 
 test("session consent notice names the destination and what leaves before analyze", () => {
-  const notice = adviceSessionConsentNotice({ backend: "claude", sessionCount: 3 }).join("\n");
-  expect(notice).toContain("3 recent Claude session(s) will be sent to Claude");
+  const rows = adviceSessionConsentNotice({ backend: "claude", sessionCount: 3 });
+  const notice = rows.map((row) => (row.label ? `${row.label}: ${row.text}` : row.text)).join("\n");
+  expect(notice).toContain("3 selected Claude session(s) will be sent to Claude");
   expect(notice).toContain("Passwords, tokens, and keys are removed on this computer first");
   expect(notice).toContain("secrets written as ordinary sentences are not detected");
   expect(notice).toContain("what you asked for");
@@ -589,7 +620,8 @@ test("session consent notice names the destination and what leaves before analyz
   expect(notice).toContain("file names touched");
   expect(notice).toContain("pass/fail outcomes");
   expect(notice).toContain("Nothing is written to your project");
-  expect(adviceSessionConsentNotice({ backend: "codex", sessionCount: 1 }).join("\n")).toContain("will be sent to Codex");
+  expect(rows.find((row) => row.label === "Caution")?.tone).toBe("caution");
+  expect(adviceSessionConsentNotice({ backend: "codex", sessionCount: 1 }).map((row) => row.text).join("\n")).toContain("will be sent to Codex");
 });
 
 test("advice support kinds present as plain outcomes, not primitive jargon", () => {

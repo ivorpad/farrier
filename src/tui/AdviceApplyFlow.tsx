@@ -1,15 +1,16 @@
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import type { ApplyHarnessChangePlanResult, HarnessChangePlan } from "../engine/create-plan";
 import type { AdviceCreationPlan } from "../engine/advice-apply";
-import { DetailPane, KeyHints, palette, scrollWindow, truncateTo, useSpinner } from "./chrome";
-import { fileActionLegend, fileActionMarker } from "./file-action-markers";
+import { applyConfirmLine, manifestOutcomeSummary } from "./advice-manifest";
+import { KeyHints, palette, scrollWindow, truncateTo, useSpinner } from "./chrome";
+import { fileActionWord } from "./file-action-markers";
 import { binding, bindingsHint, defineBindings, destructiveConfirmationBindings, resolveIntent, runningCancellationBindings } from "./keymap";
 
 type Phase = "planning" | "review" | "applying" | "done" | "error";
 
 const previewWidth = 58;
-const previewPageSize = 3;
 
 export function advicePlanPreviewLines(content: string, width = previewWidth): string[] {
   const safeWidth = Math.max(1, width);
@@ -36,10 +37,10 @@ export function AdviceApplyFlow(props: {
   const [result, setResult] = useState<ApplyHarnessChangePlanResult>();
   const [error, setError] = useState<string>();
   const [focusedIndex, setFocusedIndex] = useState(0);
-  const [previewOffset, setPreviewOffset] = useState(0);
   const [replacementArmed, setReplacementArmed] = useState(false);
   const [planAttempt, setPlanAttempt] = useState(0);
   const cancelAfterApplyRef = useRef(false);
+  const previewScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const spinner = useSpinner(phase === "planning" || phase === "applying");
 
   useEffect(() => {
@@ -77,7 +78,7 @@ export function AdviceApplyFlow(props: {
   };
 
   const planningBindings = defineBindings(...runningCancellationBindings, binding(["escape", "b"], "back", "cancel plan"), binding("q", "quit", "quit"));
-  const applyingBindings = defineBindings(binding(["ctrl+c", "q"], "interrupt", "close after transaction"));
+  const applyingBindings = defineBindings(binding(["ctrl+c", "q"], "interrupt", "close after saving"));
   const errorBindings = defineBindings(binding("r", "retry", "retry"), binding(["escape", "b"], "back", "report"), binding(["q", "ctrl+c"], "quit", "close"));
   const doneBindings = defineBindings(binding(["enter", "escape", "b"], "back", "report"), binding(["q", "ctrl+c"], "quit", "close"));
   const reviewBindings = replacementArmed
@@ -91,7 +92,7 @@ export function AdviceApplyFlow(props: {
     : defineBindings(
         binding(["up", "down"], "move", "files"),
         binding(["pageup", "pagedown"], "scroll", "preview"),
-        binding("enter", "activate", "apply/review replacements"),
+        binding("enter", "activate", "save/review overwrites"),
         binding(["escape", "b"], "back", "report"),
         binding("q", "quit", "abandon")
       );
@@ -129,13 +130,11 @@ export function AdviceApplyFlow(props: {
     else if (intent === "confirm") apply(true);
     else if (intent === "move") {
       setFocusedIndex((current) => Math.min(Math.max(0, current + (key.name === "down" ? 1 : -1)), inspection.files.length - 1));
-      setPreviewOffset(0);
-    } else if (intent === "scroll" && key.name === "pageup") setPreviewOffset((current) => Math.max(0, current - previewPageSize));
-    else if (intent === "scroll") {
-      const focused = inspection.files[Math.min(focusedIndex, Math.max(inspection.files.length - 1, 0))];
-      const content = plan?.files.find((file) => file.path === focused?.path)?.content ?? "";
-      const maximum = Math.max(advicePlanPreviewLines(content).length - previewPageSize, 0);
-      setPreviewOffset((current) => Math.min(maximum, current + previewPageSize));
+      // A new file means a new preview; jump back to its top.
+      previewScrollRef.current?.scrollTo({ x: 0, y: 0 });
+    } else if (intent === "scroll") {
+      // Page by the actual visible height of the preview viewport, not a constant.
+      previewScrollRef.current?.scrollBy(key.name === "pagedown" ? 0.85 : -0.85, "viewport");
     } else if (intent === "activate") {
       if (inspection.blockers.length > 0) return;
       if (inspection.replacementPaths.length > 0) setReplacementArmed(true);
@@ -169,7 +168,7 @@ export function AdviceApplyFlow(props: {
       <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
         <text fg={palette.success}>✓ Recommendation created</text>
         <text fg={palette.text}>{props.recommendation.id}</text>
-        <text fg={palette.muted}>{`${result?.written.length ?? 0} file(s) written · ${result?.unchanged.length ?? 0} unchanged`}</text>
+        <text fg={palette.muted}>{`Saved ${result?.written.length ?? 0} ${(result?.written.length ?? 0) === 1 ? "file" : "files"}${result?.unchanged.length ? ` · ${result.unchanged.length} already matched` : ""}`}</text>
         {result?.written.map((path) => <text key={path} fg={palette.text}>{`  ${path}`}</text>)}
         {result?.backupDir ? <text fg={palette.gold}>{`Backups: ${result.backupDir}`}</text> : null}
         <KeyHints hint={bindingsHint(doneBindings)} />
@@ -181,42 +180,61 @@ export function AdviceApplyFlow(props: {
   const clampedIndex = Math.min(focusedIndex, Math.max(files.length - 1, 0));
   const focused = files[clampedIndex];
   const window = scrollWindow(clampedIndex, files.length, 6);
-  const replacements = inspection?.replacementPaths.length ?? 0;
-  const blocked = inspection?.blockers.length ?? 0;
   const planFile = focused ? plan?.files.find((file) => file.path === focused.path) : undefined;
   const allPreviewLines = advicePlanPreviewLines(planFile?.content ?? "");
-  const safePreviewOffset = Math.min(previewOffset, Math.max(allPreviewLines.length - previewPageSize, 0));
-  const previewEnd = Math.min(safePreviewOffset + previewPageSize, allPreviewLines.length);
-  const preview = allPreviewLines.slice(safePreviewOffset, previewEnd).map((text) => ({ fg: palette.muted, text }));
   const previewTitle = focused
-    ? `${focused.path} · ${allPreviewLines.length === 0 ? "empty" : `${safePreviewOffset + 1}-${previewEnd}/${allPreviewLines.length}`}`
+    ? `${focused.path} · full content${allPreviewLines.length ? ` (${allPreviewLines.length} ${allPreviewLines.length === 1 ? "line" : "lines"})` : " (empty)"}`
     : "";
+  const confirm = inspection ? applyConfirmLine({ inspection, replacementArmed }) : undefined;
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
-      <text fg={palette.accent}>Review recommendation creation</text>
-      <text fg={palette.text}>{props.recommendation.id}</text>
-      <text fg={palette.muted}>{plan?.summary}</text>
-      <text fg={palette.gold}>{`${files.length} file(s) · ${replacements} replacement(s) · ${blocked} blocked · nothing written yet`}</text>
-      <text fg={palette.faint}>{fileActionLegend}</text>
-      {files.slice(window.start, window.end).map((file, offset) => {
-        const index = window.start + offset;
-        const marker = fileActionMarker(file.action);
-        return (
-          <text key={file.path} bg={index === clampedIndex ? palette.selBg : undefined}>
-            <span fg={palette.accent}>{index === clampedIndex ? "▸ " : "  "}</span>
-            <span fg={file.action === "blocked" || file.action === "replace" ? palette.warn : palette.success}>{`${marker} `}</span>
-            <span fg={palette.text}>{truncateTo(file.path, 55)}</span>
-          </text>
-        );
-      })}
-      {focused ? <DetailPane title={previewTitle} lines={[{ fg: palette.gold, text: focused.reason }, ...preview]} /> : null}
-      {blocked > 0 ? <text fg={palette.warn}>Blocked paths must be fixed before this plan can be applied.</text> : replacements > 0 ? (
-        <text fg={replacementArmed ? palette.warn : palette.gold}>
-          {replacementArmed ? "Replacement armed. Press y to apply and retain backups; n or Escape disarms." : "Press Enter to review replacement risk, then y to apply."}
-        </text>
-      ) : <text fg={palette.gold}>Press Enter to apply this reviewed plan.</text>}
-      <KeyHints hint={bindingsHint(reviewBindings)} />
+      <box style={{ flexDirection: "column", flexShrink: 0 }}>
+        <text style={{ flexShrink: 0 }} fg={palette.accent}>Review recommendation creation</text>
+        <text style={{ flexShrink: 0 }} fg={palette.text}>{props.recommendation.id}</text>
+        <text style={{ flexShrink: 0 }} fg={palette.gold}>{inspection ? manifestOutcomeSummary(inspection) : plan?.summary}</text>
+        <text style={{ flexShrink: 0 }} fg={palette.faint}>Nothing is saved to your project yet.</text>
+        {files.slice(window.start, window.end).map((file, offset) => {
+          const index = window.start + offset;
+          const destructive = file.action === "blocked" || file.action === "replace";
+          return (
+            <text key={file.path} style={{ flexShrink: 0 }} bg={index === clampedIndex ? palette.selBg : undefined}>
+              <span fg={palette.accent}>{index === clampedIndex ? "▸ " : "  "}</span>
+              <span fg={destructive ? palette.warn : palette.success}>{`${fileActionWord(file.action).padEnd(11)} `}</span>
+              <span fg={palette.text}>{truncateTo(file.path, 55)}</span>
+            </text>
+          );
+        })}
+      </box>
+      {/*
+        The preview fills the leftover height and scrolls, instead of a fixed
+        3-line window. A bounded scrollbox with flexShrink:0 text children keeps
+        every line intact on a short terminal (opentui otherwise overlaps
+        shrinking flex siblings); pageup/pagedown scroll it by a viewport page.
+      */}
+      {focused ? (
+        <box style={{ border: true, flexDirection: "column", flexGrow: 1, flexShrink: 1, width: "100%" }}>
+          <text style={{ flexShrink: 0 }} fg={palette.faint}>{previewTitle}</text>
+          <scrollbox
+            ref={previewScrollRef}
+            focused={false}
+            scrollX={false}
+            scrollY
+            viewportCulling
+            style={{ flexGrow: 1, flexShrink: 1, width: "100%" }}
+            contentOptions={{ flexDirection: "column", gap: 0, width: "100%" }}
+          >
+            <text style={{ flexShrink: 0 }} fg={palette.gold}>{focused.reason}</text>
+            {allPreviewLines.map((line, index) => (
+              <text key={`${index}-${line}`} style={{ flexShrink: 0 }} fg={palette.muted}>{line}</text>
+            ))}
+          </scrollbox>
+        </box>
+      ) : null}
+      <box style={{ flexDirection: "column", flexShrink: 0 }}>
+        {confirm ? <text style={{ flexShrink: 0 }} fg={confirm.tone === "warn" ? palette.warn : palette.gold}>{confirm.text}</text> : null}
+        <KeyHints hint={bindingsHint(reviewBindings)} />
+      </box>
     </box>
   );
 }

@@ -139,6 +139,26 @@ describe("session evidence", () => {
     }
   });
 
+  test("Claude listing derives a redacted head label and skips command wrappers", async () => {
+    const project = resolve(await tempDir("farrier-session-label-project-"));
+    const transcripts = await tempDir("farrier-session-label-claude-");
+    const lines = [
+      JSON.stringify({ type: "mode", mode: "normal" }),
+      JSON.stringify({ type: "user", message: { role: "user", content: "<local-command-caveat>Caveat: local commands</local-command-caveat>" } }),
+      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "Fix the login bug with token sk-abcdefghijkl" }] } }),
+    ].join("\n");
+    await writeFile(join(transcripts, "labeled.jsonl"), lines, "utf8");
+
+    const inventory = await listProjectSessions({
+      targetDir: project,
+      targets: ["claude"],
+      claudeTranscriptsDir: transcripts,
+    });
+
+    expect(inventory.entries).toHaveLength(1);
+    expect(inventory.entries[0]?.label).toBe("Fix the login bug with token [REDACTED_KEY]");
+  });
+
   test("ignores Claude symlinks and caps metadata at the newest 500 entries", async () => {
     const project = resolve(await tempDir("farrier-session-cap-project-"));
     const transcripts = await tempDir("farrier-session-cap-claude-");
@@ -448,7 +468,7 @@ describe("session evidence", () => {
       if (method === "thread/list") {
         return {
           data: [
-            { id: "one", cwd: targetDir, updatedAt: Math.floor(now / 1_000) },
+            { id: "one", cwd: targetDir, updatedAt: Math.floor(now / 1_000), preview: "Create checklist one" },
             { id: "two", cwd: targetDir, updatedAt: Math.floor(now / 1_000) - 1 },
             { id: "child", cwd: targetDir, parentThreadId: "one", updatedAt: Math.floor(now / 1_000) },
             { id: "fork", cwd: targetDir, forkedFromId: "one", updatedAt: Math.floor(now / 1_000) },
@@ -479,6 +499,7 @@ describe("session evidence", () => {
     expect(calls.map((call) => call.method)).toEqual(["thread/list"]);
     expect(inventory.entries).toHaveLength(2);
     const selected = inventory.entries.find((entry) => entry.updatedAt === new Date(now).toISOString());
+    expect(selected?.label).toBe("Create checklist one");
     const consent = createSessionConsent({
       projectRootDigest: inventory.projectRootDigest,
       selected: [{
@@ -502,6 +523,11 @@ describe("session evidence", () => {
     expect(calls.filter((call) => call.method === "thread/list")
       .flatMap((call) => call.params?.sourceKinds as string[])
       .some((source) => source.toLowerCase().startsWith("subagent"))).toBe(false);
+    // Codex ≥0.145 hides other providers' threads unless modelProviders is
+    // sent; an empty list means all providers.
+    expect(calls.filter((call) => call.method === "thread/list")
+      .every((call) => Array.isArray(call.params?.modelProviders)
+        && (call.params?.modelProviders as unknown[]).length === 0)).toBe(true);
     expect(calls.find((call) => call.method === "thread/read")?.options?.maxResponseBytes).toBe(50_000);
     expect(result.episodes?.[0]?.request).toBe("Create checklist one");
     expect(JSON.stringify(result)).not.toContain("must never");

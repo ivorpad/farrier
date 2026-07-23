@@ -449,7 +449,8 @@ describe("project advice", () => {
   test("propagates backend failure and aborts a running backend", async () => {
     const root = await projectFixture();
     const failure: BackendCommandRunner = async () => ({ exitCode: 2, stdout: "", stderr: "backend unavailable" });
-    await expect(adviseProject({ targetDir: root, backend: "claude", sessions: "none", runner: failure, search: async () => [] })).rejects.toThrow("Every advice worker failed");
+    await expect(adviseProject({ targetDir: root, backend: "claude", sessions: "none", runner: failure, search: async () => [] }))
+      .rejects.toThrow(/Every advice worker failed: .* First failure \(\w+\): claude backend exited with code 2.*backend unavailable/s);
 
     const controller = new AbortController();
     let started!: () => void;

@@ -34,7 +34,9 @@ export type AdviceBatchDependencies = {
   inspect: (plan: AdviceCreationPlan) => Promise<HarnessChangePlan>;
 };
 
-const defaultConcurrency = 3;
+/** How many recommendations the batch plans at once. Surfaced in the TUI header
+ *  ("up to N at a time") so parallelism is visible, not a mystery. */
+export const defaultAdviceBatchConcurrency = 3;
 
 export function adviceBatchCounts(state: AdviceBatchState): AdviceBatchCounts {
   return {
@@ -165,7 +167,7 @@ export async function planAdviceBatch(input: {
     }
   };
 
-  const limit = Math.max(1, Math.floor(input.concurrency ?? defaultConcurrency));
+  const limit = Math.max(1, Math.floor(input.concurrency ?? defaultAdviceBatchConcurrency));
   await Promise.allSettled(Array.from({ length: Math.min(limit, pending.length) }, () => worker()));
   if (input.signal.aborted) {
     for (const item of state.items) {

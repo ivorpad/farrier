@@ -19,6 +19,9 @@ export type SessionIndexEntry = {
   projectMatch: "directory" | "provider-index" | "unknown";
   approximateTurns?: number;
   sourceFingerprint: string;
+  /** Redacted first-user-request preview for LOCAL display (session pickers).
+   * Never part of consent selections/digests or any provider payload. */
+  label?: string;
 };
 
 export type SessionConsentSelection = {

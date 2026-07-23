@@ -22,6 +22,7 @@ import {
   isRecord,
   type ProviderSessionIndex,
   sameSourceStat,
+  sessionPreviewLabel,
   sessionProjectRoot,
   sha256,
   sourceFingerprint,
@@ -201,6 +202,44 @@ function fileFingerprint(stats: BigIntStats): string {
   return sourceFingerprint("claude", value);
 }
 
+const labelHeadBytes = 16_384;
+
+/**
+ * Derives a local-display label from the transcript HEAD only (first user
+ * request, mirroring the codex thread `preview`). Listing stays otherwise
+ * stat-only; consented reads keep their own O_NOFOLLOW + fingerprint guards.
+ */
+async function claudeSessionLabel(path: string): Promise<string | undefined> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    const buffer = Buffer.alloc(labelHeadBytes);
+    const { bytesRead } = await handle.read(buffer, 0, labelHeadBytes, 0);
+    for (const line of buffer.toString("utf8", 0, bytesRead).split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let record: unknown;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue; // the head window usually ends mid-record
+      }
+      if (!isRecord(record) || record.type !== "user") continue;
+      const message = isRecord(record.message) ? record.message : undefined;
+      for (const raw of visibleTextBlocks(message?.content ?? record.content)) {
+        const label = sessionPreviewLabel(raw);
+        if (label) return label;
+      }
+    }
+    return undefined;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
 export async function listClaudeSessions(input: {
   targetDir: string;
   lookback: AdviceSessionLookback;
@@ -290,6 +329,11 @@ export async function listClaudeSessions(input: {
 
   const sessions = candidates.filter((item) =>
     withinLookback(item.updatedAt, input.lookback, input.now));
+  for (const item of sessions) {
+    abortIfNeeded(input.signal);
+    const label = await claudeSessionLabel(join(directory, item.locator.filename));
+    if (label) item.entry.label = label;
+  }
   return {
     provider: "claude",
     sessions,

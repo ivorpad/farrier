@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import { boundSessionText, extractUserRequest } from "./advice-patterns";
 import type { AdviceSessionLookback, AdviceVendor } from "./advice-types";
 import type {
   SessionIndexEntry,
@@ -53,6 +54,22 @@ export function recordArray(value: unknown): UnknownRecord[] {
 
 export function resultRecord(value: unknown): UnknownRecord {
   return isRecord(value) ? value : {};
+}
+
+const sessionLabelBytes = 96;
+
+/**
+ * A short redacted preview of a session's first user request, for LOCAL
+ * display in pickers only. Returns undefined for command wrappers and caveat
+ * boilerplate so the caller keeps scanning for a real request.
+ */
+export function sessionPreviewLabel(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  if (/<command-name>|<local-command-stdout>|<local-command-caveat>|^\s*Caveat:/i.test(value)) return undefined;
+  const request = extractUserRequest(value);
+  if (!request) return undefined;
+  const label = boundSessionText(request, sessionLabelBytes).text;
+  return label || undefined;
 }
 
 export function timestampMs(value: unknown): number | undefined {

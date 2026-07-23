@@ -172,13 +172,13 @@ describe("learn proposal surface", () => {
       await view.waitFor(() => finishPlan !== undefined);
       await interact(view, () => finishPlan?.());
       const review = await view.waitForFrame((value) => value.includes("Review recommendation creation"));
-      expect(review).toContain("nothing written yet");
+      expect(review).toContain("Nothing is saved to your project yet.");
       expect(applies).toHaveLength(0);
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => applies.length === 1);
       expect(applies[0]!.plan.recommendationId).toBe("guard-large-file-commit");
       await interact(view, () => finishApply?.());
-      expect(await view.waitForFrame((value) => value.includes("Recommendation created"))).toContain("1 file(s) written");
+      expect(await view.waitForFrame((value) => value.includes("Recommendation created"))).toContain("Saved 1 file");
 
       // Back to the list: the applied proposal is marked.
       await interact(view, () => view.mockInput.pressEscape());

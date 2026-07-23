@@ -12,7 +12,7 @@ import { CreateDoneScreen, CreateProgressScreen } from "../src/tui/create-progre
 import { LauncherApp } from "../src/tui/launcher";
 import { AdviceApp } from "../src/tui/advise-app";
 import { AdviceBatchFlow } from "../src/tui/AdviceBatchFlow";
-import { createInitialAdviceBatchState } from "../src/engine/advice-batch";
+import { createInitialAdviceBatchState, type AdviceBatchState } from "../src/engine/advice-batch";
 import type { SessionConsent } from "../src/engine/advice-sessions";
 import type { AdviceReport } from "../src/engine/advice-types";
 import type { AgentAvailability } from "../src/engine/backend";
@@ -207,9 +207,18 @@ describe("TUI keyboard interactions", () => {
       await view.waitForFrame((frame) => frame.includes("Analyze with:"));
       await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
+      // The picker preselects the 20 most recent of 21; Enter confirms it.
+      const picker = await view.waitForFrame((frame) => frame.includes("Choose Claude sessions"));
+      expect(picker).toContain("20 of 21 selected");
+      // Space excludes the focused session and space again re-includes it.
+      await interact(view, () => view.mockInput.typeText(" "));
+      await view.waitForFrame((frame) => frame.includes("19 of 21 selected"));
+      await interact(view, () => view.mockInput.typeText(" "));
+      await view.waitForFrame((frame) => frame.includes("20 of 21 selected"));
+      await interact(view, () => view.mockInput.pressEnter());
       const enabled = await view.waitForFrame((frame) =>
-        frame.includes("▸ Analyze project") && frame.includes("[x] Use 20 recent Claude sessions"));
-      expect(enabled).toContain("Enabled 20 recent Claude session(s). See what will be sent, then press Enter to analyze.");
+        frame.includes("▸ Analyze project") && frame.includes("[x] Use 20 selected Claude sessions"));
+      expect(enabled).toContain("Enabled 20 selected Claude session(s). See what will be sent, then press Enter to analyze.");
       expect(enabled).toContain("will be sent to Claude");
       expect(enabled).not.toContain("Review locally extracted requests");
       await interact(view, () => view.mockInput.pressEnter());
@@ -400,7 +409,9 @@ describe("TUI keyboard interactions", () => {
       // Turn on sessions: the consent notice is the text most prone to overlap.
       await interact(view, () => view.mockInput.pressTab());
       await interact(view, () => view.mockInput.pressEnter());
-      const setup = await view.waitForFrame((frame) => frame.includes("[x] Use 20 recent Claude sessions"));
+      await view.waitForFrame((frame) => frame.includes("Choose Claude sessions"));
+      await interact(view, () => view.mockInput.pressEnter());
+      const setup = await view.waitForFrame((frame) => frame.includes("[x] Use 20 selected Claude sessions"));
       expect(setup).toContain("Passwords, tokens, and keys are removed on this computer first.");
       expect(setup).not.toMatch(/Passwords,\S/);
 
@@ -549,15 +560,80 @@ describe("TUI keyboard interactions", () => {
     try {
       await view.waitFor(() => finishPlan !== undefined);
       await interact(view, () => finishPlan?.());
-      const frame = await view.waitForFrame((value) => value.includes("2 exact file(s)") && value.includes("AGENTS.md") && value.includes(".codex/config.toml"));
-      expect(frame).toContain("nothing written yet");
+      // Outcome-first: the header states what will happen in plain words, the
+      // roster and file rows name the concrete files, nothing is written yet.
+      const frame = await view.waitForFrame((value) => value.includes("Review what will be saved") && value.includes("AGENTS.md") && value.includes(".codex/config.toml"));
+      expect(frame).toContain("Will create 1 new file and overwrite 1 existing file.");
+      expect(frame).toContain("Nothing is saved to your project yet.");
       expect(applies).toBe(0);
       await interact(view, () => view.mockInput.pressEnter());
       expect(applies).toBe(0);
-      expect(await view.waitForFrame((value) => value.includes("Replacement armed"))).toContain("Press y to apply with backups");
+      // Enter on an overwrite arms it; the confirm line names the backup and the y/n choice.
+      expect(await view.waitForFrame((value) => value.includes("a backup is kept first"))).toContain("Press y to save");
       await interact(view, () => view.mockInput.typeText("y"));
       await view.waitFor(() => applies === 1);
       expect(await view.waitForFrame((value) => value.includes("Create all complete"))).toContain("backups: .farrier-staging/backups/test");
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("Create all humanizes a timeout failure, surfaces inline retry, and only re-runs the unfinished item", async () => {
+    const report = emptyAdviceReport("codex");
+    report.recommendations = [
+      { id: "guidance:reuse", category: "guidance", targetVendors: ["claude", "codex"], reason: "r", benefit: "b", evidence: [], confidence: "high", implementationRoute: { id: "guidance:agents-md", description: "d" } },
+      { id: "skills:deploy", category: "skills", targetVendors: ["codex"], reason: "r", benefit: "b", evidence: [], confidence: "high", implementationRoute: { id: "skills:agents-shared", description: "d" } }
+    ];
+    const filePlan = { recommendationId: "guidance:reuse", summary: "s", files: [{ path: "AGENTS.md", content: "x\n", purpose: "p" }] };
+    let planCalls = 0;
+    const view = await testRender(
+      <AdviceBatchFlow
+        report={report}
+        onPlan={(previous, _signal, onProgress) => {
+          planCalls += 1;
+          const initial = createInitialAdviceBatchState(report);
+          if (!previous) {
+            // First run: item 0 created, item 1 timed out.
+            const done = {
+              ...initial,
+              phase: "done" as const,
+              items: initial.items.map((item, index) => index === 0
+                ? { ...item, status: "created" as const, detail: "done", plan: filePlan }
+                : { ...item, status: "failed" as const, detail: "external execution timed out after 600000ms" })
+            };
+            onProgress(done);
+            return Promise.resolve(done);
+          }
+          // Retry run: only the failed item re-runs; the created one is kept.
+          const retrying = {
+            ...initial,
+            phase: "planning" as const,
+            items: initial.items.map((item, index) => index === 0
+              ? { ...item, status: "planned" as const, detail: "kept", plan: filePlan }
+              : { ...item, status: "running" as const, detail: "working" })
+          };
+          onProgress(retrying);
+          return new Promise<AdviceBatchState>(() => undefined); // stay in planning
+        }}
+        onApply={async () => ({ written: [], unchanged: [], writtenFiles: [], unchangedFiles: [], backupDir: null })}
+        onBack={() => undefined}
+        onDone={() => undefined}
+      />,
+      renderOptions
+    );
+    try {
+      const done = await view.waitForFrame((value) => value.includes("Create all complete"));
+      // Milliseconds are humanized; the dead-end retry is advertised inline near the failure.
+      expect(done).toContain("Codex ran out of time (10 minutes).");
+      expect(done).not.toContain("600000ms");
+      expect(done).toContain("1 failed · press r to retry just those");
+
+      await interact(view, () => view.mockInput.typeText("r"));
+      await view.waitFor(() => planCalls === 2);
+      const retrying = await view.waitForFrame((value) => value.includes("Retrying the items that didn't finish"));
+      // The re-run item reads "Retrying"; the kept one stays "Ready".
+      expect(retrying).toContain("Retrying");
+      expect(retrying).toContain("Ready");
     } finally {
       await interact(view, () => view.renderer.destroy());
     }

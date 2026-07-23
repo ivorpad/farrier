@@ -4,7 +4,9 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { loadFarrierConfig } from "../config/farrier-config";
 import {
   listProjectSessions,
-  createRecentSessionConsent,
+  createSessionConsent,
+  recentSessionConsentDefaults,
+  sessionConsentCategories,
   type SessionConsent,
   type SessionMetadataInventory,
 } from "../engine/advice-sessions";
@@ -18,6 +20,7 @@ import type { AdviceProgressEvent } from "../engine/project-advice";
 import { AdviceApplyFlow } from "./AdviceApplyFlow";
 import { AdviceBatchFlow } from "./AdviceBatchFlow";
 import { AdviceRegistryInspection } from "./AdviceRegistryInspection";
+import { AdviceSessionPicker } from "./AdviceSessionPicker";
 import {
   adjacentAdviceRecommendationIndex,
   adviceBackendControlLabel,
@@ -36,12 +39,25 @@ export type AdviceWizardOutcome = "done" | "back" | "cancel" | { kind: "create-s
 export { adviceSkillCreationRequest, createAdviceWizardActions } from "./advice-actions";
 export * from "./advice-presenter";
 export const adviceSetupControls = ["backend", "sessions", "lookback", "scope", "analyze"] as const;
+export type AdviceSetupControl = (typeof adviceSetupControls)[number];
+/**
+ * The startup screen already asks which agent the user works with, and that
+ * pick is the CLI farrier runs for its own LLM work. When it named a single
+ * agent, re-offering "Analyze with" here would be the same question twice, so
+ * the backend row drops out of the focusable controls and renders as a static
+ * line instead. Only the "Both" startup choice leaves a real decision.
+ */
+export function adviceSetupControlsFor(backendLocked: boolean): AdviceSetupControl[] {
+  return backendLocked ? adviceSetupControls.filter((control) => control !== "backend") : [...adviceSetupControls];
+}
 export function AdviceApp(props: {
   sessionCounts: AdviceSessionCountInventory;
   sessionInventory: SessionMetadataInventory;
   availability: AgentAvailability;
   /** The startup pick; seeds the backend control when that CLI is available. */
   initialBackend?: AgentBackend;
+  /** True when the startup pick named a single agent; hides the backend picker. */
+  backendLocked?: boolean;
   onBack: () => void;
   onCancel: () => void;
   onRun: (
@@ -75,6 +91,7 @@ export function AdviceApp(props: {
   const [creatingRecommendation, setCreatingRecommendation] = useState<AdviceRecommendation>();
   const [inspectingRecommendation, setInspectingRecommendation] = useState<AdviceRecommendation>();
   const [creatingAll, setCreatingAll] = useState(false);
+  const [pickingSessions, setPickingSessions] = useState(false);
   const [reportActionIndex, setReportActionIndex] = useState(0);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -85,6 +102,8 @@ export function AdviceApp(props: {
   }>();
   const availableSessions = sessionEntriesForLookback(props.sessionInventory.entries, state.lookback)
     .filter((entry) => entry.provider === state.backend);
+  const backendLocked = Boolean(props.backendLocked && props.initialBackend && props.availability[props.initialBackend]);
+  const setupControls = adviceSetupControlsFor(backendLocked);
   const spinner = useSpinner(state.status === "running");
   useEffect(() => {
     if (state.status !== "running") {
@@ -148,21 +167,30 @@ export function AdviceApp(props: {
       });
       return;
     }
-    const consent = createRecentSessionConsent({
-      inventory: { ...props.sessionInventory, entries: availableSessions },
-      provider: state.backend,
+    setPickingSessions(true);
+  };
+
+  const confirmSessionSelection = (chosen: typeof availableSessions) => {
+    const consent = createSessionConsent({
+      projectRootDigest: props.sessionInventory.projectRootDigest,
+      selected: chosen.map((entry) => ({
+        entry,
+        maxBytes: recentSessionConsentDefaults.maxBytes,
+        maxTurns: recentSessionConsentDefaults.maxTurns,
+      })),
+      categories: sessionConsentCategories,
     });
-    if (!consent) return;
+    setPickingSessions(false);
     dispatch({ type: "SET_SESSION_CONSENT", consent });
-    setSetupFocus(adviceSetupControls.indexOf("analyze"));
+    setSetupFocus(setupControls.indexOf("analyze"));
     setSetupNotice({
-      text: `Enabled ${consent.selected.length} recent ${backendName(state.backend)} session(s). See what will be sent, then press Enter to analyze.`,
+      text: `Enabled ${consent.selected.length} selected ${backendName(state.backend)} session(s). See what will be sent, then press Enter to analyze.`,
       tone: "success",
     });
   };
 
   useKeyboard((key) => {
-    if (creatingRecommendation || inspectingRecommendation || creatingAll) return;
+    if (creatingRecommendation || inspectingRecommendation || creatingAll || pickingSessions) return;
     if (state.status === "done" && state.report) {
       // "t" is not a shared keymap chord; toggle the technical-details section directly.
       if (key.name === "t" && !key.ctrl && !key.meta && !key.super) {
@@ -226,13 +254,13 @@ export function AdviceApp(props: {
       return;
     }
     const intent = resolveIntent(setupBindings, key);
-    const focusedControl = adviceSetupControls[setupFocus];
+    const focusedControl = setupControls[setupFocus];
     if (intent === "scroll") scrollBody(key);
     else if (intent === "back") props.onBack();
     else if (intent === "quit") props.onCancel();
     else if (intent === "focus") {
       const delta = key.name === "up" || key.shift ? -1 : 1;
-      setSetupFocus((current) => (current + delta + adviceSetupControls.length) % adviceSetupControls.length);
+      setSetupFocus((current) => (current + delta + setupControls.length) % setupControls.length);
     } else if (intent === "adjust" && focusedControl === "backend") {
       const backend = adjacentAvailableAdviceBackend(state.backend, state.availability, key.name === "right" ? 1 : -1);
       if (backend) {
@@ -266,6 +294,18 @@ export function AdviceApp(props: {
     }
     else if (intent === "activate" && focusedControl === "analyze") start();
   });
+
+  if (pickingSessions) {
+    return (
+      <AdviceSessionPicker
+        backend={state.backend}
+        entries={availableSessions}
+        selectionCap={recentSessionConsentDefaults.sessionLimit}
+        onConfirm={confirmSessionSelection}
+        onCancel={() => setPickingSessions(false)}
+      />
+    );
+  }
 
   if (inspectingRecommendation && state.report) {
     return (
@@ -317,15 +357,24 @@ export function AdviceApp(props: {
     );
   }
 
-  const setupLabels = [
-    adviceBackendControlLabel(state.backend, state.availability),
-    state.includeSessions && state.sessionConsent
-      ? `[x] Use ${state.sessionConsent.selected.length} recent ${backendName(state.backend)} sessions`
+  const controlLabels: Record<AdviceSetupControl, string> = {
+    backend: adviceBackendControlLabel(state.backend, state.availability),
+    sessions: state.includeSessions && state.sessionConsent
+      ? `[x] Use ${state.sessionConsent.selected.length} selected ${backendName(state.backend)} sessions`
       : `[ ] Use recent ${backendName(state.backend)} sessions · ${availableSessions.length} available`,
-    `Session window: ‹ ${adviceSessionLookbackLabel(state.lookback)} ›`,
-    `Recommendation scope: ${state.scope === "all" ? "all categories" : state.scope}`,
-    "Analyze project"
-  ];
+    lookback: `Session window: ‹ ${adviceSessionLookbackLabel(state.lookback)} ›`,
+    scope: `Recommendation scope: ${state.scope === "all" ? "all categories" : state.scope}`,
+    analyze: "Analyze project"
+  };
+  // Help for every control at once buried the consent notice under a wall of
+  // prose; only the focused control explains itself, in one line beneath it.
+  const setupCaptions: Record<AdviceSetupControl, string> = {
+    backend: "Which AI reads your project and writes the suggestions.",
+    sessions: "Recent work helps find repeated instructions, corrections, failed checks, and missing project automation.",
+    lookback: "How far back to look for sessions worth including.",
+    scope: `One category is a single ${backendName(state.backend)} call; all categories run several in parallel.`,
+    analyze: `Usually takes 1–3 minutes and uses your ${backendName(state.backend)} account.`
+  };
 
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
@@ -355,23 +404,39 @@ export function AdviceApp(props: {
         style={{ flexGrow: 1, flexShrink: 1, width: "100%" }}
         contentOptions={{ flexDirection: "column", gap: 1, width: "100%" }}
       >
-        {setupLabels.map((label, index) => (
-          <text key={adviceSetupControls[index]!} style={{ flexShrink: 0 }} bg={setupFocus === index ? palette.selBg : undefined}>
-            <span fg={palette.accent}>{setupFocus === index ? "▸ " : "  "}</span><span fg={palette.text}>{label}</span>
-          </text>
-        ))}
-        <text style={{ flexShrink: 0 }} fg={palette.faint}>Which AI reads your project and writes the suggestions.</text>
+        <box style={{ flexDirection: "column", flexShrink: 0 }}>
+          {backendLocked ? (
+            <text style={{ flexShrink: 0 }} fg={palette.muted}>{`  Analyze with: ${adviceBackendProductName(state.backend)} · chosen at startup`}</text>
+          ) : null}
+          {setupControls.map((control, index) => (
+            <box key={control} style={{ flexDirection: "column", flexShrink: 0 }}>
+              <text style={{ flexShrink: 0 }} bg={setupFocus === index ? palette.selBg : undefined}>
+                <span fg={palette.accent}>{setupFocus === index ? "▸ " : "  "}</span><span fg={palette.text}>{controlLabels[control]}</span>
+              </text>
+              {setupFocus === index && state.status === "ready" ? (
+                <text style={{ flexShrink: 0 }} fg={palette.faint}>{`    ${setupCaptions[control]}`}</text>
+              ) : null}
+            </box>
+          ))}
+        </box>
         {state.includeSessions && state.sessionConsent ? (
           <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
-            {adviceSessionConsentNotice({ backend: state.backend, sessionCount: state.sessionConsent.selected.length }).map((line, index) => (
-              <text key={`consent-${index}`} style={{ flexShrink: 0 }} fg={index === 0 ? palette.warn : palette.muted}>{line}</text>
-            ))}
+            {adviceSessionConsentNotice({ backend: state.backend, sessionCount: state.sessionConsent.selected.length }).map((line, index) =>
+              line.label ? (
+                // A row box, not one wrapped text: continuation lines stay
+                // aligned under the text column instead of falling back to col 0.
+                <box key={`consent-${index}`} style={{ flexDirection: "row", flexShrink: 0 }}>
+                  <text style={{ flexShrink: 0 }} fg={line.tone === "caution" ? palette.warn : palette.gold}>{`  ${line.label.padEnd(9)}`}</text>
+                  <text style={{ flexGrow: 1, flexShrink: 1 }} fg={palette.muted}>{line.text}</text>
+                </box>
+              ) : (
+                <text key={`consent-${index}`} style={{ flexShrink: 0 }} fg={index === 0 ? palette.text : palette.muted}>{line.text}</text>
+              )
+            )}
           </box>
         ) : (
           <text style={{ flexShrink: 0 }} fg={palette.faint}>Sessions off: analysis uses your project files only.</text>
         )}
-        <text style={{ flexShrink: 0 }} fg={palette.faint}>Recent work helps find repeated instructions, corrections, failed checks, and missing project automation.</text>
-        <text style={{ flexShrink: 0 }} fg={palette.faint}>Secrets are stripped on this computer before anything is sent. One selected category is one {backendName(state.backend)} call; all categories run six workers (three at a time) and usually one coordinator.</text>
         {setupNotice ? <text style={{ flexShrink: 0 }} fg={setupNotice.tone === "success" ? palette.success : palette.warn}>{setupNotice.text}</text> : null}
         {state.status === "running" ? (
           <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
@@ -402,6 +467,8 @@ export async function runAdviceWizard(
     log: (message: string) => void;
     /** The confirmed startup pick: initial backend + session model/effort overrides. */
     initialBackend: AgentBackend;
+    /** True when the startup pick named a single agent; hides the backend picker. */
+    backendLocked: boolean;
     modelOverrides: { claude?: string; codex?: string };
     effortOverrides: { claude?: string; codex?: string };
   }> = {}
@@ -464,6 +531,7 @@ export async function runAdviceWizard(
           sessionInventory={sessionInventory}
           availability={availability}
           initialBackend={dependencies.initialBackend}
+          backendLocked={dependencies.backendLocked}
           onBack={() => finish("back")}
           onCancel={cancel}
           onDone={() => finish("done")}

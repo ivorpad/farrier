@@ -379,6 +379,10 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
             const { runAdviceWizard } = await import("./tui/advise-app");
             const outcome = await runAdviceWizard(targetDir, {
               initialBackend: session.backend,
+              // "Both" is the only startup choice that leaves the analysis
+              // backend genuinely undecided; a single-agent pick already
+              // answered "Analyze with", so the wizard hides that row.
+              backendLocked: session.backend !== undefined && session.choice !== "both",
               modelOverrides: session.models,
               effortOverrides: session.efforts,
               probeAvailability: async () => ({

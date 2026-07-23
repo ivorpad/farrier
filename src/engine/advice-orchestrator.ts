@@ -319,7 +319,17 @@ export async function orchestrateAdvice(input: AdviceOrchestratorInput): Promise
     else successful.set(result.category, result);
   }
   if (input.categories.length === 1 && failures.size) throw failures.values().next().value!.error;
-  if (!successful.size) throw new Error(`Every advice worker failed: ${input.categories.join(", ")}.`);
+  if (!successful.size) {
+    // When nothing succeeded there is no report to carry per-category notes,
+    // so the aggregate error must carry the diagnosis itself: the first raw
+    // failure (already redacted and bounded by backendFailureMessage) tells
+    // the user WHY, not just that six workers failed.
+    const first = failures.values().next().value!;
+    const detail = first.error instanceof Error ? first.error.message : String(first.error);
+    throw new Error(
+      `Every advice worker failed: ${input.categories.join(", ")}. First failure (${first.category}): ${detail.slice(0, 700)}`
+    );
+  }
 
   const candidates = input.categories.flatMap((category) => successful.get(category)?.recommendations ?? []);
   let recommendations = candidates;
