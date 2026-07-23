@@ -171,7 +171,15 @@ export function backendCommand(
   const streamArgs = options.stream ? ["--json"] : [];
   const effortArgs = options.reasoningEffort ? ["-c", `model_reasoning_effort=${options.reasoningEffort}`] : [];
   const ephemeralArgs = options.ephemeral ? ["--ephemeral"] : [];
-  const repositoryArgs = options.write ? [] : ["--skip-git-repo-check"];
+  // Always skip codex's git-repo/trust gate. Read-only advise runs in the real
+  // project (usually a repo, so the flag is a no-op); the only write path is
+  // skill authoring, which runs in a fresh temporary workspace that is never a
+  // git repo and never on codex's trusted-directory list. Without this, codex
+  // ≥0.145 refuses in workspace-write mode with "Not inside a trusted
+  // directory and --skip-git-repo-check was not specified.", which the backend
+  // surfaces (behind a benign "Reading additional input from stdin..." line) as
+  // exit code 1.
+  const repositoryArgs = ["--skip-git-repo-check"];
 
   // No default codex model: an explicit --model for a model the account lacks
   // fails silently, while omitting the flag uses the account's default.

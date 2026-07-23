@@ -6,7 +6,7 @@ import { hooksDirectory } from "./render";
 import type { ToolPolicyRule } from "../packs/types";
 import type { ReasoningEffort } from "../config/farrier-config";
 import { applyMutationPlan, fingerprintPath, inspectMutationPlan } from "./mutation-transaction";
-import { withIsolatedExecution } from "./execution-isolation";
+import { isolatedAuthoringTimeoutMs, withIsolatedExecution } from "./execution-isolation";
 import {
   backendEnvironmentOverrides,
   backendEnvironmentPassthrough,
@@ -723,7 +723,9 @@ async function llmRuleProposals(input: {
         }
       : {
           cmd: [
-            "codex", "exec", "-s", "read-only", "--model", model,
+            // The isolated workspace is a fresh, untrusted, non-git temp dir;
+            // codex ≥0.145 refuses it without --skip-git-repo-check.
+            "codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--model", model,
             ...(input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : []),
             prompt
           ],
@@ -735,6 +737,9 @@ async function llmRuleProposals(input: {
     nativeConfinement: input.backend === "codex",
     environmentPassthrough: backendEnvironmentPassthrough(input.backend),
     environmentOverrides: backendEnvironmentOverrides(input.backend),
+    // Mining rule proposals is a full backend reasoning pass; use the authoring
+    // budget rather than the 120s fallback.
+    timeoutMs: isolatedAuthoringTimeoutMs,
     readOnlyWorkspace: true,
     run: async ({ workspace, environment, redactValues, signal }) => ({
       output: await input.runner({

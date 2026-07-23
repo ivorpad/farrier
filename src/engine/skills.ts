@@ -22,6 +22,12 @@ export type SkillSearchResult = {
   source: string;
 };
 
+/**
+ * The skills CLI clones/installs over the network (GitHub pulls); allow a few
+ * minutes but not the long authoring budget, since no LLM runs here.
+ */
+const skillsCommandTimeoutMs = 180_000;
+
 export type CommandRunnerInput = BackendCommandRunnerInput;
 export type CommandRunnerOutput = BackendCommandRunnerOutput;
 export type CommandRunner = BackendCommandRunner;
@@ -270,6 +276,7 @@ export async function installSkills(
         environmentOverrides: {
           GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL ?? join(homedir(), ".gitconfig")
         },
+        timeoutMs: skillsCommandTimeoutMs,
         retainWorkspace: true,
         run: async (context) => ({
           output: scrubCommandOutput(await runner({

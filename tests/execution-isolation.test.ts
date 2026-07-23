@@ -3,7 +3,14 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withIsolatedExecution } from "../src/engine/execution-isolation";
+import {
+  defaultIsolatedTimeoutMs,
+  ExecutionTimeoutError,
+  isExecutionTimeout,
+  isolatedAuthoringTimeoutMs,
+  isolatedEvalTimeoutMs,
+  withIsolatedExecution
+} from "../src/engine/execution-isolation";
 
 let targetDir = "";
 beforeAll(async () => {
@@ -47,6 +54,41 @@ describe("isolated execution lifecycle", () => {
       if (previousAmbient === undefined) delete process.env[ambientName];
       else process.env[ambientName] = previousAmbient;
     }
+  });
+
+  test("times out with an identifiable ExecutionTimeoutError", async () => {
+    const run = withIsolatedExecution({
+      targetDir,
+      nativeConfinement: true,
+      timeoutMs: 20,
+      run: async (context) => {
+        await new Promise<void>((resolve) => {
+          context.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return "done";
+      }
+    });
+
+    const error = await run.then(() => undefined, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ExecutionTimeoutError);
+    expect((error as ExecutionTimeoutError).timeoutMs).toBe(20);
+    expect(isExecutionTimeout(error)).toBeTrue();
+    // The TUI keeps only error.message on failed batch items, so string
+    // detection must work too.
+    expect(isExecutionTimeout((error as Error).message)).toBeTrue();
+  });
+
+  test("isExecutionTimeout ignores unrelated failures and non-errors", () => {
+    expect(isExecutionTimeout(new Error("backend exited with code 1"))).toBeFalse();
+    expect(isExecutionTimeout("cancelled")).toBeFalse();
+    expect(isExecutionTimeout(undefined)).toBeFalse();
+    expect(isExecutionTimeout(null)).toBeFalse();
+  });
+
+  test("authoring and eval budgets exceed the default fallback", () => {
+    expect(defaultIsolatedTimeoutMs).toBe(120_000);
+    expect(isolatedAuthoringTimeoutMs).toBeGreaterThan(defaultIsolatedTimeoutMs);
+    expect(isolatedEvalTimeoutMs).toBeGreaterThanOrEqual(isolatedAuthoringTimeoutMs);
   });
 
   test("timeout waits for aborted work to settle before deleting its workspace", async () => {

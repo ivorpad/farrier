@@ -26,7 +26,7 @@ import {
   type ResolveSkillsCommandDeps
 } from "./skills";
 import { applyMutationPlan, fingerprintPath, inspectMutationPlan } from "./mutation-transaction";
-import { withIsolatedExecution, type IsolationFact } from "./execution-isolation";
+import { isolatedAuthoringTimeoutMs, withIsolatedExecution, type IsolationFact } from "./execution-isolation";
 import {
   canonicalSkillRoot,
   creatorRef,
@@ -224,6 +224,9 @@ export async function stageSkill(input: StageSkillInput): Promise<{ stagingRoot:
     nativeConfinement: input.agent === "codex",
     environmentPassthrough: backendEnvironmentPassthrough(input.agent),
     environmentOverrides: backendEnvironmentOverrides(input.agent),
+    // A full skill-authoring run drives codex/claude for minutes; the 120s
+    // fallback times these out mid-authoring.
+    timeoutMs: isolatedAuthoringTimeoutMs,
     signal: input.deps.signal,
     retainWorkspace: true,
     retainWorkspaceOnError: !input.cleanupOnFailure,

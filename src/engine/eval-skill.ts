@@ -27,7 +27,7 @@ import { writeEvalReports, type EvalReportPaths } from "./eval-report";
 import { maxSkillNameLength, readSkillBehaviorEvidence, skillNamePattern } from "./skill-validate";
 import type { CommandRunner, ResolveSkillsCommandDeps } from "./skills";
 import { applyMutationPlan, inspectMutationPlan, type MutationOperation } from "./mutation-transaction";
-import { withIsolatedExecution } from "./execution-isolation";
+import { isolatedEvalTimeoutMs, withIsolatedExecution } from "./execution-isolation";
 import { canonicalEvidence, compareEvidence, createEvidenceSet, type EvidenceComparison } from "./behavior-evidence";
 
 export type SkillEvalWinner = CreateAgent | "tie";
@@ -259,6 +259,9 @@ export async function evaluatePerAgentSkill(input: {
     nativeConfinement: input.backend === "codex",
     environmentPassthrough: backendEnvironmentPassthrough(input.backend),
     environmentOverrides: backendEnvironmentOverrides(input.backend),
+    // Two blind judge passes run concurrently in this workspace; give them more
+    // headroom than a single authoring pass.
+    timeoutMs: isolatedEvalTimeoutMs,
     readOnlyWorkspace: true,
     signal: input.signal,
     inputs: [

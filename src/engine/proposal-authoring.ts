@@ -8,7 +8,7 @@ import {
   type BackendCommandRunner
 } from "./backend";
 import { createEvidenceSet } from "./behavior-evidence";
-import { withIsolatedExecution } from "./execution-isolation";
+import { isolatedAuthoringTimeoutMs, withIsolatedExecution } from "./execution-isolation";
 import type { PrimitiveProposal } from "./failure-router";
 import type { FailureSignal } from "./learn-signals";
 
@@ -385,7 +385,9 @@ async function requestProposalRefinements(input: RefineProposalTextOptions): Pro
         }
       : {
           cmd: [
-            "codex", "exec", "-s", "read-only", "--model", model,
+            // The isolated workspace is a fresh, untrusted, non-git temp dir;
+            // codex ≥0.145 refuses it without --skip-git-repo-check.
+            "codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--model", model,
             ...(input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : []),
             prompt
           ],
@@ -397,6 +399,9 @@ async function requestProposalRefinements(input: RefineProposalTextOptions): Pro
     nativeConfinement: input.backend === "codex",
     environmentPassthrough: backendEnvironmentPassthrough(input.backend),
     environmentOverrides: backendEnvironmentOverrides(input.backend),
+    // Proposal-text refinement is a full backend reasoning pass; the 120s
+    // fallback is too short for a large model at high effort.
+    timeoutMs: isolatedAuthoringTimeoutMs,
     readOnlyWorkspace: true,
     run: async ({ workspace, environment, redactValues, signal }) => ({
       output: await input.runner({

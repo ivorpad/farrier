@@ -390,6 +390,8 @@ describe("learn report refinement integration", () => {
     expect(calls).toHaveLength(2);
     expect(calls[1]!.cmd[0]).toBe("codex");
     expect(calls[1]!.cmd.join(" ")).toContain("-s read-only");
+    // The isolated workspace is never a git repo; codex ≥0.145 refuses without this.
+    expect(calls[1]!.cmd).toContain("--skip-git-repo-check");
     expect(calls[1]!.cmd.join(" ")).toContain("-c model_reasoning_effort=xhigh");
   });
 

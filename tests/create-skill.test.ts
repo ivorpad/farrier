@@ -1,8 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultBackendRunner, probeAgents, type BackendCommandRunner, type BackendCommandRunnerInput } from "../src/engine/backend";
+import * as executionIsolation from "../src/engine/execution-isolation";
+import { isolatedAuthoringTimeoutMs } from "../src/engine/execution-isolation";
 import {
   buildAuthoringPrompt,
   createSkill,
@@ -231,6 +233,9 @@ describe("create-skill engine", () => {
       await writeSkill(input.cwd, rootFromPrompt(input), "table-to-markdown");
       expect(input.cmd[0]).toBe("codex");
       expect(input.cmd).toContain("workspace-write");
+      // The isolated authoring workspace is never a git repo; codex ≥0.145
+      // refuses workspace-write there without this flag.
+      expect(input.cmd).toContain("--skip-git-repo-check");
       expect(input.cmd).not.toContain("--model");
     });
     const skills = recordingSkillsRunner();
@@ -248,6 +253,39 @@ describe("create-skill engine", () => {
       expect(skills.calls[0]?.cmd).toEqual(["skills", "add", "./skills", "-s", "table-to-markdown", "-a", "codex", "-y"]);
       expect(skills.calls[0]?.cwd).not.toBe(dir);
     } finally {
+      restoreEnv(skillsBin, previousBin);
+    }
+  });
+
+  test("authoring runs under the long authoring timeout, not the 120s fallback", async () => {
+    const dir = await tempDir();
+    const previousBin = process.env[skillsBin];
+    process.env[skillsBin] = "skills";
+    await writeFile(join(dir, "skills-lock.json"), JSON.stringify({ version: 1, skills: { "skill-creator": {} } }), "utf8");
+
+    const real = executionIsolation.withIsolatedExecution;
+    const timeouts: Array<number | undefined> = [];
+    const spy = spyOn(executionIsolation, "withIsolatedExecution").mockImplementation((options) => {
+      timeouts.push(options.timeoutMs);
+      return real(options);
+    });
+    const backend = writingBackendRunner(async (input) => {
+      await writeSkill(input.cwd, rootFromPrompt(input), "slow-authoring");
+    });
+    const skills = recordingSkillsRunner();
+
+    try {
+      const outcome = await createSkill(
+        { description: "Author slowly", agents: ["codex"], mode: "author-codex" },
+        dir,
+        { backendRunner: backend.runner, skillsRunner: skills.runner }
+      );
+
+      expect(outcome.error).toBeUndefined();
+      expect(timeouts).toContain(isolatedAuthoringTimeoutMs);
+      expect(isolatedAuthoringTimeoutMs).toBeGreaterThan(executionIsolation.defaultIsolatedTimeoutMs);
+    } finally {
+      spy.mockRestore();
       restoreEnv(skillsBin, previousBin);
     }
   });

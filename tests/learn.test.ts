@@ -340,6 +340,8 @@ describe("learn LLM proposal validation", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.cmd[0]).toBe("codex");
+    // The isolated workspace is never a git repo; codex ≥0.145 refuses without this.
+    expect(calls[0]!.cmd).toContain("--skip-git-repo-check");
     expect(calls[0]!.cmd.join(" ")).toContain("-c model_reasoning_effort=xhigh");
   });
 

@@ -7,7 +7,7 @@ import {
   type BackendCommandRunner
 } from "./backend";
 import type { ReasoningEffort } from "../config/farrier-config";
-import { withIsolatedExecution } from "./execution-isolation";
+import { isolatedAuthoringTimeoutMs, withIsolatedExecution } from "./execution-isolation";
 import { createEvidenceSet } from "./behavior-evidence";
 
 /**
@@ -124,6 +124,8 @@ export async function generateNextGrillQuestion(input: {
     nativeConfinement: input.backend === "codex",
     environmentPassthrough: backendEnvironmentPassthrough(input.backend),
     environmentOverrides: backendEnvironmentOverrides(input.backend),
+    // A refinement pass drives the backend for minutes, like authoring.
+    timeoutMs: isolatedAuthoringTimeoutMs,
     readOnlyWorkspace: true,
     signal: input.signal,
     run: ({ workspace, environment, redactValues, signal }) => invokeBackend({

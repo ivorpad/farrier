@@ -20,6 +20,46 @@ export type IsolatedExecutionContext = {
 
 export type IsolatedInput = { source: string; path: string };
 
+/** Fallback timeout when a call site passes no explicit `timeoutMs`. */
+export const defaultIsolatedTimeoutMs = 120_000;
+
+/**
+ * A single LLM authoring/refinement pass in an isolated workspace. Real codex /
+ * claude skill authoring and refinement routinely run several minutes, well
+ * past the 120s fallback, so authoring call sites must opt into this budget.
+ */
+export const isolatedAuthoringTimeoutMs = 600_000;
+
+/**
+ * A blind skill evaluation, which runs two judge passes concurrently in one
+ * isolated workspace; it needs more headroom than a single authoring pass.
+ */
+export const isolatedEvalTimeoutMs = 900_000;
+
+/** Stable prefix of the timeout error message; part of the TUI detection contract. */
+export const executionTimeoutMessagePrefix = "external execution timed out after";
+
+/** Thrown when {@link withIsolatedExecution} aborts a run because its timeout elapsed. */
+export class ExecutionTimeoutError extends Error {
+  readonly isExecutionTimeout = true;
+  constructor(readonly timeoutMs: number) {
+    super(`${executionTimeoutMessagePrefix} ${timeoutMs}ms`);
+    this.name = "ExecutionTimeoutError";
+  }
+}
+
+/**
+ * True when a value is (or stringifies to) an isolated-execution timeout.
+ * Accepts the thrown Error, its `.message`, or a plain string, because the
+ * batch flow keeps only `error.message` on failed items. The message prefix is
+ * a stable contract callers may rely on.
+ */
+export function isExecutionTimeout(value: unknown): boolean {
+  if (value instanceof ExecutionTimeoutError) return true;
+  const message = value instanceof Error ? value.message : typeof value === "string" ? value : "";
+  return message.includes(executionTimeoutMessagePrefix);
+}
+
 const environmentAllowlist = ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "USER", "SSL_CERT_FILE", "SSL_CERT_DIR"] as const;
 
 function scrubbedEnvironment(
@@ -94,7 +134,7 @@ function combinedAbort(parent: AbortSignal | undefined, timeoutMs: number): { co
   const abort = () => controller.abort(parent?.reason ?? new Error("cancelled"));
   parent?.addEventListener("abort", abort, { once: true });
   if (parent?.aborted) abort();
-  const timer = setTimeout(() => controller.abort(new Error(`external execution timed out after ${timeoutMs}ms`)), timeoutMs);
+  const timer = setTimeout(() => controller.abort(new ExecutionTimeoutError(timeoutMs)), timeoutMs);
   timer.unref?.();
   return {
     controller,
@@ -149,7 +189,7 @@ export async function withIsolatedExecution<T>(input: {
 }): Promise<{ value: T; isolation: IsolationFact }> {
   const workspace = await mkdtemp(join(tmpdir(), `farrier-exec-${process.pid}-${randomUUID().slice(0, 8)}-`));
   const before = await targetDigest(input.targetDir);
-  const timeout = combinedAbort(input.signal, input.timeoutMs ?? 120_000);
+  const timeout = combinedAbort(input.signal, input.timeoutMs ?? defaultIsolatedTimeoutMs);
   const isolation: IsolationFact = input.nativeConfinement
     ? { mode: "native-confinement", residualRisk: null }
     : {

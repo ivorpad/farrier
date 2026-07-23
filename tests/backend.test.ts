@@ -19,6 +19,24 @@ describe("backend engine", () => {
     expect(backendCommand("codex", undefined, "advise").cmd).toContain("--skip-git-repo-check");
   });
 
+  test("codex write commands skip the git/trust gate and end with the positional prompt", () => {
+    // Skill authoring runs codex in a fresh temporary workspace that is never a
+    // git repo and never trusted; without --skip-git-repo-check codex ≥0.145
+    // exits 1 ("Not inside a trusted directory ..."). The prompt must stay the
+    // final positional argument so codex does not fall back to reading it from
+    // stdin.
+    const { cmd, stdin } = backendCommand("codex", undefined, "author this skill", {
+      write: true,
+      stream: true,
+      reasoningEffort: "high"
+    });
+    expect(cmd).toContain("workspace-write");
+    expect(cmd).toContain("--skip-git-repo-check");
+    expect(cmd.join(" ")).toContain("model_reasoning_effort=high");
+    expect(cmd.at(-1)).toBe("author this skill");
+    expect(stdin).toBeUndefined();
+  });
+
   test("preserves Claude's normal login environment unless a config directory is explicit", () => {
     expect(backendEnvironmentOverrides("claude", {}, "/Users/tester")).toEqual({ HOME: "/Users/tester" });
     expect(backendEnvironmentOverrides("claude", { CLAUDE_CONFIG_DIR: "/tmp/claude" }, "/Users/tester"))
