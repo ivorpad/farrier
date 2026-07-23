@@ -66,7 +66,12 @@ export function classifyAuthProbe(output: BackendCommandRunnerOutput | undefined
   return output.exitCode === 0 ? "signed-in" : "unknown";
 }
 
-async function runProbe(
+/**
+ * One bounded local CLI probe: scrubbed environment, abort on timeout, and
+ * undefined instead of an error for every failure mode. Shared with the
+ * model-listing probes so every startup subprocess obeys the same budget.
+ */
+export async function runAgentProbe(
   backend: AgentBackend,
   cmd: string[],
   deps: Pick<AgentDetectionDeps, "runner" | "timeoutMs">
@@ -105,8 +110,8 @@ export async function detectAgent(backend: AgentBackend, deps: Partial<AgentDete
 
   const probeDeps = { runner: deps.runner ?? defaultBackendRunner, timeoutMs: deps.timeoutMs ?? agentProbeTimeoutMs };
   const [versionOutput, authOutput] = await Promise.all([
-    runProbe(backend, [backend, "--version"], probeDeps),
-    runProbe(backend, authProbeCommands[backend], probeDeps)
+    runAgentProbe(backend, [backend, "--version"], probeDeps),
+    runAgentProbe(backend, authProbeCommands[backend], probeDeps)
   ]);
 
   const version = versionOutput && versionOutput.exitCode === 0 ? parseAgentVersion(versionOutput.stdout) : undefined;
