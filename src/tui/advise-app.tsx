@@ -400,9 +400,10 @@ export async function runAdviceWizard(
     probeAvailability: () => Promise<AgentAvailability>;
     listSessions: typeof listProjectSessions;
     log: (message: string) => void;
-    /** The confirmed startup pick: initial backend + session model overrides. */
+    /** The confirmed startup pick: initial backend + session model/effort overrides. */
     initialBackend: AgentBackend;
     modelOverrides: { claude?: string; codex?: string };
+    effortOverrides: { claude?: string; codex?: string };
   }> = {}
 ): Promise<AdviceWizardOutcome> {
   const log = dependencies.log ?? ((message: string) => console.error(message));
@@ -423,6 +424,7 @@ export async function runAdviceWizard(
     targetDir,
     signal: controller.signal,
     modelOverrides: dependencies.modelOverrides,
+    effortOverrides: dependencies.effortOverrides,
     loadModels: () => loadFarrierConfig({ projectDir: targetDir }).then((loaded) => loaded.config.models).catch(() => ({}))
   });
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;

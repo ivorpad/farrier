@@ -4,8 +4,9 @@ import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import {
   backendCommand, backendEnvironmentOverrides, backendEnvironmentPassthrough, backendFailureMessage,
-  defaultBackendRunner, formatBackendStreamActivity, type AgentBackend, type BackendCommandRunner
+  defaultBackendRunner, type AgentBackend, type BackendCommandRunner
 } from "./backend";
+import { formatBackendStreamActivity } from "./backend-activity";
 import type { ResolvedModelSettings } from "../config/farrier-config";
 import {
   collapseDescription,

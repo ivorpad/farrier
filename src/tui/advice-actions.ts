@@ -49,6 +49,8 @@ export function createAdviceWizardActions(
     /** Session-level per-backend model picks from the startup screen; an
      * explicit pick beats every configured role entry for this session. */
     modelOverrides?: { claude?: string; codex?: string };
+    /** Session-level per-backend reasoning-effort picks, same precedence. */
+    effortOverrides?: { claude?: string; codex?: string };
   },
   dependencies: Partial<AdviceWizardActionDependencies> = {}
 ) {
@@ -77,7 +79,8 @@ export function createAdviceWizardActions(
         models: await loadModels(),
         backend,
         role: "advise",
-        explicitModel: input.modelOverrides?.[backend]
+        explicitModel: input.modelOverrides?.[backend],
+        explicitReasoningEffort: input.effortOverrides?.[backend]
       });
       const report = await runAdvice({
         targetDir: input.targetDir,
@@ -106,7 +109,8 @@ export function createAdviceWizardActions(
         models: await loadModels(),
         backend,
         role: "advise",
-        explicitModel: input.modelOverrides?.[backend]
+        explicitModel: input.modelOverrides?.[backend],
+        explicitReasoningEffort: input.effortOverrides?.[backend]
       });
       const plan = await planRecommendation({
         report,
@@ -128,8 +132,9 @@ export function createAdviceWizardActions(
       await requireBackend(backend);
       const models = await loadModels();
       const explicitModel = input.modelOverrides?.[backend];
-      const fileSettings = resolveModelSettings({ models, backend, role: "advise", explicitModel });
-      const skillSettings = resolveModelSettings({ models, backend, role: "skillCreation", explicitModel });
+      const explicitReasoningEffort = input.effortOverrides?.[backend];
+      const fileSettings = resolveModelSettings({ models, backend, role: "advise", explicitModel, explicitReasoningEffort });
+      const skillSettings = resolveModelSettings({ models, backend, role: "skillCreation", explicitModel, explicitReasoningEffort });
       let creatorPreparation: Promise<void> | undefined;
       const prepareCreatorOnce = () => {
         creatorPreparation ??= prepareSkillCreator(backend, input.targetDir).then((result) => {

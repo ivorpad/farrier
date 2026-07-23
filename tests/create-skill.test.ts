@@ -368,11 +368,14 @@ describe("create-skill engine", () => {
       if (input.cmd[0] === "claude") {
         const modelIndex = input.cmd.indexOf("--model");
         expect(input.cmd[modelIndex + 1]).toBe("sonnet");
+        const effortIndex = input.cmd.indexOf("--effort");
+        expect(input.cmd[effortIndex + 1]).toBe("max");
         expect(input.cmd.join(" ")).not.toContain("model_reasoning_effort");
       } else {
         const modelIndex = input.cmd.indexOf("--model");
         expect(input.cmd[modelIndex + 1]).toBe("gpt-custom");
         expect(input.cmd.join(" ")).toContain("model_reasoning_effort=low");
+        expect(input.cmd).not.toContain("--effort");
       }
     });
 
@@ -384,7 +387,7 @@ describe("create-skill engine", () => {
           backendRunner: backend.runner,
           skillsRunner: recordingSkillsRunner().runner,
           modelSettings: {
-            claude: { model: "sonnet" },
+            claude: { model: "sonnet", reasoningEffort: "max" },
             codex: { model: "gpt-custom", reasoningEffort: "low" }
           }
         }

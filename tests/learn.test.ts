@@ -343,6 +343,41 @@ describe("learn LLM proposal validation", () => {
     expect(calls[0]!.cmd.join(" ")).toContain("-c model_reasoning_effort=xhigh");
   });
 
+  test("claude learn passes reasoningEffort as --effort, and omits the flag when unset", async () => {
+    const project = await tempDir();
+    const transcripts = await tempDir("farrier-learn-transcripts-");
+    await renderPack(project, "python-fastapi");
+
+    await writeTranscript(transcripts, [
+      bashUse("rm-1", "rm -rf node_modules"),
+      toolResult("rm-1", "exited with code 1: blocked by hook")
+    ]);
+
+    const calls: Array<{ cmd: string[]; cwd: string; stdin?: string }> = [];
+    const runner: LearnCommandRunner = async (input) => {
+      calls.push(input);
+      return { exitCode: 0, stderr: "", stdout: JSON.stringify({ rules: [] }) };
+    };
+    const learnInput = {
+      targetDir: project,
+      transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
+      backend: "claude" as const,
+      runner
+    };
+
+    await createLearnReport({ ...learnInput, reasoningEffort: "max" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.cmd[0]).toBe("claude");
+    const flag = calls[0]!.cmd.indexOf("--effort");
+    expect(flag).toBeGreaterThan(-1);
+    expect(calls[0]!.cmd[flag + 1]).toBe("max");
+
+    await createLearnReport(learnInput);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.cmd).not.toContain("--effort");
+  });
+
   test("backend infrastructure failure falls back to deterministic proposals with a note", async () => {
     const project = await tempDir();
     const transcripts = await tempDir("farrier-learn-transcripts-");

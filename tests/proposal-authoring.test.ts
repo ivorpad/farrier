@@ -393,6 +393,39 @@ describe("learn report refinement integration", () => {
     expect(calls[1]!.cmd.join(" ")).toContain("-c model_reasoning_effort=xhigh");
   });
 
+  test("claude refinement passes reasoning effort as --effort", async () => {
+    const project = await tempDir();
+    const transcripts = await tempDir("farrier-authoring-transcripts-");
+    await renderPack(project);
+    await writeTranscript(transcripts, pushTranscript());
+
+    const calls: Array<{ cmd: string[]; stdin?: string }> = [];
+    const runner: LearnCommandRunner = async (input) => {
+      calls.push(input);
+      const prompt = input.stdin ?? input.cmd.join(" ");
+      const payload = prompt.includes('"refinements"') ? { refinements: [] } : { rules: [] };
+      return { exitCode: 0, stdout: JSON.stringify(payload), stderr: "" };
+    };
+
+    await createLearnReport({
+      targetDir: project,
+      transcriptsDir: transcripts,
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
+      backend: "claude",
+      reasoningEffort: "max",
+      runner
+    });
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.cmd[0]).toBe("claude");
+      const flag = call.cmd.indexOf("--effort");
+      expect(flag).toBeGreaterThan(-1);
+      expect(call.cmd[flag + 1]).toBe("max");
+      expect(call.cmd.join(" ")).not.toContain("model_reasoning_effort");
+    }
+  });
+
   test("--no-llm never invokes the refinement backend", async () => {
     const project = await tempDir();
     const transcripts = await tempDir("farrier-authoring-transcripts-");

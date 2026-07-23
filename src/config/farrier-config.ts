@@ -9,7 +9,15 @@ export type RegistryEntryConfig =
       headers?: Record<string, string>;
     };
 
-export type ReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+/**
+ * The union covers both CLIs: codex reports minimal..xhigh via model/list;
+ * claude enumerates low..max in its --effort help. Neither CLI supports the
+ * full set, and the CLI stays the authority: an unsupported level fails
+ * loudly at invocation instead of being filtered here.
+ */
+export const reasoningEffortLevels = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export type ReasoningEffort = (typeof reasoningEffortLevels)[number];
 
 /** Roles a distinct model/effort can be configured for, on top of "default". */
 export type ModelRole = "skillCreation" | "eval" | "refine" | "advise" | "learn";
@@ -59,7 +67,7 @@ const namespacePattern = /^@[a-z0-9][a-z0-9-]*$/;
 
 const modelBackends = ["claude", "codex"] as const;
 const modelRoleKeys = new Set<string>(["default", "skillCreation", "eval", "refine", "advise", "learn"]);
-const reasoningEfforts = new Set<string>(["minimal", "low", "medium", "high", "xhigh"]);
+const reasoningEfforts = new Set<string>(reasoningEffortLevels);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -152,12 +160,9 @@ function normalizeModelEntry(
   }
 
   if (value.reasoningEffort !== undefined) {
-    if (backend === "claude") {
-      throw new Error(`invalid farrier config ${path}: ${at}.reasoningEffort is only supported for codex`);
-    }
     if (typeof value.reasoningEffort !== "string" || !reasoningEfforts.has(value.reasoningEffort)) {
       throw new Error(
-        `invalid farrier config ${path}: ${at}.reasoningEffort must be one of minimal, low, medium, high, xhigh`
+        `invalid farrier config ${path}: ${at}.reasoningEffort must be one of ${reasoningEffortLevels.join(", ")}`
       );
     }
     entry.reasoningEffort = value.reasoningEffort as ReasoningEffort;
@@ -299,22 +304,28 @@ function normalizeEntry(entry: ModelSettingEntry | undefined): { model?: string;
 
 /**
  * Resolves the model + reasoning effort for one call site, field by field:
- * an explicit model beats the role entry beats the backend default; reasoning
- * effort falls from role to default. Returns undefined fields when unconfigured
- * so the engine's built-in defaults take over.
+ * an explicit value beats the role entry beats the backend default. Returns
+ * undefined fields when unconfigured so the engine's built-in defaults take
+ * over. An explicit reasoning effort is a session pick from the startup
+ * screen: CLI-sourced or user-typed. The CLI is the authority on valid levels
+ * and rejects an unknown one loudly, so the pick passes through instead of
+ * being silently dropped when it is outside the configured union.
  */
 export function resolveModelSettings(input: {
   models: ModelsConfig;
   backend: "claude" | "codex";
   role: ModelRole;
   explicitModel?: string;
+  explicitReasoningEffort?: string;
 }): ResolvedModelSettings {
   const backendConfig = input.models[input.backend] ?? {};
   const roleEntry = normalizeEntry(backendConfig[input.role]);
   const defaultEntry = normalizeEntry(backendConfig.default);
 
   const model = input.explicitModel ?? roleEntry.model ?? defaultEntry.model;
-  const reasoningEffort = roleEntry.reasoningEffort ?? defaultEntry.reasoningEffort;
+  const reasoningEffort = (input.explicitReasoningEffort as ReasoningEffort | undefined)
+    ?? roleEntry.reasoningEffort
+    ?? defaultEntry.reasoningEffort;
 
   const resolved: ResolvedModelSettings = {};
   if (model !== undefined) {

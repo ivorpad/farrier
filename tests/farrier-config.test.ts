@@ -207,15 +207,16 @@ describe("loadFarrierConfig models", () => {
     );
   });
 
-  test("rejects reasoningEffort under claude", async () => {
+  test("accepts reasoningEffort under claude, including max (the claude-only level)", async () => {
     const dir = await tempDir();
     await writeJson(join(dir, "farrier.config.json"), {
-      models: { claude: { default: { model: "sonnet", reasoningEffort: "high" } } }
+      models: { claude: { default: { model: "sonnet", reasoningEffort: "high" }, advise: { reasoningEffort: "max" } } }
     });
 
-    await expect(loadFarrierConfig({ projectDir: dir, env: { HOME: await tempDir() } })).rejects.toThrow(
-      "reasoningEffort is only supported for codex"
-    );
+    const loaded = await loadFarrierConfig({ projectDir: dir, env: { HOME: await tempDir() } });
+    expect(loaded.config.models).toEqual({
+      claude: { default: { model: "sonnet", reasoningEffort: "high" }, advise: { reasoningEffort: "max" } }
+    });
   });
 
   test("rejects a bad reasoning effort value", async () => {
@@ -225,7 +226,7 @@ describe("loadFarrierConfig models", () => {
     });
 
     await expect(loadFarrierConfig({ projectDir: dir, env: { HOME: await tempDir() } })).rejects.toThrow(
-      "reasoningEffort must be one of"
+      "reasoningEffort must be one of minimal, low, medium, high, xhigh, max"
     );
   });
 
@@ -280,5 +281,26 @@ describe("resolveModelSettings", () => {
     expect(resolved.model).toBeUndefined();
     expect(resolved.reasoningEffort).toBeUndefined();
     expect(resolved).toEqual({});
+  });
+
+  test("an explicit reasoning effort beats the role entry and the default", () => {
+    const resolved = resolveModelSettings({
+      models: {
+        codex: {
+          default: { model: "gpt-5.5", reasoningEffort: "medium" },
+          advise: { reasoningEffort: "xhigh" }
+        }
+      },
+      backend: "codex",
+      role: "advise",
+      explicitReasoningEffort: "low"
+    });
+    expect(resolved).toEqual({ model: "gpt-5.5", reasoningEffort: "low" });
+  });
+
+  test("an explicit effort applies with no config at all, including claude max", () => {
+    expect(resolveModelSettings({ models: {}, backend: "claude", role: "advise", explicitReasoningEffort: "max" })).toEqual({
+      reasoningEffort: "max"
+    });
   });
 });

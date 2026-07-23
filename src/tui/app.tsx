@@ -224,6 +224,7 @@ function WizardApp(props: WizardAppProps) {
       backend: adviseBackend,
       role: "advise",
       explicitModel: props.session?.models[adviseBackend],
+      explicitReasoningEffort: props.session?.efforts[adviseBackend],
     });
 
     adviseSkills({
@@ -297,12 +298,14 @@ function WizardApp(props: WizardAppProps) {
             backend: "claude",
             role: "skillCreation",
             explicitModel: props.session?.models.claude,
+            explicitReasoningEffort: props.session?.efforts.claude,
           }),
           codex: resolveModelSettings({
             models: props.models,
             backend: "codex",
             role: "skillCreation",
             explicitModel: props.session?.models.codex,
+            explicitReasoningEffort: props.session?.efforts.codex,
           }),
         },
       });
