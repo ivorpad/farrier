@@ -28,10 +28,20 @@ function startupProps(
   return {
     detection,
     models: {},
+    // Tests never spawn the real CLIs; the default prop would.
+    listModels: async () => [],
     onConfirm: (selection) => confirmations.push(selection),
     onCancel: () => undefined,
     ...extras
   };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 async function interact(view: TestRendererSetup, action: () => void | Promise<void>): Promise<void> {
@@ -86,8 +96,10 @@ describe("startup screen", () => {
       expect(confirmations).toHaveLength(0);
 
       await interact(view, () => view.mockInput.pressEnter());
+      // The remembered model is not among the configured or CLI-listed
+      // suggestions here, so it carries over as prefilled free text.
       const models = await view.waitForFrame((value) => value.includes("Codex model:"));
-      expect(models).toContain("‹ gpt-5.5 ›");
+      expect(models).toContain("gpt-5.5 (typed)");
 
       await interact(view, () => view.mockInput.pressEnter());
       expect(confirmations).toEqual([{ agent: "codex", models: { codex: "gpt-5.5" } }]);
@@ -151,11 +163,110 @@ describe("startup screen", () => {
 
       await interact(view, () => view.mockInput.typeText("my-model"));
       const typed = await view.waitForFrame((value) => value.includes("my-model (typed)"));
-      expect(typed).toContain("no reliable way to list your account's");
+      expect(typed).toContain("Could not list models from Claude Code; type a model name.");
+      expect(typed).toContain("Suggestions come from your farrier config.");
+      expect(typed).not.toContain("no reliable way");
 
       await interact(view, () => view.mockInput.pressEnter());
       await interact(view, () => view.mockInput.pressEnter());
       expect(confirmations).toEqual([{ agent: "claude", models: { claude: "my-model" } }]);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("CLI models are fetched lazily on phase 2, once per backend, and reused on re-entry", async () => {
+    const confirmations: StartupSelection[] = [];
+    const calls: string[] = [];
+    const view = await testRender(
+      <StartupApp
+        {...startupProps(bothInstalled, confirmations, {
+          listModels: async (backend) => {
+            calls.push(backend);
+            return [];
+          }
+        })}
+      />,
+      renderOptions
+    );
+    try {
+      await view.waitForFrame((value) => value.includes("Which agent do you work with?"));
+      expect(calls).toEqual([]);
+
+      // "Both" fetches for both backends.
+      await interact(view, () => view.mockInput.pressArrow("down"));
+      await interact(view, () => view.mockInput.pressArrow("down"));
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitForFrame((value) => value.includes("Codex model:"));
+      expect(calls.sort()).toEqual(["claude", "codex"]);
+
+      // Leaving and re-entering phase 2 does not re-probe. A bare Escape sits
+      // in the parser's ambiguity buffer; the sleep lets it resolve as a key.
+      await interact(view, async () => {
+        view.mockInput.pressEscape();
+        await Bun.sleep(500);
+      });
+      await view.waitForFrame((value) => value.includes("Which agent do you work with?"));
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitForFrame((value) => value.includes("Codex model:"));
+      expect(calls).toHaveLength(2);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("Enter confirms the config default while the model listing is still loading", async () => {
+    const confirmations: StartupSelection[] = [];
+    const pending = deferred<{ id: string }[]>();
+    const view = await testRender(
+      <StartupApp {...startupProps(bothInstalled, confirmations, { listModels: () => pending.promise })} />,
+      renderOptions
+    );
+    try {
+      await view.waitForFrame((value) => value.includes("Which agent do you work with?"));
+      await interact(view, () => view.mockInput.pressEnter());
+      const loading = await view.waitForFrame((value) => value.includes("Listing models from Claude Code..."));
+      expect(loading).toContain("Enter still confirms the config default.");
+
+      await interact(view, () => view.mockInput.pressEnter());
+      expect(confirmations).toEqual([{ agent: "claude", models: {} }]);
+      // Settle the pending probe inside act so teardown stays warning-free.
+      await interact(view, async () => {
+        pending.resolve([]);
+        await pending.promise;
+      });
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("CLI-listed models become cyclable suggestions with an honest source line", async () => {
+    const confirmations: StartupSelection[] = [];
+    const view = await testRender(
+      <StartupApp
+        {...startupProps(bothInstalled, confirmations, {
+          listModels: async () => [{ id: "fable", displayName: "Fable" }, { id: "opus" }]
+        })}
+      />,
+      renderOptions
+    );
+    try {
+      await view.waitForFrame((value) => value.includes("Which agent do you work with?"));
+      await interact(view, () => view.mockInput.pressEnter());
+      const listed = await view.waitForFrame((value) =>
+        value.includes("Suggestions come from your farrier config and the models the CLI reports.")
+      );
+      expect(listed).not.toContain("Could not list models");
+
+      await interact(view, () => view.mockInput.pressArrow("up"));
+      await interact(view, () => view.mockInput.pressArrow("right"));
+      await view.waitForFrame((value) => value.includes("‹ fable ›"));
+      await interact(view, () => view.mockInput.pressArrow("right"));
+      await view.waitForFrame((value) => value.includes("‹ opus ›"));
+
+      await interact(view, () => view.mockInput.pressEnter());
+      await interact(view, () => view.mockInput.pressEnter());
+      expect(confirmations).toEqual([{ agent: "claude", models: { claude: "opus" } }]);
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -273,7 +384,12 @@ describe("the confirmed pick reaches the workflows", () => {
     expect(agentDetectionLabel({ installed: true, auth: "unknown" })).toBe("installed · sign-in unknown");
     expect(agentDetectionLabel({ installed: true, version: "1.0.0", auth: "not-signed-in" })).toBe("v1.0.0 · not signed in");
 
-    expect(modelSuggestions("claude", { claude: { default: "sonnet", advise: "opus-x" } })).toEqual(["sonnet", "opus-x", "haiku"]);
-    expect(modelSuggestions("codex", {})).toEqual(["gpt-5.5"]);
+    // No hardcoded built-ins: configured models first, then the CLI list.
+    expect(modelSuggestions("claude", { claude: { default: "sonnet", advise: "opus-x" } })).toEqual(["sonnet", "opus-x"]);
+    expect(modelSuggestions("codex", {})).toEqual([]);
+    expect(modelSuggestions("codex", { codex: { default: "gpt-5.5" } }, ["gpt-5.6-sol", "gpt-5.5"])).toEqual([
+      "gpt-5.5",
+      "gpt-5.6-sol"
+    ]);
   });
 });
