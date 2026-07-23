@@ -284,6 +284,35 @@ describe("per-agent skill eval engine", () => {
     }
   });
 
+  test("evaluatePerAgentSkill passes reasoningEffort to the claude judge as --effort", async () => {
+    const dir = await tempDir();
+    await writePinnedCreator(dir);
+    await writeSkill(dir, ".claude/skills", "pii-masker");
+    await writeSkill(dir, ".agents/skills", "pii-masker");
+
+    const calls: BackendCommandRunnerInput[] = [];
+    const runner: BackendCommandRunner = async (input) => {
+      calls.push(input);
+      return { exitCode: 0, stdout: labeledVerdictJson(promptOf(input), "pii-masker", "claude"), stderr: "" };
+    };
+
+    await evaluatePerAgentSkill({
+      targetDir: dir,
+      skillName: "pii-masker",
+      backend: "claude",
+      reasoningEffort: "max",
+      runner
+    });
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const flag = call.cmd.indexOf("--effort");
+      expect(flag).toBeGreaterThan(-1);
+      expect(call.cmd[flag + 1]).toBe("max");
+      expect(call.cmd.join(" ")).not.toContain("model_reasoning_effort");
+    }
+  });
+
   test("a judge that flips with candidate order degrades the recommendation to a tie", async () => {
     const dir = await tempDir();
     await writePinnedCreator(dir);

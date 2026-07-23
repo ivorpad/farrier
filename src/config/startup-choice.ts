@@ -18,10 +18,15 @@ export type StartupAgentChoice = "claude" | "codex" | "both" | "none";
 
 export type StartupModelChoices = { claude?: string; codex?: string };
 
+/** Session-level effort picks; CLI-sourced or typed, so plain strings. */
+export type StartupEffortChoices = { claude?: string; codex?: string };
+
 export type StartupChoice = {
   agent: StartupAgentChoice;
   /** Session-level model overrides; an absent entry means "config default". */
   models: StartupModelChoices;
+  /** Session-level reasoning-effort overrides; absent means "config default". */
+  efforts: StartupEffortChoices;
 };
 
 const startupAgentChoices = new Set<string>(["claude", "codex", "both", "none"]);
@@ -36,16 +41,17 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
-function normalizedModels(value: unknown): StartupModelChoices {
-  const models: StartupModelChoices = {};
-  if (!isRecord(value)) return models;
+/** Shared by models and efforts: both are per-backend non-empty strings. */
+function normalizedBackendStrings(value: unknown): { claude?: string; codex?: string } {
+  const entries: { claude?: string; codex?: string } = {};
+  if (!isRecord(value)) return entries;
   for (const backend of ["claude", "codex"] as const) {
     const entry = value[backend];
     if (typeof entry === "string" && entry.trim().length > 0) {
-      models[backend] = entry.trim();
+      entries[backend] = entry.trim();
     }
   }
-  return models;
+  return entries;
 }
 
 export async function loadStartupChoice(env: FarrierConfigEnv = process.env): Promise<StartupChoice | undefined> {
@@ -60,7 +66,11 @@ export async function loadStartupChoice(env: FarrierConfigEnv = process.env): Pr
   if (!isRecord(raw) || !isRecord(raw.startup)) return undefined;
   const agent = raw.startup.agent;
   if (typeof agent !== "string" || !startupAgentChoices.has(agent)) return undefined;
-  return { agent: agent as StartupAgentChoice, models: normalizedModels(raw.startup.models) };
+  return {
+    agent: agent as StartupAgentChoice,
+    models: normalizedBackendStrings(raw.startup.models),
+    efforts: normalizedBackendStrings(raw.startup.efforts)
+  };
 }
 
 export async function saveStartupChoice(choice: StartupChoice, env: FarrierConfigEnv = process.env): Promise<void> {
@@ -81,10 +91,12 @@ export async function saveStartupChoice(choice: StartupChoice, env: FarrierConfi
     }
   }
 
-  const models = normalizedModels(choice.models);
+  const models = normalizedBackendStrings(choice.models);
+  const efforts = normalizedBackendStrings(choice.efforts);
   existing.startup = {
     agent: choice.agent,
-    ...(Object.keys(models).length > 0 ? { models } : {})
+    ...(Object.keys(models).length > 0 ? { models } : {}),
+    ...(Object.keys(efforts).length > 0 ? { efforts } : {})
   };
 
   await mkdir(dirname(path), { recursive: true });

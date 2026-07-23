@@ -1,4 +1,4 @@
-import type { StartupAgentChoice, StartupModelChoices } from "../config/startup-choice";
+import type { StartupAgentChoice, StartupEffortChoices, StartupModelChoices } from "../config/startup-choice";
 import type { AgentDetectionInventory } from "../engine/agent-detection";
 import type { EnforcementAgent } from "../engine/agent-selection";
 import type { AgentBackend } from "../engine/backend";
@@ -26,6 +26,7 @@ export type SessionAgentContext = {
   agents: EnforcementAgent[];
   backend?: AgentBackend;
   models: StartupModelChoices;
+  efforts: StartupEffortChoices;
   detection: AgentDetectionInventory;
 };
 
@@ -45,6 +46,7 @@ const agentsByChoice: Record<StartupAgentChoice, EnforcementAgent[]> = {
 export function sessionAgentContext(input: {
   choice: StartupAgentChoice;
   models: StartupModelChoices;
+  efforts?: StartupEffortChoices;
   detection: AgentDetectionInventory;
 }): SessionAgentContext {
   const candidates: AgentBackend[] =
@@ -56,6 +58,7 @@ export function sessionAgentContext(input: {
     agents: [...agentsByChoice[input.choice]],
     ...(backend !== undefined ? { backend } : {}),
     models: { ...input.models },
+    efforts: { ...(input.efforts ?? {}) },
     detection: input.detection
   };
 }
@@ -86,8 +89,11 @@ export function launcherSessionView(context: SessionAgentContext): LauncherConte
       ? "Claude Code + Codex"
       : agentProductName(context.choice === "claude" ? "claude" : "codex");
   const modelParts = (["claude", "codex"] as const)
-    .filter((backend) => context.models[backend] && agentsByChoice[context.choice].includes(backend))
-    .map((backend) => `${backend} model ${context.models[backend]}`);
+    .filter((backend) => agentsByChoice[context.choice].includes(backend))
+    .flatMap((backend) => [
+      ...(context.models[backend] ? [`${backend} model ${context.models[backend]}`] : []),
+      ...(context.efforts[backend] ? [`${backend} effort ${context.efforts[backend]}`] : [])
+    ]);
   const missing = agentsByChoice[context.choice].filter((agent) => !context.detection[agent].installed);
   const missingPart = missing.length > 0 ? ` (${missing.map(agentProductName).join(" and ")} not installed here)` : "";
 

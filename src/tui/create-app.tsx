@@ -118,8 +118,20 @@ function CreateApp(props: CreateAppProps) {
     // Concurrent authoring (each run has its own staging root); lock-touching
     // installs are serialized inside createSkills.
     const modelSettings = {
-      claude: resolveModelSettings({ models: props.models, backend: "claude", role: "skillCreation", explicitModel: props.session?.models.claude }),
-      codex: resolveModelSettings({ models: props.models, backend: "codex", role: "skillCreation", explicitModel: props.session?.models.codex })
+      claude: resolveModelSettings({
+        models: props.models,
+        backend: "claude",
+        role: "skillCreation",
+        explicitModel: props.session?.models.claude,
+        explicitReasoningEffort: props.session?.efforts.claude
+      }),
+      codex: resolveModelSettings({
+        models: props.models,
+        backend: "codex",
+        role: "skillCreation",
+        explicitModel: props.session?.models.codex,
+        explicitReasoningEffort: props.session?.efforts.codex
+      })
     };
 
     createSkills(requests, props.targetDir, { signal: controller.signal, onCollision, modelSettings }, (event) => {
@@ -225,7 +237,8 @@ function CreateApp(props: CreateAppProps) {
         models: props.models,
         backend: refineBackend,
         role: "refine",
-        explicitModel: props.session?.models[refineBackend]
+        explicitModel: props.session?.models[refineBackend],
+        explicitReasoningEffort: props.session?.efforts[refineBackend]
       });
 
       return (

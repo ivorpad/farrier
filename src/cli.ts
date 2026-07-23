@@ -380,6 +380,7 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
             const outcome = await runAdviceWizard(targetDir, {
               initialBackend: session.backend,
               modelOverrides: session.models,
+              effortOverrides: session.efforts,
               probeAvailability: async () => ({
                 claude: session.detection.claude.installed,
                 codex: session.detection.codex.installed,

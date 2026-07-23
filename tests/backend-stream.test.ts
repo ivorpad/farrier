@@ -3,7 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { backendCommand, defaultBackendRunner, formatBackendStreamActivity } from "../src/engine/backend";
+import { backendCommand, defaultBackendRunner } from "../src/engine/backend";
+import { formatBackendStreamActivity } from "../src/engine/backend-activity";
 
 function claudeAssistantLine(block: Record<string, unknown>): string {
   return JSON.stringify({ type: "assistant", message: { content: [block] } });
@@ -87,16 +88,20 @@ describe("backend streaming", () => {
     expect(backendCommand("codex", undefined, "prompt").cmd).not.toContain("--json");
   });
 
-  test("backendCommand reasoningEffort adds -c model_reasoning_effort for codex only", () => {
+  test("backendCommand reasoningEffort maps to each CLI's own flag", () => {
     const codex = backendCommand("codex", undefined, "prompt", { write: true, stream: true, reasoningEffort: "high" });
     expect(codex.cmd.join(" ")).toContain("-c model_reasoning_effort=high");
+    expect(codex.cmd).not.toContain("--effort");
 
-    // Claude ignores reasoning effort entirely.
-    const claude = backendCommand("claude", undefined, "prompt", { reasoningEffort: "high" });
+    const claude = backendCommand("claude", undefined, "prompt", { reasoningEffort: "max" });
+    const flag = claude.cmd.indexOf("--effort");
+    expect(flag).toBeGreaterThan(-1);
+    expect(claude.cmd[flag + 1]).toBe("max");
     expect(claude.cmd.join(" ")).not.toContain("model_reasoning_effort");
 
-    // No effort configured -> no flag.
+    // No effort configured -> no flag on either CLI.
     expect(backendCommand("codex", undefined, "prompt").cmd.join(" ")).not.toContain("model_reasoning_effort");
+    expect(backendCommand("claude", undefined, "prompt").cmd).not.toContain("--effort");
   });
 
   test("backendCommand applies a native per-process Claude spend ceiling", () => {

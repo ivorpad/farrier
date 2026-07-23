@@ -255,6 +255,37 @@ test("advice wizard actions resolve fresh analysis settings for the selected bac
   expect(calls.every((call) => call.sessions === "none")).toBe(true);
 });
 
+test("startup model and effort picks beat every configured role entry for the session", async () => {
+  const calls: ProjectAdviceInput[] = [];
+  const actions = createAdviceWizardActions(
+    {
+      targetDir: "/tmp/example",
+      models: {
+        claude: { advise: { model: "claude-advise", reasoningEffort: "low" } },
+        codex: { advise: { model: "codex-advise", reasoningEffort: "high" } }
+      },
+      modelOverrides: { codex: "gpt-picked" },
+      effortOverrides: { claude: "max", codex: "xhigh" },
+      signal: new AbortController().signal
+    },
+    {
+      isBackendAvailable: async () => true,
+      advise: async (input) => {
+        calls.push(input);
+        return emptyReport(input.backend, input.model);
+      }
+    }
+  );
+
+  await actions.onRun("codex", undefined, "7d", "all", () => undefined);
+  await actions.onRun("claude", undefined, "7d", "all", () => undefined);
+
+  expect(calls.map(({ backend, model, reasoningEffort }) => ({ backend, model, reasoningEffort }))).toEqual([
+    { backend: "codex", model: "gpt-picked", reasoningEffort: "xhigh" },
+    { backend: "claude", model: "claude-advise", reasoningEffort: "max" }
+  ]);
+});
+
 test("advice wizard actions fail on the selected unavailable backend without fallback", async () => {
   let invoked = false;
   const actions = createAdviceWizardActions(

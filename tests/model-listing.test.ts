@@ -2,18 +2,21 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { BackendCommandRunner, BackendCommandRunnerInput } from "../src/engine/backend";
 import type { CodexAppServerClient } from "../src/engine/codex-app-server";
 import {
-  cliModelSuggestions,
-  listClaudeModels,
-  listCodexModels,
+  cliBackendListing,
+  listClaudeCli,
+  listCodexCli,
+  parseClaudeEffortHelp,
   parseClaudeModelHelp,
-  resetCliModelSuggestionsCache
+  resetCliBackendListingCache
 } from "../src/engine/model-listing";
 
 /**
  * Captured verbatim from `claude --help` (claude 2.1.x, 2026-07-23),
  * including the neighboring options: the --agents decoy proves quoted
- * tokens outside the --model block are ignored, and the possessive in
- * "a model's full name" proves prose apostrophes do not derail pairing.
+ * tokens outside the --model block are ignored, the possessive in
+ * "a model's full name" proves prose apostrophes do not derail pairing,
+ * and the --model block's parenthesized examples prove the effort parser
+ * only accepts a bare-word level list.
  */
 const realClaudeHelp = `Usage: claude [options] [command] [prompt]
 
@@ -22,6 +25,8 @@ Options:
                                         '{"reviewer": {"description": "Reviews
                                         code", "prompt": "You are a code
                                         reviewer"}}')
+  --effort <level>                      Effort level for the current session
+                                        (low, medium, high, xhigh, max)
   --mcp-config <configs...>             Load MCP servers from JSON files or
                                         strings (space-separated)
   --model <model>                       Model for the current session. Provide
@@ -34,8 +39,9 @@ Options:
                                         picker, and terminal title)
 `;
 
-/** A plausible future binary: renamed aliases, full-name example first. */
+/** A plausible future binary: renamed aliases, full-name example first, renamed effort levels with an "or". */
 const futureClaudeHelp = `Options:
+  --effort <effort>                     Reasoning effort (lite, standard, or ultra)
   --model <model>                       Model override. Provide a model's full
                                         name (e.g. 'claude-nova-7-20270101') or
                                         an alias for the newest models (e.g.
@@ -54,7 +60,10 @@ const codexModelListFixture = {
       hidden: false,
       isDefault: true,
       defaultReasoningEffort: "low",
-      supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast responses with lighter reasoning" }]
+      supportedReasoningEfforts: [
+        { reasoningEffort: "low", description: "Fast responses with lighter reasoning" },
+        { reasoningEffort: "xhigh", description: "Deepest reasoning for the hardest problems" }
+      ]
     },
     {
       id: "gpt-5.6-terra",
@@ -118,38 +127,61 @@ describe("parseClaudeModelHelp", () => {
   });
 });
 
-describe("listClaudeModels", () => {
-  test("runs `claude --help` through the injected runner and parses the --model block", async () => {
+describe("parseClaudeEffortHelp", () => {
+  test("extracts the enumerated levels from the real --effort block", () => {
+    expect(parseClaudeEffortHelp(realClaudeHelp)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  test("survives renamed levels, a reworded sentence, and an Oxford 'or'", () => {
+    expect(parseClaudeEffortHelp(futureClaudeHelp)).toEqual(["lite", "standard", "ultra"]);
+  });
+
+  test("prose-bearing parentheses never qualify as a level list", () => {
+    // Quoted examples and sentences (the --model block's style) must not parse as levels.
+    const prose = "  --effort <level>   Effort for the session (e.g. 'low' or 'high'), see docs (recommended default applies)\n";
+    expect(parseClaudeEffortHelp(prose)).toEqual([]);
+  });
+
+  test("help without a --effort section or without a level list parses to empty", () => {
+    expect(parseClaudeEffortHelp("Usage: claude [options]\n  --verbose  More output\n")).toEqual([]);
+    expect(parseClaudeEffortHelp("  --effort <level>  Effort level for the current session.\n")).toEqual([]);
+    expect(parseClaudeEffortHelp("")).toEqual([]);
+  });
+});
+
+describe("listClaudeCli", () => {
+  test("runs `claude --help` once through the injected runner and parses models and efforts", async () => {
     const calls: string[][] = [];
     const runner: BackendCommandRunner = async (input: BackendCommandRunnerInput) => {
       calls.push(input.cmd);
       return { exitCode: 0, stdout: realClaudeHelp, stderr: "" };
     };
 
-    const models = await listClaudeModels(runner);
+    const listing = await listClaudeCli(runner);
     expect(calls).toEqual([["claude", "--help"]]);
-    expect(models.map((entry) => entry.id)).toEqual(["fable", "opus", "sonnet", "claude-fable-5"]);
+    expect(listing.models.map((entry) => entry.id)).toEqual(["fable", "opus", "sonnet", "claude-fable-5"]);
+    expect(listing.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
-  test("failure, hang, and unparseable output all degrade to an empty list", async () => {
+  test("failure, hang, and unparseable output all degrade to an empty listing", async () => {
     const failing: BackendCommandRunner = async () => {
       throw new Error("spawn ENOENT");
     };
-    expect(await listClaudeModels(failing)).toEqual([]);
+    expect(await listClaudeCli(failing)).toEqual({ models: [], efforts: [] });
 
     const hanging: BackendCommandRunner = () => new Promise(() => undefined);
-    expect(await listClaudeModels(hanging, 20)).toEqual([]);
+    expect(await listClaudeCli(hanging, 20)).toEqual({ models: [], efforts: [] });
 
     const unparseable: BackendCommandRunner = async () => ({ exitCode: 0, stdout: "no options here", stderr: "" });
-    expect(await listClaudeModels(unparseable)).toEqual([]);
+    expect(await listClaudeCli(unparseable)).toEqual({ models: [], efforts: [] });
   });
 });
 
-describe("listCodexModels", () => {
-  test("calls model/list and returns visible ids with display names, first page only", async () => {
+describe("listCodexCli", () => {
+  test("calls model/list and keeps per-model efforts and their defaults, first page only", async () => {
     const closes = { count: 0 };
     const methods: string[] = [];
-    const models = await listCodexModels(async () =>
+    const listing = await listCodexCli(async () =>
       fakeClient(async (method) => {
         methods.push(method);
         return codexModelListFixture;
@@ -157,93 +189,110 @@ describe("listCodexModels", () => {
     );
 
     expect(methods).toEqual(["model/list"]);
-    expect(models).toEqual([
-      { id: "gpt-5.6-sol", displayName: "GPT-5.6-Sol" },
-      { id: "gpt-5.6-terra", displayName: "GPT-5.6-Terra" }
+    expect(listing.efforts).toBeUndefined();
+    expect(listing.models).toEqual([
+      {
+        id: "gpt-5.6-sol",
+        displayName: "GPT-5.6-Sol",
+        supportedReasoningEfforts: ["low", "xhigh"],
+        defaultReasoningEffort: "low"
+      },
+      {
+        id: "gpt-5.6-terra",
+        displayName: "GPT-5.6-Terra",
+        supportedReasoningEfforts: ["medium"],
+        defaultReasoningEffort: "medium"
+      }
     ]);
     expect(closes.count).toBe(1);
   });
 
   test("a hung request hits the hard timeout, returns empty, and still closes the client", async () => {
     const closes = { count: 0 };
-    const models = await listCodexModels(
+    const listing = await listCodexCli(
       async () => fakeClient(() => new Promise(() => undefined), closes),
       20
     );
-    expect(models).toEqual([]);
+    expect(listing).toEqual({ models: [] });
     expect(closes.count).toBe(1);
   });
 
-  test("a failing spawn or request degrades to an empty list", async () => {
+  test("a failing spawn or request degrades to an empty listing", async () => {
     expect(
-      await listCodexModels(async () => {
+      await listCodexCli(async () => {
         throw new Error("codex not runnable");
       })
-    ).toEqual([]);
+    ).toEqual({ models: [] });
 
     const closes = { count: 0 };
     expect(
-      await listCodexModels(async () =>
+      await listCodexCli(async () =>
         fakeClient(async () => {
           throw new Error("Codex App Server model/list failed");
         }, closes)
       )
-    ).toEqual([]);
+    ).toEqual({ models: [] });
     expect(closes.count).toBe(1);
   });
 
   test("malformed responses parse to empty instead of throwing", async () => {
     for (const malformed of [null, "text", {}, { data: "not-an-array" }, { data: [{ displayName: "no id" }, 7] }]) {
       const closes = { count: 0 };
-      expect(await listCodexModels(async () => fakeClient(async () => malformed, closes))).toEqual([]);
+      expect(await listCodexCli(async () => fakeClient(async () => malformed, closes))).toEqual({ models: [] });
     }
   });
 
-  test("duplicate ids are deduplicated and a missing displayName is omitted", async () => {
+  test("duplicate ids deduplicate; missing displayName and malformed effort fields are omitted", async () => {
     const closes = { count: 0 };
-    const models = await listCodexModels(async () =>
+    const listing = await listCodexCli(async () =>
       fakeClient(
-        async () => ({ data: [{ id: "gpt-x" }, { id: "gpt-x", displayName: "GPT-X" }], nextCursor: null }),
+        async () => ({
+          data: [
+            { id: "gpt-x", supportedReasoningEfforts: "not-an-array", defaultReasoningEffort: 3 },
+            { id: "gpt-x", displayName: "GPT-X" }
+          ],
+          nextCursor: null
+        }),
         closes
       )
     );
-    expect(models).toEqual([{ id: "gpt-x" }]);
+    expect(listing.models).toEqual([{ id: "gpt-x" }]);
   });
 });
 
-describe("cliModelSuggestions cache", () => {
-  afterEach(() => resetCliModelSuggestionsCache());
+describe("cliBackendListing cache", () => {
+  afterEach(() => resetCliBackendListingCache());
 
   test("probes once per backend per process and again after a reset", async () => {
     const counts = { claude: 0, codex: 0 };
     const probes = {
       claude: async () => {
         counts.claude += 1;
-        return [{ id: "fable" }];
+        return { models: [{ id: "fable" }], efforts: ["low", "max"] };
       },
       codex: async () => {
         counts.codex += 1;
-        return [{ id: "gpt-5.6-sol" }];
+        return { models: [{ id: "gpt-5.6-sol" }] };
       }
     };
 
-    expect(await cliModelSuggestions("claude", probes)).toEqual([{ id: "fable" }]);
-    expect(await cliModelSuggestions("claude", probes)).toEqual([{ id: "fable" }]);
-    expect(await cliModelSuggestions("codex", probes)).toEqual([{ id: "gpt-5.6-sol" }]);
+    expect(await cliBackendListing("claude", probes)).toEqual({ models: [{ id: "fable" }], efforts: ["low", "max"] });
+    expect(await cliBackendListing("claude", probes)).toEqual({ models: [{ id: "fable" }], efforts: ["low", "max"] });
+    expect(await cliBackendListing("codex", probes)).toEqual({ models: [{ id: "gpt-5.6-sol" }] });
     expect(counts).toEqual({ claude: 1, codex: 1 });
 
-    resetCliModelSuggestionsCache();
-    expect(await cliModelSuggestions("claude", probes)).toEqual([{ id: "fable" }]);
+    resetCliBackendListingCache();
+    expect(await cliBackendListing("claude", probes)).toEqual({ models: [{ id: "fable" }], efforts: ["low", "max"] });
     expect(counts.claude).toBe(2);
   });
 
-  test("a rejecting probe caches an honest empty list rather than an error", async () => {
+  test("a rejecting probe caches an honest empty listing rather than an error", async () => {
     const probes = {
-      claude: async () => {
+      claude: async (): Promise<never> => {
         throw new Error("probe exploded");
       },
-      codex: async () => []
+      codex: async () => ({ models: [] })
     };
-    expect(await cliModelSuggestions("claude", probes)).toEqual([]);
+    expect(await cliBackendListing("claude", probes)).toEqual({ models: [], efforts: [] });
   });
 });

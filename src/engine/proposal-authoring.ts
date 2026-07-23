@@ -373,15 +373,22 @@ async function requestProposalRefinements(input: RefineProposalTextOptions): Pro
     evidenceDigest: evidence.digest
   });
 
-  const effortArgs = input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : [];
   const command =
     input.backend === "claude"
       ? {
-          cmd: ["claude", "-p", "--model", model, "--permission-mode", "plan"],
+          cmd: [
+            "claude", "-p", "--model", model,
+            ...(input.reasoningEffort ? ["--effort", input.reasoningEffort] : []),
+            "--permission-mode", "plan"
+          ],
           stdin: prompt
         }
       : {
-          cmd: ["codex", "exec", "-s", "read-only", "--model", model, ...effortArgs, prompt],
+          cmd: [
+            "codex", "exec", "-s", "read-only", "--model", model,
+            ...(input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : []),
+            prompt
+          ],
           stdin: undefined
         };
 
