@@ -46,6 +46,11 @@ function pathPolicy(recommendation: AdviceRecommendation): PathPolicy | undefine
       return { description: ".codex/config.toml only", existingPaths: [".codex/config.toml"], accepts: exact([".codex/config.toml"]) };
     case "hooks:claude-settings":
       return { description: ".claude/settings.json only", existingPaths: [".claude/settings.json"], accepts: exact([".claude/settings.json"]) };
+    case "hooks:codex-hooks-json":
+      // Config only, like hooks:claude-settings: the catalog also maps a
+      // .farrier hook script to this route, but the advice creator never
+      // authors scripts, so the hook entry must call an existing command.
+      return { description: ".codex/hooks.json only", existingPaths: [".codex/hooks.json"], accepts: exact([".codex/hooks.json"]) };
     case "hooks:shared-policy": {
       const paths = [".claude/settings.json", ".codex/config.toml"];
       return { description: "Claude/Codex declarative config only; no scripts", existingPaths: paths, accepts: exact(paths) };
@@ -206,7 +211,7 @@ function validateRawPlan(
     if (!value.content || value.content.length > 50_000 || value.content.includes("\0")) throw new Error(`Creation plan content for '${path}' is empty or too large.`);
     if (!value.purpose.trim() || value.purpose.length > 180) throw new Error(`Creation plan purpose for '${path}' is invalid.`);
     if (secretLike(value.content)) throw new Error(`Creation plan content for '${path}' contains a secret-like value.`);
-    if (recommendation.category === "hooks" && (/^#!|```/m.test(value.content) || !new Set([".claude/settings.json", ".codex/config.toml"]).has(path))) {
+    if (recommendation.category === "hooks" && (/^#!|```/m.test(value.content) || !new Set([".claude/settings.json", ".codex/config.toml", ".codex/hooks.json"]).has(path))) {
       throw new Error("Hook creation plans may contain declarative configuration only; executable content was rejected.");
     }
     validateJsonFile(path, value.content);

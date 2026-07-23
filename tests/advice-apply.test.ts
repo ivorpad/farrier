@@ -168,6 +168,53 @@ test("hook creation rejects executable files and unsupported plugin installs", a
   expect(plannerCalls).toBe(0);
 });
 
+test("codex hooks.json route has a constrained creator and stays config-only", async () => {
+  const root = await mkdtemp(join(tmpdir(), "farrier-advice-apply-codex-"));
+  await mkdir(join(root, ".codex"));
+  await writeFile(join(root, ".farrier.json"), "{}\n");
+  await writeFile(join(root, ".codex", "hooks.json"), '{"hooks":[]}\n');
+  const recommendation: AdviceRecommendation = {
+    ...hookRecommendation("hooks:codex-hooks-json"),
+    targetVendors: ["codex"],
+    implementationRoute: {
+      id: "hooks:codex-hooks-json",
+      description: "Configure a Codex-native hook in .codex/hooks.json with project trust review."
+    }
+  };
+  const support = adviceCreationSupport(recommendation);
+  expect(support.kind).toBe("files");
+  expect(support.description).toBe(".codex/hooks.json only");
+
+  const runner: BackendCommandRunner = async () => ({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      summary: "Add a reviewed post-change verification hook.",
+      files: [{
+        path: ".codex/hooks.json",
+        purpose: "Run the existing check command after code changes.",
+        content: '{"hooks":[{"event":"post-change","command":"bun test"}]}\n'
+      }]
+    }),
+    stderr: ""
+  });
+  const plan = await planAdviceRecommendation({ report: report(root, recommendation), recommendation, backend: "codex", runner });
+  const result = await applyAdviceCreationPlan(root, plan, true);
+  expect(result.written).toEqual([".codex/hooks.json"]);
+  expect(await readFile(join(root, ".codex", "hooks.json"), "utf8")).toContain('"command":"bun test"');
+
+  // The catalog maps .farrier/hooks/codex_verify.py to this route, but the
+  // creator must keep refusing to author scripts.
+  const scriptRunner: BackendCommandRunner = async () => ({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      summary: "Unsafe plan.",
+      files: [{ path: ".farrier/hooks/codex_verify.py", purpose: "script", content: "print('verify')\n" }]
+    }),
+    stderr: ""
+  });
+  await expect(planAdviceRecommendation({ report: report(root, recommendation), recommendation, backend: "codex", runner: scriptRunner })).rejects.toThrow("outside the selected route policy");
+});
+
 test("batch skill authoring uses the report backend and leaves only a review plan before confirmation", async () => {
   const root = await mkdtemp(join(tmpdir(), "farrier-advice-skill-plan-"));
   const recommendation: AdviceRecommendation = {
