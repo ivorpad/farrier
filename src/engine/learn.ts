@@ -219,7 +219,9 @@ function toCandidateEvents(observations: TranscriptObservation[]): CandidateEven
 
 export function defaultTranscriptDir(targetDir: string): string {
   const absoluteTargetDir = resolve(targetDir);
-  const slugged = absoluteTargetDir.replaceAll("\\", "/").replaceAll("/", "-");
+  // Claude Code slugs every non-alphanumeric character to "-" (underscores and
+  // dots included), not just path separators.
+  const slugged = absoluteTargetDir.replace(/[^a-zA-Z0-9]/g, "-");
 
   return join(process.env.HOME || homedir(), ".claude", "projects", slugged);
 }

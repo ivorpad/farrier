@@ -228,6 +228,40 @@ export function toolUseFromRecord(record: Record<string, unknown>): ToolUse[] {
   return dedupeToolUses(uses);
 }
 
+/**
+ * Human-authored text from one Claude transcript record. Tool results, meta
+ * records (command wrappers, caveats), and sidechain (subagent) prompts all
+ * arrive as type:"user" but are not the human steering the agent.
+ */
+export function userTextFromRecord(record: Record<string, unknown>): string | undefined {
+  if (record.type !== "user" || record.isMeta === true || record.isSidechain === true) {
+    return undefined;
+  }
+
+  const message = isRecord(record.message) ? record.message : undefined;
+  if (!message) {
+    return undefined;
+  }
+
+  const content = message.content;
+  if (typeof content === "string") {
+    return content.trim().length > 0 ? content : undefined;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  if (content.some((item) => isRecord(item) && item.type === "tool_result")) {
+    return undefined;
+  }
+
+  const texts = content
+    .filter((item): item is Record<string, unknown> => isRecord(item) && item.type === "text")
+    .map((item) => optionalString(item.text) ?? "")
+    .filter((text) => text.trim().length > 0);
+
+  return texts.length > 0 ? texts.join("\n") : undefined;
+}
+
 export function toolResultsFromRecord(record: Record<string, unknown>): ToolResult[] {
   const results: ToolResult[] = [];
 
@@ -500,8 +534,27 @@ export function scanToolEvents(
 
 export type SourceScan = { notes: string[]; filesScanned: number };
 
+/** A human user message from a Claude transcript. sessionRef is the bare transcript stem. */
+export type ClaudeUserMessageEvent = {
+  text: string;
+  sessionRef: string;
+  date: string | undefined;
+};
+
+export type ClaudeTranscriptScanOptions = {
+  /**
+   * Tap for user steers (session evidence). Called with the raw message text;
+   * the caller owns noise filtering, redaction, and bounding. Stays local.
+   */
+  onUserMessage?: (event: ClaudeUserMessageEvent) => void;
+};
+
 /** Scans Claude transcript JSONL files into a shared collector (merged-source mining). */
-export async function scanClaudeTranscripts(transcriptsDir: string, collector: SignalCollector): Promise<SourceScan> {
+export async function scanClaudeTranscripts(
+  transcriptsDir: string,
+  collector: SignalCollector,
+  options: ClaudeTranscriptScanOptions = {}
+): Promise<SourceScan> {
   const notes: string[] = [];
 
   let entries: string[];
@@ -540,6 +593,10 @@ export async function scanClaudeTranscripts(transcriptsDir: string, collector: S
       }
       if (!isRecord(parsed)) continue;
       const context = { sessionRef, date: recordDate(parsed) };
+      if (options.onUserMessage) {
+        const text = userTextFromRecord(parsed);
+        if (text) options.onUserMessage({ text, sessionRef, date: context.date });
+      }
       scanToolEvents(toolUseFromRecord(parsed), toolResultsFromRecord(parsed), context, collector, state);
     }
   }

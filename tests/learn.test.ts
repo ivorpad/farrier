@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   applyLearn,
   createLearnReport,
+  defaultTranscriptDir,
   deterministicRuleProposals,
   extractCandidateEvents,
   type LearnCommandRunner
@@ -80,6 +81,15 @@ async function readRules(dir: string): Promise<{ version: number; rules: ToolPol
     rules: ToolPolicyRule[];
   };
 }
+
+describe("defaultTranscriptDir", () => {
+  test("slugs every non-alphanumeric character like Claude Code does", () => {
+    // Claude writes ~/.claude/projects/-Users-x-...-01-field-brief for a
+    // project at /Users/x/.../01_field.brief; underscores and dots become "-".
+    const dir = defaultTranscriptDir("/Users/x/src/tries/2026-07-22-01_field.brief");
+    expect(dir.endsWith(join(".claude", "projects", "-Users-x-src-tries-2026-07-22-01-field-brief"))).toBe(true);
+  });
+});
 
 describe("learn transcript extraction", () => {
   test("extracts deny events, repeated failures, prefix-similar counts, and skips garbage lines", async () => {
