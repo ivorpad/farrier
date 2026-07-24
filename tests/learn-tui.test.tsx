@@ -154,7 +154,7 @@ describe("learn proposal surface", () => {
     }
   });
 
-  test("without a harness the list is read-only: banner up front, review gated before planning", async () => {
+  test("without a harness only hook proposals are gated; a rules line reaches review", async () => {
     const planned: PrimitiveProposal[] = [];
     const view = await renderLearn({
       onMine: async () => ({ ...miningResult([guardProposal(), ruleProposal()]), harnessPresent: false }),
@@ -164,18 +164,25 @@ describe("learn proposal surface", () => {
       }
     });
     try {
-      const frame = await view.waitForFrame((value) => value.includes("read-only until a harness exists"));
-      expect(frame.replace(/\s+/g, " ")).toContain(
-        "No harness in this project yet, so proposals are read-only. Choose Create harness from the main menu first."
+      const frame = await view.waitForFrame((value) => value.includes("hook proposals locked until farrier is set up"));
+      // Long banner lines wrap across the box border; strip the glyphs before matching.
+      expect(frame.replace(/[│┌┐└┘─]/g, " ").replace(/\s+/g, " ")).toContain(
+        "No harness in this project yet: rule lines still apply (they create AGENTS.md); hook proposals need Create harness from the main menu first."
       );
+      // The guard (first in the list) is gated with an explanation, not planned.
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() =>
         view.captureCharFrame().replace(/\s+/g, " ").includes("then come back to apply it.")
       );
-      const after = view.captureCharFrame().replace(/\s+/g, " ");
-      expect(after).toContain("Choose Create harness from the main menu first, then come back to apply it.");
-      expect(after).not.toContain("Preparing the exact files");
+      expect(view.captureCharFrame().replace(/\s+/g, " ")).toContain(
+        "This hook installs into the harness. Choose Create harness from the main menu first, then come back to apply it."
+      );
       expect(planned.length).toBe(0);
+      // The rules line (second) plans normally: sessions exist without a manifest.
+      await interact(view, () => view.mockInput.pressKey("\x1B[B"));
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() => planned.length === 1);
+      expect(planned[0]!.kind).toBe("rules-line");
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -195,10 +202,11 @@ describe("learn proposal surface", () => {
       }
     });
     try {
-      const frame = await view.waitForFrame((value) => value.includes("read-only until farrier is set up"));
-      const normalized = frame.replace(/\s+/g, " ");
+      const frame = await view.waitForFrame((value) => value.includes("hook proposals locked until farrier is set up"));
+      // Long banner lines wrap across the box border; strip the glyphs before matching.
+      const normalized = frame.replace(/[│┌┐└┘─]/g, " ").replace(/\s+/g, " ");
       expect(normalized).toContain(
-        "Found AGENTS.md and 71 installed skill(s), but farrier isn't set up in this project yet, so proposals are read-only."
+        "Found AGENTS.md and 71 installed skill(s), but farrier isn't set up in this project yet: rule lines apply into AGENTS.md now; hook proposals need Create harness first."
       );
       expect(normalized).toContain("existing files are reviewed first and can be kept as-is");
       expect(normalized).not.toContain("No harness in this project yet");

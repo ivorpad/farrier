@@ -38,7 +38,10 @@ export type ProposalMiningResult = {
   transcriptsDir: string;
   signals: FailureSignal[];
   proposals: PrimitiveProposal[];
-  /** False when the repo has no .farrier.json: proposals can be read but not applied. */
+  /**
+   * False when the repo has no .farrier.json. Guard/hook proposals cannot be
+   * applied without it; rules lines and skill suggestions still can.
+   */
   harnessPresent: boolean;
   /**
    * Agent files found when no manifest exists (e.g. "AGENTS.md", "71 installed
@@ -73,7 +76,7 @@ export async function minePrimitiveProposals(input: {
 }): Promise<ProposalMiningResult> {
   const targetDir = resolve(input.targetDir);
   // Mining needs no harness (the bare repo is the growth model's entry case);
-  // only applying a proposal does, and planProposal still refuses without one.
+  // only applying a GUARD proposal does, and planProposal refuses that one.
   let installedHookIds: NormalizedManifest["hookIds"] = [];
   let guards: unknown;
   // The missing-harness case is a structured flag, not a note string: the TUI
@@ -316,8 +319,11 @@ async function rulesLinePlan(
 
 /**
  * Plan one confirmed proposal into reviewable files. Read-only: the caller
- * shows the inspection and applies only after explicit confirmation. Refuses
- * when .farrier.json is missing or the merge would fail doctor validation.
+ * shows the inspection and applies only after explicit confirmation. Only a
+ * guard instance requires .farrier.json (it rewrites the manifest and hook
+ * bindings); a rules line writes AGENTS.md and applies to a repo harnessed
+ * by hand — sessions exist regardless of farrier's bookkeeping. Refuses when
+ * a guard merge would fail doctor validation.
  */
 export async function planPrimitiveProposal(input: {
   targetDir: string;
@@ -326,14 +332,13 @@ export async function planPrimitiveProposal(input: {
 }): Promise<PlannedProposal> {
   const targetDir = resolve(input.targetDir);
   const catalog = input.catalog ?? builtinCatalog();
-  const manifest = await readManifest({ targetDir, catalog });
 
   if (input.proposal.kind === "skill-suggestion") {
     return { kind: "skill", query: input.proposal.query, message: input.proposal.message };
   }
 
   const planned = input.proposal.kind === "guard-instance"
-    ? await guardInstancePlan(targetDir, manifest, input.proposal, catalog)
+    ? await guardInstancePlan(targetDir, await readManifest({ targetDir, catalog }), input.proposal, catalog)
     : await rulesLinePlan(targetDir, input.proposal);
   const plan: AdviceCreationPlan = {
     recommendationId: input.proposal.id,

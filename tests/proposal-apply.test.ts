@@ -221,6 +221,19 @@ describe("rules-line apply", () => {
     expect(agents.split(bullet)).toHaveLength(2);
   });
 
+  test("plans and applies into a hand-harnessed repo without .farrier.json", async () => {
+    const targetDir = await tempDir();
+    await writeFile(join(targetDir, "AGENTS.md"), "# Agents\n\n## Hard Rules\n\n- Existing rule.\n", "utf8");
+
+    const planned = filesPlan(await planPrimitiveProposal({ targetDir, proposal: rulesLineProposal() }));
+    expect(planned.plan.files.map((file) => file.path)).toEqual(["AGENTS.md"]);
+
+    await applyProposalPlan(targetDir, planned.plan, true);
+    const agents = await readFile(join(targetDir, "AGENTS.md"), "utf8");
+    expect(agents).toContain("- Existing rule.");
+    expect(agents).toContain("- Before `git push`, fetch and rebase onto the remote branch.");
+  });
+
   test("keeps the repo-map region the final block when the heading is missing", () => {
     const content = [
       "# Project Agent Instructions",
