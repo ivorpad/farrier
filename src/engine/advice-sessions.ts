@@ -108,7 +108,8 @@ function emptyProviderIndex<Locator>(
   };
 }
 
-async function listCodexSafely(input: {
+/** Codex listing behind an availability guard: no codex, or a dead app server, becomes a note, never a throw. */
+export async function listCodexSafely(input: {
   targetDir: string;
   lookback: AdviceSessionLookback;
   now: number;

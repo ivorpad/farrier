@@ -3,12 +3,12 @@ import { createRoot, useKeyboard } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import type { AdviceCreationPlan } from "../engine/advice-apply";
 import type { ApplyHarnessChangePlanResult, HarnessChangePlan } from "../engine/create-plan";
-import type { ExportReport, DroppedLesson } from "../engine/export-harness";
+import { invokedSkills, type ExportReport, type DroppedLesson } from "../engine/export-harness";
 import type { ExportLesson } from "../engine/export-playbook";
 import { AdviceApplyFlow, advicePlanPreviewLines } from "./AdviceApplyFlow";
 import { DetailPane, KeyHints, palette, useSpinner, type PaneLine } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
-import { sessionModelSettings, type SessionAgentContext } from "./session-context";
+import { loadSessionBackendSettings, type SessionAgentContext } from "./session-context";
 
 /**
  * The export surface: turn this project's finished sessions into a portable
@@ -63,7 +63,7 @@ export function lessonDetailLines(lesson: ExportLesson, report: ExportReport, in
 export function ExportApp(props: {
   onMine: () => Promise<ExportReport>;
   onClassify: (report: ExportReport) => Promise<Classified>;
-  onPlan: (report: ExportReport, lessons: ExportLesson[]) => Promise<{ plan: AdviceCreationPlan; inspection: HarnessChangePlan }>;
+  onPlan: (report: ExportReport, lessons: ExportLesson[], includeSkills: boolean) => Promise<{ plan: AdviceCreationPlan; inspection: HarnessChangePlan }>;
   onApply: (plan: AdviceCreationPlan, force: boolean) => Promise<ApplyHarnessChangePlanResult>;
   backendLabel: string;
   onExit: () => void;
@@ -71,6 +71,7 @@ export function ExportApp(props: {
   const [phase, setPhase] = useState<ExportPhase>({ kind: "mining" });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [reviewing, setReviewing] = useState<ExportLesson[]>();
+  const [includeSkills, setIncludeSkills] = useState(false);
   const [applied, setApplied] = useState(false);
   const bodyScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const spinner = useSpinner(phase.kind === "mining" || phase.kind === "classifying");
@@ -98,6 +99,7 @@ export function ExportApp(props: {
   const lessonsBindings = defineBindings(
     binding(["up", "down"], "move", "lessons"),
     binding("space", "toggle", "include/exclude"),
+    binding("i", "skills", "invoked skills on/off"),
     binding("enter", "activate", "review files"),
     binding(["pageup", "pagedown"], "scroll", "scroll"),
     binding(["escape", "b"], "back", "launcher"),
@@ -163,6 +165,8 @@ export function ExportApp(props: {
       if (excluded.has(lesson.gateId)) excluded.delete(lesson.gateId);
       else excluded.add(lesson.gateId);
       setPhase({ ...phase, excluded });
+    } else if (intent === "skills") {
+      setIncludeSkills((current) => !current);
     } else if (intent === "activate") {
       const included = lessons.filter(
         (lesson) => lesson.classification === "portable" && !phase.excluded.has(lesson.gateId)
@@ -177,7 +181,7 @@ export function ExportApp(props: {
     return (
       <AdviceApplyFlow
         recommendation={{ id: `${report.playbookName} (${included.length} lesson(s))` }}
-        onPlan={() => props.onPlan(report, included)}
+        onPlan={() => props.onPlan(report, included, includeSkills)}
         onApply={async (plan, force) => {
           const result = await props.onApply(plan, force);
           setApplied(true);
@@ -258,6 +262,9 @@ export function ExportApp(props: {
             <text style={{ flexShrink: 0 }} fg={palette.gold}>
               {`${lessons.length} lesson(s) · ${lessons.filter((lesson) => lesson.classification === "portable" && !phase.excluded.has(lesson.gateId)).length} included · enter reviews the exact files`}
             </text>
+            <text style={{ flexShrink: 0 }} fg={includeSkills ? palette.success : palette.muted}>
+              {`[${includeSkills ? "x" : " "}] i: also copy the ${invokedSkills(phase.report.evidence.skillUsage).length} invoked skill(s) into the export (off = the goal makes the next agent author equivalents first)`}
+            </text>
             {lessons.map((lesson, index) => {
               const focused = index === selectedIndex;
               const includable = lesson.classification === "portable";
@@ -293,14 +300,13 @@ export async function runExportApp(
   targetDir: string,
   options: { session?: SessionAgentContext } = {}
 ): Promise<void> {
-  const backend = options.session?.backend ?? "claude";
-  const { loadFarrierConfig } = await import("../config/farrier-config");
-  const models = await loadFarrierConfig({ projectDir: targetDir })
-    .then((loaded) => loaded.config.models)
-    .catch(() => ({}));
   // The consent screen names exactly what would run: the startup-picked
   // model/effort when set, the config default otherwise.
-  const settings = sessionModelSettings({ session: options.session, models, backend, role: "advise" });
+  const { backend, settings, backendLabel } = await loadSessionBackendSettings({
+    projectDir: targetDir,
+    session: options.session,
+    role: "advise"
+  });
 
   const { buildExportProposal, classifyExportLessons, createExportReport } = await import("../engine/export-harness");
   const { seedGateCatalog } = await import("../engine/gate-catalog");
@@ -326,7 +332,7 @@ export async function runExportApp(
       };
       createRoot(cliRenderer).render(
         <ExportApp
-          backendLabel={`${backend} (${settings.model ?? "default model"})`}
+          backendLabel={backendLabel}
           onMine={() => createExportReport({ targetDir, sendSessionEvidence: false })}
           onClassify={(report) =>
             classifyExportLessons({
@@ -339,8 +345,8 @@ export async function runExportApp(
               runner: defaultBackendRunner
             })
           }
-          onPlan={async (report, included) => {
-            const proposal = await buildExportProposal(report, { agents: [...agents], lessons: included });
+          onPlan={async (report, included, includeSkills) => {
+            const proposal = await buildExportProposal(report, { agents: [...agents], lessons: included, includeInvokedSkills: includeSkills });
             const plan: AdviceCreationPlan = {
               recommendationId: report.playbookName,
               summary: proposal.summary,

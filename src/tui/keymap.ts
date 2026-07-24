@@ -24,8 +24,10 @@ export type KeyChord =
   | "a"
   | "b"
   | "i"
+  | "p"
   | "q"
   | "r"
+  | "s"
   | "t"
   | "y"
   | "n";
@@ -83,8 +85,10 @@ const keyLabels: Record<KeyChord, string> = {
   a: "a",
   b: "b",
   i: "i",
+  p: "p",
   q: "q",
   r: "r",
+  s: "s",
   t: "t",
   y: "y",
   n: "n"

@@ -1,9 +1,7 @@
-import { basename, resolve } from "node:path";
+import { readdir, readFile, lstat, stat } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import type { ReasoningEffort } from "../config/farrier-config";
 import {
-  backendEnvironmentOverrides,
-  backendEnvironmentPassthrough,
-  backendFailureMessage,
   defaultBackendRunner,
   parseBackendJson,
   type AgentBackend,
@@ -17,11 +15,14 @@ import {
 } from "./gate-catalog";
 import { authorGoalArtifacts, type GoalArtifacts } from "./goal-authoring";
 import { goalFiles } from "./render-goal";
-import { prepareSessionEvidence, type SessionEvidence } from "./session-evidence";
+import { prepareSessionEvidence, type SessionEvidence, type SkillUsage } from "./session-evidence";
 import { buildPlaybookProposal, type ExportLesson, type PlaybookProposal } from "./export-playbook";
 import type { PlaybookGateCheckRule } from "../packs/types";
+import type { AdviceCreationFile } from "./advice-apply";
 import type { EnforcementAgent } from "./agent-selection";
-import { isolatedAuthoringTimeoutMs, withIsolatedExecution } from "./execution-isolation";
+import { normalizeAgents } from "./agent-selection";
+import { runIsolatedBackendText } from "./isolated-backend";
+import { nativeSkillRoots, projectSkillRoots } from "./skill-paths";
 
 /**
  * farrier export: finished project sessions to a portable playbook.
@@ -53,6 +54,12 @@ export type ExportOptions = {
    */
   sendSessionEvidence?: boolean;
   noLlm?: boolean;
+  /**
+   * The export bundle will copy the invoked skills (buildExportProposal's
+   * toggle); the goal contract must say "use them" instead of "author
+   * equivalents first".
+   */
+  includeInvokedSkills?: boolean;
   backend?: ExportBackend;
   model?: string;
   reasoningEffort?: ReasoningEffort;
@@ -86,7 +93,8 @@ export type ExportReport = {
 const maxPromptSteers = 120;
 const maxPromptClusters = 40;
 const maxRationaleChars = 500;
-const kebabCasePattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+/** Shared by the export and improve LLM contracts so their id rules stay aligned. */
+export const kebabCasePattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -153,7 +161,8 @@ export type LessonValidationResult =
   | { ok: true; lesson: ExportLesson; checkDrops: string[] }
   | { ok: false; reason: string; gateId?: string };
 
-function validIndexes(value: unknown, max: number): number[] | undefined {
+/** Evidence-index validation shared by the export and improve contracts. */
+export function validIndexes(value: unknown, max: number): number[] | undefined {
   if (value === undefined) return [];
   if (!Array.isArray(value)) return undefined;
   const indexes: number[] = [];
@@ -403,61 +412,18 @@ export async function classifyExportLessons(input: {
   const model = input.model ?? (input.backend === "claude" ? "sonnet" : "gpt-5.5");
   const prompt = buildExportPrompt({ catalog: input.catalog, annotated: input.annotated });
 
-  const command =
-    input.backend === "claude"
-      ? {
-          cmd: [
-            "claude", "-p", "--model", model,
-            ...(input.reasoningEffort ? ["--effort", input.reasoningEffort] : []),
-            "--permission-mode", "plan"
-          ],
-          stdin: prompt
-        }
-      : {
-          cmd: [
-            // The isolated workspace is a fresh, untrusted, non-git temp dir;
-            // codex ≥0.145 refuses it without --skip-git-repo-check.
-            "codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--model", model,
-            ...(input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : []),
-            prompt
-          ],
-          stdin: undefined
-        };
-
-  const isolated = await withIsolatedExecution({
+  // Export targets projects whose agent sessions may still be open; live
+  // rollout writes would otherwise fail the target fence on every run. The
+  // classification reads nothing from and stages nothing into the target.
+  const stdout = await runIsolatedBackendText({
     targetDir: input.targetDir,
-    nativeConfinement: input.backend === "codex",
-    environmentPassthrough: backendEnvironmentPassthrough(input.backend),
-    environmentOverrides: backendEnvironmentOverrides(input.backend),
-    // Classifying a whole project's evidence is a full reasoning pass.
-    timeoutMs: isolatedAuthoringTimeoutMs,
-    readOnlyWorkspace: true,
-    // Export targets projects whose agent sessions may still be open; live
-    // rollout writes would otherwise fail the target fence on every run. The
-    // classification reads nothing from and stages nothing into the target.
-    concurrentTargetWrites: "tolerate",
-    run: async ({ workspace, environment, redactValues, signal }) => ({
-      output: await input.runner({
-        cmd: command.cmd,
-        cwd: workspace,
-        stdin: command.stdin,
-        signal,
-        env: environment,
-        redactValues
-      }),
-      redactValues
-    })
+    backend: input.backend,
+    prompt,
+    model,
+    reasoningEffort: input.reasoningEffort,
+    runner: input.runner,
+    concurrentTargetWrites: "tolerate"
   });
-  const { output, redactValues } = isolated.value;
-
-  if (output.exitCode !== 0) {
-    throw new Error(backendFailureMessage({ backend: input.backend, exitCode: output.exitCode, output, redactValues }));
-  }
-  if (output.capture?.stdout.truncated) {
-    throw new Error(
-      `${input.backend} backend stdout exceeded the capture limit (received ${output.capture.stdout.byteCount} bytes; sha256 ${output.capture.stdout.sha256})`
-    );
-  }
 
   const context: LessonValidationContext = {
     catalogIds: new Set(input.catalog.map((entry) => entry.id)),
@@ -467,7 +433,7 @@ export async function classifyExportLessons(input: {
   };
   const lessons: ExportLesson[] = [];
   const dropped: DroppedLesson[] = [];
-  for (const raw of lessonsFromBackendOutput(output.stdout)) {
+  for (const raw of lessonsFromBackendOutput(stdout)) {
     const result = validateExportLesson(raw, context);
     if (result.ok) {
       context.seenGateIds.add(result.lesson.gateId);
@@ -548,6 +514,7 @@ export async function createExportReport(options: ExportOptions): Promise<Export
           annotated,
           lessons,
           skillUsage: evidence.skillUsage,
+          ...(options.includeInvokedSkills !== undefined ? { includeSkills: options.includeInvokedSkills } : {}),
           backend,
           model: options.model,
           reasoningEffort: options.reasoningEffort,
@@ -564,15 +531,113 @@ export async function createExportReport(options: ExportOptions): Promise<Export
   return { projectDir, playbookName, evidence, annotated, lessons, droppedLessons, llmClassified, ...(goal ? { goal } : {}), notes, errors };
 }
 
+const maxCopiedFilesPerSkill = 200;
+const maxCopiedBytesPerSkill = 2 * 1024 * 1024;
+
+/** The installed skills the sessions actually invoked — the copyable export set. */
+export function invokedSkills(skillUsage: readonly SkillUsage[]): SkillUsage[] {
+  return skillUsage.filter((skill) => skill.installed && !skill.missingSkillMd && skill.invocations > 0);
+}
+
+async function copySkillTree(
+  skillDir: string,
+  relative: string,
+  budget: { bytes: number },
+  out: Array<{ path: string; content: string; mode?: number }>
+): Promise<string | undefined> {
+  const entries = await readdir(join(skillDir, relative), { withFileTypes: true }).catch(() => []);
+  for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
+    const relPath = relative ? `${relative}/${entry.name}` : entry.name;
+    if (entry.isSymbolicLink()) return `skipped: ${relPath} is a symbolic link`;
+    if (entry.isDirectory()) {
+      const problem = await copySkillTree(skillDir, relPath, budget, out);
+      if (problem) return problem;
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const stats = await lstat(join(skillDir, relPath)).catch(() => undefined);
+    if (!stats?.isFile()) continue;
+    if (out.length >= maxCopiedFilesPerSkill) return `skipped: more than ${maxCopiedFilesPerSkill} files`;
+    if (budget.bytes + stats.size > maxCopiedBytesPerSkill) return `skipped: exceeds ${maxCopiedBytesPerSkill} bytes`;
+    const bytes = await readFile(join(skillDir, relPath)).catch(() => undefined);
+    if (bytes === undefined) continue;
+    if (bytes.includes(0)) return `skipped: ${relPath} is binary`;
+    budget.bytes += bytes.length;
+    out.push({
+      path: relPath,
+      content: bytes.toString("utf8"),
+      ...((stats.mode & 0o111) !== 0 ? { mode: stats.mode & 0o777 } : {})
+    });
+  }
+  return undefined;
+}
+
+/**
+ * Copies the skills the sessions actually invoked into the export plan, per
+ * agent's native root, so the receiving project starts with the proven set.
+ * Bounded and safe: a symlinked INSTALL root is followed (the skills package
+ * links shared trees), but nested symlinks and binary-carrying skills are
+ * skipped with a note, never half-copied.
+ */
+export async function collectInvokedSkillFiles(input: {
+  projectDir: string;
+  skillUsage: readonly SkillUsage[];
+  agents: readonly EnforcementAgent[];
+}): Promise<{ files: AdviceCreationFile[]; copied: string[]; notes: string[] }> {
+  const files: AdviceCreationFile[] = [];
+  const copied: string[] = [];
+  const notes: string[] = [];
+  const agents = normalizeAgents(input.agents);
+
+  for (const skill of invokedSkills(input.skillUsage)) {
+    let sourceDir: string | undefined;
+    for (const root of projectSkillRoots) {
+      const candidate = join(input.projectDir, root, skill.name);
+      // stat (not lstat) so a linked install resolves and a dangling link doesn't.
+      const stats = await stat(candidate).catch(() => undefined);
+      if (stats?.isDirectory()) {
+        sourceDir = candidate;
+        break;
+      }
+    }
+    if (!sourceDir) continue;
+
+    const tree: Array<{ path: string; content: string; mode?: number }> = [];
+    const problem = await copySkillTree(sourceDir, "", { bytes: 0 }, tree);
+    if (problem) {
+      notes.push(`Invoked skill ${skill.name} was not copied (${problem}).`);
+      continue;
+    }
+    if (tree.length === 0) {
+      notes.push(`Invoked skill ${skill.name} was not copied (empty or unreadable directory).`);
+      continue;
+    }
+    for (const agent of agents) {
+      for (const file of tree) {
+        files.push({
+          ...file,
+          path: `${nativeSkillRoots[agent]}/${skill.name}/${file.path}`,
+          purpose: `Invoked skill ${skill.name} (${skill.invocations} invocation(s) in the source sessions), copied into the export.`
+        });
+      }
+    }
+    copied.push(skill.name);
+  }
+  return { files, copied, notes };
+}
+
 /**
  * Deterministic assembly of the reviewed report into an installable file
  * plan. When the consented pass authored a goal, GOAL.md + README.md lead
  * the plan and GOAL.md is the driver: the playbook skill and its gates are
- * the material the goal contract points at, not a second orchestrator.
+ * the material the goal contract points at, not a second orchestrator. The
+ * includeInvokedSkills toggle additionally copies the skills the source
+ * sessions actually invoked; without it, the goal contract makes the next
+ * agent generate equivalents first.
  */
 export async function buildExportProposal(
   report: ExportReport,
-  input: { agents: readonly EnforcementAgent[]; lessons?: readonly ExportLesson[] }
+  input: { agents: readonly EnforcementAgent[]; lessons?: readonly ExportLesson[]; includeInvokedSkills?: boolean }
 ): Promise<PlaybookProposal> {
   const proposal = await buildPlaybookProposal({
     projectDir: report.projectDir,
@@ -582,11 +647,29 @@ export async function buildExportProposal(
     catalog: seedGateCatalog,
     agents: input.agents
   });
-  if (proposal.files.length === 0 || !report.goal) return proposal;
+  if (proposal.files.length === 0) return proposal;
+
+  let files = proposal.files;
+  let summary = proposal.summary;
+  if (input.includeInvokedSkills) {
+    const bundle = await collectInvokedSkillFiles({
+      projectDir: report.projectDir,
+      skillUsage: report.evidence.skillUsage,
+      agents: input.agents
+    });
+    const planned = new Set(files.map((file) => file.path));
+    files = [...files, ...bundle.files.filter((file) => !planned.has(file.path))];
+    if (bundle.copied.length > 0) {
+      summary = `${summary} Copies ${bundle.copied.length} invoked skill(s): ${bundle.copied.join(", ")}.`;
+    }
+    for (const note of bundle.notes) summary = `${summary} ${note}`;
+  }
+
+  if (!report.goal) return { ...proposal, files, summary };
   return {
     ...proposal,
-    files: [...goalFiles(report.goal), ...proposal.files],
-    summary: `${proposal.summary} GOAL.md and README.md make the install runnable as a /goal (Claude Code v2.1.139+, Codex 0.128.0+).`
+    files: [...goalFiles(report.goal), ...files],
+    summary: `${summary} GOAL.md and README.md make the install runnable as a /goal (Claude Code v2.1.139+, Codex 0.128.0+).`
   };
 }
 

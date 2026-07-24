@@ -13,7 +13,9 @@ import {
 } from "../engine/proposal-apply";
 import { AdviceApplyFlow, advicePlanPreviewLines } from "./AdviceApplyFlow";
 import { DetailPane, KeyHints, palette, useSpinner, type PaneLine } from "./chrome";
+import { ImproveAnalysisFlow, type ImproveAnalysisDeps } from "./ImproveAnalysisFlow";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
+import { loadSessionBackendSettings, type SessionAgentContext } from "./session-context";
 
 /**
  * The Improve surface, tier one: deterministic failure mining over this
@@ -73,10 +75,13 @@ export function LearnApp(props: {
   llmBackendLabel?: string;
   /** Skill suggestions jump to the Skills surface with the query prefilled. */
   onFindSkills?: (query: string) => void;
+  /** The session-evidence analysis (select sessions → consent → typed proposals). */
+  analysis?: ImproveAnalysisDeps;
 }) {
   const [phase, setPhase] = useState<LearnPhase>({ kind: "mining" });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [reviewing, setReviewing] = useState<PrimitiveProposal>();
+  const [analyzing, setAnalyzing] = useState(false);
   const [appliedIds, setAppliedIds] = useState<ReadonlySet<string>>(new Set());
   const [actionMessage, setActionMessage] = useState<string>();
   const bodyScrollRef = useRef<ScrollBoxRenderable | null>(null);
@@ -97,15 +102,18 @@ export function LearnApp(props: {
   }, []);
 
   const deeperBindings = props.onDeeper ? [binding("a", "deeper", "LLM analysis")] : [];
+  const analysisBindings = props.analysis ? [binding("s", "analyze", "learn from sessions")] : [];
   const listBindings = defineBindings(
     binding(["up", "down"], "move", "proposals"),
     binding("enter", "activate", "review"),
+    ...analysisBindings,
     ...deeperBindings,
     binding(["pageup", "pagedown"], "scroll", "scroll"),
     binding(["escape", "b"], "back", "launcher"),
     binding(["q", "ctrl+c"], "quit", "quit")
   );
   const idleBindings = defineBindings(
+    ...analysisBindings,
     ...deeperBindings,
     binding(["escape", "b"], "back", "launcher"),
     binding(["q", "ctrl+c"], "quit", "quit")
@@ -115,9 +123,10 @@ export function LearnApp(props: {
   const activeBindings = phase.kind === "list" && proposals.length > 0 ? listBindings : idleBindings;
 
   useKeyboard((key) => {
-    if (reviewing) return;
+    if (reviewing || analyzing) return;
     const intent = resolveIntent(activeBindings, key);
     if (intent === "back" || intent === "quit") props.onExit();
+    else if (intent === "analyze" && phase.kind !== "mining") setAnalyzing(true);
     else if (intent === "deeper" && phase.kind !== "mining") props.onDeeper?.();
     else if (intent === "scroll") bodyScrollRef.current?.scrollBy(key.name === "pagedown" ? 0.85 : -0.85, "viewport");
     else if (intent === "move") {
@@ -153,6 +162,20 @@ export function LearnApp(props: {
     }
   });
 
+  if (analyzing && props.analysis) {
+    return (
+      <ImproveAnalysisFlow
+        {...props.analysis}
+        onFindSkills={(query) => {
+          if (props.onFindSkills) props.onFindSkills(query);
+          else setAnalyzing(false);
+        }}
+        onBack={() => setAnalyzing(false)}
+        onExit={props.onExit}
+      />
+    );
+  }
+
   if (reviewing) {
     const proposal = reviewing;
     return (
@@ -184,6 +207,11 @@ export function LearnApp(props: {
       <box style={{ flexDirection: "column", flexShrink: 0 }}>
         <text fg={palette.accent}>✦ Improve</text>
         <text fg={palette.muted}>Counts repeated failures in this project's local session transcripts. Counting stays on this computer.</text>
+        {props.analysis ? (
+          <text fg={palette.faint}>
+            {`Learn from sessions: s picks sessions and proposes typed harness changes (with ${props.analysis.backendLabel}).`}
+          </text>
+        ) : null}
         {props.onDeeper ? (
           <text fg={palette.faint}>
             {`Deeper pass: a runs the LLM analysis (repo + consented session evidence${props.llmBackendLabel ? ` with ${props.llmBackendLabel}` : ""}).`}
@@ -275,13 +303,68 @@ export function LearnApp(props: {
 
 export async function runImproveApp(
   targetDir: string,
-  options: { llmAnalysisAvailable?: boolean; llmBackendLabel?: string } = {}
+  options: { llmAnalysisAvailable?: boolean; llmBackendLabel?: string; session?: SessionAgentContext } = {}
 ): Promise<ImproveOutcome> {
-  const loadCatalog = async () => {
+  // Memoized: the review keypress path plans against the same catalog; do
+  // not re-read manifest refs and registry files on every Enter. A rejection
+  // is not cached — a transient read failure must stay retryable.
+  let catalogPromise: ReturnType<typeof loadCatalogOnce> | undefined;
+  const loadCatalogOnce = async () => {
     const { loadConfiguredCatalog, registryRefsFromManifest } = await import("../cli/registry");
     const requireRefs = await registryRefsFromManifest(targetDir);
     return loadConfiguredCatalog({ targetDir, requireRefs });
   };
+  const loadCatalog = () =>
+    (catalogPromise ??= loadCatalogOnce().catch((error: unknown) => {
+      catalogPromise = undefined;
+      throw error;
+    }));
+
+  let analysis: ImproveAnalysisDeps | undefined;
+  if (options.llmAnalysisAvailable) {
+    // The consent screen names exactly what would run: the startup-picked
+    // model/effort when set, the config default otherwise. The engine
+    // modules load lazily inside each callback so the Improve list renders
+    // without paying for an analysis the user may never start.
+    const { backend, settings, backendLabel } = await loadSessionBackendSettings({
+      projectDir: targetDir,
+      session: options.session,
+      role: "advise"
+    });
+
+    analysis = {
+      backendLabel,
+      onListSessions: async () => {
+        const { listImproveSessions } = await import("../engine/improve-sessions");
+        return listImproveSessions({ targetDir });
+      },
+      onMine: async (selection) => {
+        const { mineImproveEvidence } = await import("../engine/improve-authoring");
+        return mineImproveEvidence({ targetDir, ...(selection ? { selection } : {}) });
+      },
+      onAuthor: async (input) => {
+        const { authorImproveProposals } = await import("../engine/improve-authoring");
+        const { defaultBackendRunner } = await import("../engine/backend");
+        return authorImproveProposals({
+          targetDir,
+          ...input,
+          backend,
+          model: settings.model,
+          reasoningEffort: settings.reasoningEffort,
+          runner: defaultBackendRunner
+        });
+      },
+      onPlan: async (proposal) => {
+        const { planImproveProposal } = await import("../engine/improve-apply");
+        return planImproveProposal({ targetDir, proposal, catalog: await loadCatalog() });
+      },
+      onApply: async (plan, force) => {
+        const { applyImprovePlan } = await import("../engine/improve-apply");
+        return applyImprovePlan(targetDir, plan, force);
+      }
+    };
+  }
+
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
   try {
     renderer = await createCliRenderer();
@@ -303,6 +386,7 @@ export async function runImproveApp(
           onDeeper={options.llmAnalysisAvailable ? () => finish({ kind: "advise" }) : undefined}
           llmBackendLabel={options.llmBackendLabel}
           onFindSkills={(query) => finish({ kind: "find-skills", query })}
+          analysis={analysis}
         />
       );
     });

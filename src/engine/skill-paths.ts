@@ -42,6 +42,9 @@ export const nativeSkillRoots: Record<SkillAgent, string> = {
 
 export const canonicalSkillRoot = "skills";
 
+/** Every root a project skill may live under; order matters (first root wins). */
+export const projectSkillRoots = [canonicalSkillRoot, nativeSkillRoots.codex, nativeSkillRoots.claude] as const;
+
 export function resolvedHomedir(): string {
   return process.env.HOME || homedir();
 }

@@ -1,6 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { boundSessionText, stripSessionAmbient } from "./advice-patterns";
+import { projectSkillRoots } from "./skill-paths";
 import { defaultTranscriptDir } from "./learn";
 import { SignalCollector, scanClaudeTranscripts, type FailureSignal, type SkillInvocationEvent } from "./learn-signals";
 import { scanCodexSessions } from "./learn-signals-codex";
@@ -56,6 +57,17 @@ export type SessionEvidence = {
   notes: string[];
 };
 
+/**
+ * The user-selected sessions, expressed in each backend's own file identity:
+ * Claude transcript stems (file name without .jsonl) and Codex thread ids
+ * (rollout file names embed the thread uuid). An empty set means "none of
+ * this backend's sessions"; an absent field means "all of them".
+ */
+export type SessionSelection = {
+  claudeStems?: ReadonlySet<string>;
+  codexThreadIds?: ReadonlySet<string>;
+};
+
 export type SessionEvidenceOptions = {
   projectDir: string;
   /** Override for tests; defaults to ~/.codex/sessions. */
@@ -63,6 +75,8 @@ export type SessionEvidenceOptions = {
   /** Claude JSONL transcripts for failure clusters; defaults to ~/.claude/projects/<slug>. */
   claudeTranscriptsDir?: string;
   maxFiles?: number;
+  /** Restrict mining to the user-selected sessions. Absent = every session. */
+  selection?: SessionSelection;
 };
 
 const maxSteerBytes = 1_500;
@@ -109,11 +123,14 @@ export function steerFromUserMessage(raw: string): { text: string; truncated: bo
 
 /**
  * Skill directories on disk across the three roots, deduplicated by name.
- * missingSkillMd stays true only when NO root provides a SKILL.md.
+ * missingSkillMd stays true only when NO root provides a SKILL.md;
+ * skillMdPath is the first root's readable SKILL.md (for descriptions).
  */
-async function installedSkillDirs(projectDir: string): Promise<Map<string, { missingSkillMd: boolean }>> {
-  const installed = new Map<string, { missingSkillMd: boolean }>();
-  for (const root of ["skills", ".agents/skills", ".claude/skills"]) {
+export async function installedSkillDirs(
+  projectDir: string
+): Promise<Map<string, { missingSkillMd: boolean; skillMdPath?: string }>> {
+  const installed = new Map<string, { missingSkillMd: boolean; skillMdPath?: string }>();
+  for (const root of projectSkillRoots) {
     const dir = join(projectDir, root);
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
@@ -124,11 +141,15 @@ async function installedSkillDirs(projectDir: string): Promise<Map<string, { mis
         .then((stats) => stats.isDirectory())
         .catch(() => false);
       if (!isDirectory) continue;
-      const hasSkillMd = await stat(join(dir, entry.name, "SKILL.md"))
+      const skillMdPath = join(dir, entry.name, "SKILL.md");
+      const hasSkillMd = await stat(skillMdPath)
         .then((stats) => stats.isFile())
         .catch(() => false);
       const existing = installed.get(entry.name);
-      installed.set(entry.name, { missingSkillMd: (existing?.missingSkillMd ?? true) && !hasSkillMd });
+      installed.set(entry.name, {
+        missingSkillMd: (existing?.missingSkillMd ?? true) && !hasSkillMd,
+        ...(existing?.skillMdPath ? { skillMdPath: existing.skillMdPath } : hasSkillMd ? { skillMdPath } : {})
+      });
     }
   }
   return installed;
@@ -164,7 +185,8 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
     maxFiles: options.maxFiles,
     collector,
     onUserMessage: collectSteer,
-    onSkillInvocation: collectSkill
+    onSkillInvocation: collectSkill,
+    ...(options.selection?.codexThreadIds ? { includeThreadIds: options.selection.codexThreadIds } : {})
   });
 
   const claude = await scanClaudeTranscripts(
@@ -174,7 +196,9 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
       // The Claude scanner's sessionRefs are bare transcript stems; prefix the
       // source so mixed-backend evidence stays attributable.
       onUserMessage: ({ text, sessionRef, date }) => collectSteer({ text, sessionRef: `claude:${sessionRef}`, date }),
-      onSkillInvocation: ({ skill, sessionRef, date }) => collectSkill({ skill, sessionRef: `claude:${sessionRef}`, date })
+      onSkillInvocation: ({ skill, sessionRef, date }) => collectSkill({ skill, sessionRef: `claude:${sessionRef}`, date }),
+      ...(options.selection?.claudeStems ? { includeStems: options.selection.claudeStems } : {}),
+      ...(options.maxFiles !== undefined ? { maxFiles: options.maxFiles } : {})
     }
   );
 
@@ -202,6 +226,10 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
   }
   if (omittedSteers > 0) {
     notes.push(`Steer extraction kept the newest ${maxSteers} steer(s); ${omittedSteers} older one(s) were omitted.`);
+  }
+  if (options.selection) {
+    const selected = (options.selection.claudeStems?.size ?? 0) + (options.selection.codexThreadIds?.size ?? 0);
+    notes.push(`Mining was restricted to the ${selected} selected session(s).`);
   }
   notes.push(
     `Session evidence: ${steers.length} steer(s) from ${codex.filesMatched} codex session(s) ` +

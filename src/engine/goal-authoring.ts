@@ -1,14 +1,7 @@
 import type { ReasoningEffort } from "../config/farrier-config";
-import {
-  backendEnvironmentOverrides,
-  backendEnvironmentPassthrough,
-  backendFailureMessage,
-  parseBackendJson,
-  type AgentBackend,
-  type BackendCommandRunner
-} from "./backend";
+import { parseBackendJson, type AgentBackend, type BackendCommandRunner } from "./backend";
 import { gateSubagents, type ExportLesson } from "./export-playbook";
-import { isolatedAuthoringTimeoutMs, withIsolatedExecution } from "./execution-isolation";
+import { runIsolatedBackendText } from "./isolated-backend";
 import type { AnnotatedSessionEvidence } from "./gate-catalog";
 import type { SkillUsage } from "./session-evidence";
 
@@ -62,6 +55,8 @@ export function buildGoalPrompt(input: {
   annotated: AnnotatedSessionEvidence;
   lessons: readonly ExportLesson[];
   skillUsage: readonly SkillUsage[];
+  /** True when the export bundle copies the invoked skills alongside GOAL.md. */
+  includeSkills?: boolean;
 }): string {
   const reviewers = reviewerNamesForLessons(input.lessons);
   const steers = input.annotated.steers.slice(0, maxPromptSteers).map((steer, index) => ({
@@ -123,7 +118,10 @@ ${JSON.stringify(steers, null, 2)}
 Failure clusters (deterministic counts; cite by index):
 ${JSON.stringify(clusters, null, 2)}
 
-Installed skills with per-skill invocation counts from the source sessions (use them in Boundaries: subagents name their skills; never paste the catalog into the main thread):
+${input.includeSkills
+    ? "This export BUNDLES the skills the source sessions invoked. Boundaries must direct the workflow's subagents to use them by name; never paste the catalog into the main thread."
+    : "No project skills ship with this export. GOAL.md's first phase must make the agent author equivalent skills (the list below shows what the source workflow actually used) before any feature work."}
+Installed skills with per-skill invocation counts from the source sessions:
 ${JSON.stringify(skills, null, 2)}
 `;
 }
@@ -189,6 +187,8 @@ export async function authorGoalArtifacts(input: {
   annotated: AnnotatedSessionEvidence;
   lessons: readonly ExportLesson[];
   skillUsage: readonly SkillUsage[];
+  /** True when the export bundle copies the invoked skills alongside GOAL.md. */
+  includeSkills?: boolean;
   backend: AgentBackend;
   model?: string;
   reasoningEffort?: ReasoningEffort;
@@ -199,62 +199,23 @@ export async function authorGoalArtifacts(input: {
     playbookName: input.playbookName,
     annotated: input.annotated,
     lessons: input.lessons,
-    skillUsage: input.skillUsage
+    skillUsage: input.skillUsage,
+    ...(input.includeSkills !== undefined ? { includeSkills: input.includeSkills } : {})
   });
 
-  const command =
-    input.backend === "claude"
-      ? {
-          cmd: [
-            "claude", "-p", "--model", model,
-            ...(input.reasoningEffort ? ["--effort", input.reasoningEffort] : []),
-            "--permission-mode", "plan"
-          ],
-          stdin: prompt
-        }
-      : {
-          cmd: [
-            "codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--model", model,
-            ...(input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : []),
-            prompt
-          ],
-          stdin: undefined
-        };
-
-  const isolated = await withIsolatedExecution({
+  // Same fence posture as lesson classification: the source project's agent
+  // sessions may still be open; nothing is read from or staged into it.
+  const stdout = await runIsolatedBackendText({
     targetDir: input.targetDir,
-    nativeConfinement: input.backend === "codex",
-    environmentPassthrough: backendEnvironmentPassthrough(input.backend),
-    environmentOverrides: backendEnvironmentOverrides(input.backend),
-    timeoutMs: isolatedAuthoringTimeoutMs,
-    readOnlyWorkspace: true,
-    // Same fence posture as lesson classification: the source project's agent
-    // sessions may still be open; nothing is read from or staged into it.
-    concurrentTargetWrites: "tolerate",
-    run: async ({ workspace, environment, redactValues, signal }) => ({
-      output: await input.runner({
-        cmd: command.cmd,
-        cwd: workspace,
-        stdin: command.stdin,
-        signal,
-        env: environment,
-        redactValues
-      }),
-      redactValues
-    })
+    backend: input.backend,
+    prompt,
+    model,
+    reasoningEffort: input.reasoningEffort,
+    runner: input.runner,
+    concurrentTargetWrites: "tolerate"
   });
-  const { output, redactValues } = isolated.value;
 
-  if (output.exitCode !== 0) {
-    throw new Error(backendFailureMessage({ backend: input.backend, exitCode: output.exitCode, output, redactValues }));
-  }
-  if (output.capture?.stdout.truncated) {
-    throw new Error(
-      `${input.backend} backend stdout exceeded the capture limit (received ${output.capture.stdout.byteCount} bytes; sha256 ${output.capture.stdout.sha256})`
-    );
-  }
-
-  const validated = validateGoalArtifacts(goalFromBackendOutput(output.stdout), {
+  const validated = validateGoalArtifacts(goalFromBackendOutput(stdout), {
     hasLessons: input.lessons.length > 0,
     requiresApproval: reviewerNamesForLessons(input.lessons).length > 0
   });

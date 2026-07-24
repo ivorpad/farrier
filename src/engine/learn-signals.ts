@@ -598,6 +598,13 @@ export type ClaudeTranscriptScanOptions = {
   onUserMessage?: (event: ClaudeUserMessageEvent) => void;
   /** Tap for skill invocations (Skill tool, slash commands, skill-tree reads). */
   onSkillInvocation?: (event: SkillInvocationEvent) => void;
+  /**
+   * Restrict the scan to these transcript stems (file name without .jsonl):
+   * the user-selected sessions. Absent = every transcript in the directory.
+   */
+  includeStems?: ReadonlySet<string>;
+  /** Per-scan file cap; defaults to learn's counting cap. */
+  maxFiles?: number;
 };
 
 /** Scans Claude transcript JSONL files into a shared collector (merged-source mining). */
@@ -615,14 +622,18 @@ export async function scanClaudeTranscripts(
     return { notes: [`Transcript directory not found or unreadable: ${transcriptsDir}`], filesScanned: 0 };
   }
 
-  const files = entries.filter((entry) => entry.endsWith(".jsonl")).sort();
-  if (files.length > signalScanMaxFiles) {
-    notes.push(`Scanned the first ${signalScanMaxFiles} of ${files.length} transcript files.`);
+  const maxFiles = options.maxFiles ?? signalScanMaxFiles;
+  const files = entries
+    .filter((entry) => entry.endsWith(".jsonl"))
+    .filter((entry) => options.includeStems === undefined || options.includeStems.has(entry.replace(/\.jsonl$/, "")))
+    .sort();
+  if (files.length > maxFiles) {
+    notes.push(`Scanned the first ${maxFiles} of ${files.length} transcript files.`);
   }
 
   let filesScanned = 0;
   let malformedLines = 0;
-  for (const file of files.slice(0, signalScanMaxFiles)) {
+  for (const file of files.slice(0, maxFiles)) {
     const sessionRef = file.replace(/\.jsonl$/, "");
     let text: string;
     try {

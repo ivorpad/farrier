@@ -151,6 +151,12 @@ export type PackSubagent = {
   /** Defaults to read-only: review subagents judge, they do not edit. */
   sandboxMode?: "read-only" | "workspace-write";
   developerInstructions: string;
+  /**
+   * Installed skills scoped to this subagent: loaded into ITS context
+   * (Claude `skills:` frontmatter, Codex `[[skills.config]]`), so they stay
+   * out of the main thread's skill-listing budget.
+   */
+  skills?: readonly string[];
 };
 
 export type PlaybookReference = {

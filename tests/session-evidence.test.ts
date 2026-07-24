@@ -275,6 +275,47 @@ describe("prepareSessionEvidence", () => {
     expect(evidence.notes.join("\n")).toContain("Skill usage: 4 installed, 1 invoked in the scanned sessions, 3 never invoked, 1 without a SKILL.md.");
   });
 
+  test("a session selection restricts mining to the chosen files, per backend", async () => {
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
+    const transcripts = await tempDir("farrier-export-claude-");
+
+    await writeRollout(sessions, "rollout-2026-07-22T08-00-00-019f0000-0000-0000-0000-00000000aaaa", [
+      sessionMeta(project),
+      userMessage("selected codex steer")
+    ]);
+    await writeRollout(sessions, "rollout-2026-07-22T09-00-00-019f0000-0000-0000-0000-00000000bbbb", [
+      sessionMeta(project),
+      userMessage("unselected codex steer")
+    ]);
+    const claudeRecord = (text: string): string =>
+      JSON.stringify({ type: "user", timestamp: "2026-07-23T10:00:00.000Z", message: { role: "user", content: text } });
+    await writeFile(join(transcripts, "chosen-session.jsonl"), `${claudeRecord("selected claude steer")}\n`, "utf8");
+    await writeFile(join(transcripts, "other-session.jsonl"), `${claudeRecord("unselected claude steer")}\n`, "utf8");
+
+    const evidence = await prepareSessionEvidence({
+      projectDir: project,
+      codexSessionsDir: sessions,
+      claudeTranscriptsDir: transcripts,
+      selection: {
+        claudeStems: new Set(["chosen-session"]),
+        codexThreadIds: new Set(["019f0000-0000-0000-0000-00000000aaaa"])
+      }
+    });
+
+    expect(evidence.steers.map((steer) => steer.text).sort()).toEqual(["selected claude steer", "selected codex steer"]);
+    expect(evidence.notes.join("\n")).toContain("restricted to the 2 selected session(s)");
+
+    // An empty per-backend set means none of that backend's sessions.
+    const claudeOnly = await prepareSessionEvidence({
+      projectDir: project,
+      codexSessionsDir: sessions,
+      claudeTranscriptsDir: transcripts,
+      selection: { claudeStems: new Set(["chosen-session"]), codexThreadIds: new Set() }
+    });
+    expect(claudeOnly.steers.map((steer) => steer.text)).toEqual(["selected claude steer"]);
+  });
+
   test("learn's default collector still excludes work-loop failures and applies thresholds", async () => {
     const project = await tempDir("farrier-export-project-");
     const sessions = await tempDir("farrier-export-sessions-");

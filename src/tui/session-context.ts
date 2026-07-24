@@ -88,6 +88,27 @@ export function sessionModelSettings(input: {
 }
 
 /**
+ * The full backend+model resolution one surface needs to run farrier's own
+ * LLM work: the startup-picked backend (claude fallback), the role-resolved
+ * model settings, and the label consent screens show — so "the consent
+ * screen names exactly what would run" is enforced in one place instead of
+ * per-surface copies.
+ */
+export async function loadSessionBackendSettings(input: {
+  projectDir: string;
+  session: SessionAgentContext | undefined;
+  role: ModelRole;
+}): Promise<{ backend: AgentBackend; settings: ResolvedModelSettings; backendLabel: string }> {
+  const backend = input.session?.backend ?? "claude";
+  const { loadFarrierConfig } = await import("../config/farrier-config");
+  const models = await loadFarrierConfig({ projectDir: input.projectDir })
+    .then((loaded) => loaded.config.models)
+    .catch(() => ({}));
+  const settings = sessionModelSettings({ session: input.session, models, backend, role: input.role });
+  return { backend, settings, backendLabel: `${backend} (${settings.model ?? "default model"})` };
+}
+
+/**
  * Which backend a surface may run against a live availability probe: with a
  * startup pick, the chosen backend or nothing — never the other one (the user
  * said which agent they work with). The claude-first fallback only serves

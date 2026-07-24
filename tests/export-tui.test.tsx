@@ -29,6 +29,7 @@ function report(lessons: ExportLesson[]): ExportReport {
       projectDir: "/tmp/walkledger",
       steers: [{ text: "take screenshots of every single page", sessionRef: "codex:a", date: "2026-07-22", truncated: false }],
       failureClusters: [],
+      skillUsage: [{ name: "swiftui-pro", invocations: 2, sessions: 1, installed: true, missingSkillMd: false }],
       codexSessionsMatched: 2,
       codexSessionsScanned: 3,
       notes: []
@@ -174,6 +175,29 @@ describe("export lesson review", () => {
       await interact(view, () => view.mockInput.pressEnter());
       await view.waitFor(() => applies.length === 1);
       expect(applies[0]!.plan.recommendationId).toBe("walkledger-playbook");
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("i toggles the invoked-skills copy and onPlan receives it", async () => {
+    const includeCalls: boolean[] = [];
+    const view = await renderExport({
+      onPlan: async (_report, _lessons, includeSkills) => {
+        includeCalls.push(includeSkills);
+        return planned();
+      }
+    });
+    try {
+      await view.waitForFrame((value) => value.includes("Classify lessons with"));
+      await interact(view, () => view.mockInput.typeText("n"));
+      const off = await view.waitForFrame((value) => value.includes("invoked skill(s) into the export"));
+      expect(off).toContain("[ ] i: also copy the 1 invoked skill(s)");
+      await interact(view, () => view.mockInput.typeText("i"));
+      await view.waitForFrame((value) => value.includes("[x] i: also copy the 1 invoked skill(s)"));
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() => includeCalls.length === 1);
+      expect(includeCalls[0]).toBe(true);
     } finally {
       await interact(view, () => view.renderer.destroy());
     }

@@ -287,11 +287,25 @@ export async function scanCodexSessions(input: {
   onUserMessage?: (event: CodexUserMessageEvent) => void;
   /** Tap for skill invocations (shell reads into a skill's directory). */
   onSkillInvocation?: (event: SkillInvocationEvent) => void;
+  /**
+   * Restrict the scan to rollout files whose name carries one of these thread
+   * ids (rollout file names embed the thread uuid): the user-selected
+   * sessions. Absent = every rollout that mentions the project.
+   */
+  includeThreadIds?: ReadonlySet<string>;
 }): Promise<CodexSourceScan> {
   const notes: string[] = [];
   const maxFiles = input.maxFiles ?? signalScanMaxFiles;
   const sessionsDir = input.sessionsDir ?? defaultCodexSessionsDir();
-  const { files, found } = await listRolloutFiles(sessionsDir);
+  const listed = await listRolloutFiles(sessionsDir);
+  const found = listed.found;
+  const threadIds = input.includeThreadIds === undefined ? undefined : Array.from(input.includeThreadIds);
+  const files = threadIds === undefined
+    ? listed.files
+    : listed.files.filter((file) => {
+        const name = basename(file);
+        return threadIds.some((threadId) => name.includes(threadId));
+      });
   if (!found || files.length === 0) return { notes, filesScanned: 0, filesMatched: 0, sessionsDirFound: found };
 
   const resolveCache = new Map<string, string>();

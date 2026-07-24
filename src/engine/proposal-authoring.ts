@@ -1,14 +1,7 @@
 import type { ReasoningEffort } from "../config/farrier-config";
-import {
-  backendEnvironmentOverrides,
-  backendEnvironmentPassthrough,
-  backendFailureMessage,
-  parseBackendJson,
-  type AgentBackend,
-  type BackendCommandRunner
-} from "./backend";
+import { parseBackendJson, type AgentBackend, type BackendCommandRunner } from "./backend";
 import { createEvidenceSet } from "./behavior-evidence";
-import { isolatedAuthoringTimeoutMs, withIsolatedExecution } from "./execution-isolation";
+import { runIsolatedBackendText } from "./isolated-backend";
 import type { PrimitiveProposal } from "./failure-router";
 import type { FailureSignal } from "./learn-signals";
 
@@ -373,65 +366,15 @@ async function requestProposalRefinements(input: RefineProposalTextOptions): Pro
     evidenceDigest: evidence.digest
   });
 
-  const command =
-    input.backend === "claude"
-      ? {
-          cmd: [
-            "claude", "-p", "--model", model,
-            ...(input.reasoningEffort ? ["--effort", input.reasoningEffort] : []),
-            "--permission-mode", "plan"
-          ],
-          stdin: prompt
-        }
-      : {
-          cmd: [
-            // The isolated workspace is a fresh, untrusted, non-git temp dir;
-            // codex ≥0.145 refuses it without --skip-git-repo-check.
-            "codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--model", model,
-            ...(input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : []),
-            prompt
-          ],
-          stdin: undefined
-        };
-
-  const isolated = await withIsolatedExecution({
+  const stdout = await runIsolatedBackendText({
     targetDir: input.targetDir,
-    nativeConfinement: input.backend === "codex",
-    environmentPassthrough: backendEnvironmentPassthrough(input.backend),
-    environmentOverrides: backendEnvironmentOverrides(input.backend),
-    // Proposal-text refinement is a full backend reasoning pass; the 120s
-    // fallback is too short for a large model at high effort.
-    timeoutMs: isolatedAuthoringTimeoutMs,
-    readOnlyWorkspace: true,
-    run: async ({ workspace, environment, redactValues, signal }) => ({
-      output: await input.runner({
-        cmd: command.cmd,
-        cwd: workspace,
-        stdin: command.stdin,
-        signal,
-        env: environment,
-        redactValues
-      }),
-      redactValues
-    })
+    backend: input.backend,
+    prompt,
+    model,
+    reasoningEffort: input.reasoningEffort,
+    runner: input.runner
   });
-  const { output, redactValues } = isolated.value;
-
-  if (output.exitCode !== 0) {
-    throw new Error(backendFailureMessage({
-      backend: input.backend,
-      exitCode: output.exitCode,
-      output,
-      redactValues
-    }));
-  }
-  if (output.capture?.stdout.truncated) {
-    throw new Error(
-      `${input.backend} backend stdout exceeded the capture limit (received ${output.capture.stdout.byteCount} bytes; sha256 ${output.capture.stdout.sha256})`
-    );
-  }
-
-  return refinementArrayFromBackendOutput(output.stdout);
+  return refinementArrayFromBackendOutput(stdout);
 }
 
 /**

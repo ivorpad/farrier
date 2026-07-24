@@ -1,6 +1,6 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { SessionIndexEntry } from "../engine/advice-sessions";
 import type { AgentBackend } from "../engine/backend";
 import { backendName } from "./advice-presenter";
@@ -8,11 +8,13 @@ import { KeyHints, palette } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
 /** One picker row: recency, turn count when the provider reports one, and the
- * session's own first-request preview (codex `preview` / Claude head read). */
-export function adviceSessionPickerRowLabel(entry: SessionIndexEntry): string {
+ * session's own first-request preview (codex `preview` / Claude head read).
+ * Mixed-provider lists (Improve mines both backends) prefix the provider. */
+export function adviceSessionPickerRowLabel(entry: SessionIndexEntry, mixedProviders = false): string {
   const when = entry.updatedAt.slice(0, 16).replace("T", " ");
   const turns = entry.approximateTurns === undefined ? "" : ` · ${entry.approximateTurns} turn(s)`;
-  return `${when}${turns} · ${entry.label ?? "no preview available"}`;
+  const provider = mixedProviders ? `${entry.provider} · ` : "";
+  return `${provider}${when}${turns} · ${entry.label ?? "no preview available"}`;
 }
 
 /** Toggles one session in the selection, refusing additions past the cap. */
@@ -28,28 +30,53 @@ export function toggledSessionSelection(
   return { selected: [...selected, opaqueId], capped: false };
 }
 
-const pickerBindings = defineBindings(
-  binding(["up", "down"], "move", "choose"),
-  binding("space", "toggle", "include/exclude"),
-  binding("a", "all", "all/none"),
-  binding("enter", "confirm", "confirm"),
-  binding(["pageup", "pagedown"], "scroll", "scroll"),
-  binding(["escape", "b"], "back", "cancel"),
-);
+/** Recency presets: the newest N sessions become the starting selection. */
+export const sessionPickerPresets = [7, 15, 30, "all"] as const;
+export type SessionPickerPreset = (typeof sessionPickerPresets)[number];
+
+export function presetSelectionIds(
+  entries: readonly SessionIndexEntry[],
+  preset: SessionPickerPreset,
+  cap: number,
+): string[] {
+  const limit = preset === "all" ? cap : Math.min(preset, cap);
+  return entries.slice(0, limit).map((entry) => entry.opaqueId);
+}
 
 export function AdviceSessionPicker(props: {
-  backend: AgentBackend;
+  backend?: AgentBackend;
   entries: SessionIndexEntry[];
   selectionCap: number;
+  /** Show the 7/15/30/all recency presets (Improve/Export selection). */
+  presets?: boolean;
+  /** Header override when the list spans both backends. */
+  title?: string;
+  /** Caller-specific line under the header; the default fits the advise flow. */
+  subtitle?: string;
   onConfirm: (chosen: SessionIndexEntry[]) => void;
   onCancel: () => void;
 }) {
   const [cursor, setCursor] = useState(0);
   const [selectedIds, setSelectedIds] = useState<string[]>(
     () => props.entries.slice(0, props.selectionCap).map((entry) => entry.opaqueId));
+  const [presetIndex, setPresetIndex] = useState<number>();
   const [notice, setNotice] = useState<string>();
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
-  const name = backendName(props.backend);
+  const name = props.backend ? backendName(props.backend) : "agent";
+  const mixedProviders = useMemo(
+    () => new Set(props.entries.map((entry) => entry.provider)).size > 1,
+    [props.entries]
+  );
+
+  const pickerBindings = useMemo(() => defineBindings(
+    binding(["up", "down"], "move", "choose"),
+    binding("space", "toggle", "include/exclude"),
+    binding("a", "all", "all/none"),
+    ...(props.presets ? [binding("p", "preset", "presets 7/15/30/all")] : []),
+    binding("enter", "confirm", "confirm"),
+    binding(["pageup", "pagedown"], "scroll", "scroll"),
+    binding(["escape", "b"], "back", "cancel"),
+  ), [props.presets]);
 
   useKeyboard((key) => {
     const intent = resolveIntent(pickerBindings, key);
@@ -69,9 +96,16 @@ export function AdviceSessionPicker(props: {
       const cappedAll = props.entries.slice(0, props.selectionCap).map((entry) => entry.opaqueId);
       const allSelected = selectedIds.length === cappedAll.length;
       setSelectedIds(allSelected ? [] : cappedAll);
+      setPresetIndex(undefined);
       setNotice(!allSelected && props.entries.length > props.selectionCap
         ? `Selected the ${props.selectionCap} most recent; the cap is ${props.selectionCap} sessions.`
         : undefined);
+    } else if (intent === "preset") {
+      const next = presetIndex === undefined ? 0 : (presetIndex + 1) % sessionPickerPresets.length;
+      const preset = sessionPickerPresets[next]!;
+      setPresetIndex(next);
+      setSelectedIds(presetSelectionIds(props.entries, preset, props.selectionCap));
+      setNotice(`Preset: the ${preset === "all" ? `all (${Math.min(props.entries.length, props.selectionCap)})` : `newest ${preset}`} session(s). Edit rows with space.`);
     } else if (intent === "confirm") {
       if (!selectedIds.length) {
         setNotice("Select at least one session, or press Esc to keep sessions off.");
@@ -88,8 +122,8 @@ export function AdviceSessionPicker(props: {
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <box style={{ flexDirection: "column", flexShrink: 0 }}>
-        <text fg={palette.accent}>{`✦ Choose ${name} sessions`}</text>
-        <text fg={palette.muted}>{`${selectedIds.length} of ${props.entries.length} selected · excerpts from selected sessions are sent to ${name} when you analyze`}</text>
+        <text fg={palette.accent}>{props.title ?? `✦ Choose ${name} sessions`}</text>
+        <text fg={palette.muted}>{`${selectedIds.length} of ${props.entries.length} selected · ${props.subtitle ?? `excerpts from selected sessions are sent to ${name} when you analyze`}`}</text>
       </box>
       <scrollbox
         ref={scrollRef}
@@ -106,7 +140,7 @@ export function AdviceSessionPicker(props: {
             <span fg={selectedIds.includes(entry.opaqueId) ? palette.success : palette.muted}>
               {selectedIds.includes(entry.opaqueId) ? "[x] " : "[ ] "}
             </span>
-            <span fg={palette.text}>{adviceSessionPickerRowLabel(entry)}</span>
+            <span fg={palette.text}>{adviceSessionPickerRowLabel(entry, mixedProviders)}</span>
           </text>
         ))}
       </scrollbox>

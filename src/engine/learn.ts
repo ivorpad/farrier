@@ -6,11 +6,8 @@ import { hooksDirectory } from "./render";
 import type { ToolPolicyRule } from "../packs/types";
 import type { ReasoningEffort } from "../config/farrier-config";
 import { applyMutationPlan, fingerprintPath, inspectMutationPlan } from "./mutation-transaction";
-import { isolatedAuthoringTimeoutMs, withIsolatedExecution } from "./execution-isolation";
+import { runIsolatedBackendText } from "./isolated-backend";
 import {
-  backendEnvironmentOverrides,
-  backendEnvironmentPassthrough,
-  backendFailureMessage,
   defaultBackendRunner,
   type BackendCommandRunner,
   type BackendCommandRunnerInput,
@@ -713,65 +710,15 @@ async function llmRuleProposals(input: {
     evidenceDigest: evidence.digest
   });
 
-  const command =
-    input.backend === "claude"
-      ? {
-          cmd: [
-            "claude", "-p", "--model", model,
-            ...(input.reasoningEffort ? ["--effort", input.reasoningEffort] : []),
-            "--permission-mode", "plan"
-          ],
-          stdin: prompt
-        }
-      : {
-          cmd: [
-            // The isolated workspace is a fresh, untrusted, non-git temp dir;
-            // codex ≥0.145 refuses it without --skip-git-repo-check.
-            "codex", "exec", "--skip-git-repo-check", "-s", "read-only", "--model", model,
-            ...(input.reasoningEffort ? ["-c", `model_reasoning_effort=${input.reasoningEffort}`] : []),
-            prompt
-          ],
-          stdin: undefined
-        };
-
-  const isolated = await withIsolatedExecution({
+  const stdout = await runIsolatedBackendText({
     targetDir: input.targetDir,
-    nativeConfinement: input.backend === "codex",
-    environmentPassthrough: backendEnvironmentPassthrough(input.backend),
-    environmentOverrides: backendEnvironmentOverrides(input.backend),
-    // Mining rule proposals is a full backend reasoning pass; use the authoring
-    // budget rather than the 120s fallback.
-    timeoutMs: isolatedAuthoringTimeoutMs,
-    readOnlyWorkspace: true,
-    run: async ({ workspace, environment, redactValues, signal }) => ({
-      output: await input.runner({
-        cmd: command.cmd,
-        cwd: workspace,
-        stdin: command.stdin,
-        signal,
-        env: environment,
-        redactValues
-      }),
-      redactValues
-    })
+    backend: input.backend,
+    prompt,
+    model,
+    reasoningEffort: input.reasoningEffort,
+    runner: input.runner
   });
-  const { output, redactValues } = isolated.value;
-
-  if (output.exitCode !== 0) {
-    throw new Error(backendFailureMessage({
-      backend: input.backend,
-      exitCode: output.exitCode,
-      output,
-      redactValues
-    }));
-  }
-  if (output.capture?.stdout.truncated) {
-    throw new Error(
-      `${input.backend} backend stdout exceeded the capture limit (received ${output.capture.stdout.byteCount} bytes; sha256 ${output.capture.stdout.sha256})`
-    );
-  }
-
-  return proposalArrayFromBackendOutput(output.stdout);
+  return proposalArrayFromBackendOutput(stdout);
 }
 
 function validateProposals(input: {

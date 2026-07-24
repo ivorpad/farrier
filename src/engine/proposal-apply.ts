@@ -56,7 +56,7 @@ export type ProposalMiningResult = {
 type GuardInstanceProposal = Extract<PrimitiveProposal, { kind: "guard-instance" }>;
 type RulesLineProposal = Extract<PrimitiveProposal, { kind: "rules-line" }>;
 
-const agentsFilePath = "AGENTS.md";
+export const agentsFilePath = "AGENTS.md";
 const hardRulesHeading = "## Hard Rules";
 
 function isRecord(value: unknown): value is Record<string, unknown> {

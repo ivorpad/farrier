@@ -133,6 +133,30 @@ describe("buildGoalPrompt", () => {
     expect(prompt).toContain(".agents/skills/walkledger-playbook/gates/check.py");
   });
 
+  test("the includeSkills toggle flips the skills instruction between bundled and author-first", () => {
+    const evidence: SessionEvidence = {
+      projectDir: "/tmp/p",
+      steers: [{ text: "take screenshots of every page", sessionRef: "codex:a", date: "2026-07-22", truncated: false }],
+      failureClusters: [],
+      skillUsage: [{ name: "swiftui-pro", invocations: 9, sessions: 3, installed: true, missingSkillMd: false }],
+      codexSessionsMatched: 1,
+      codexSessionsScanned: 1,
+      notes: []
+    };
+    const base = {
+      playbookName: "walkledger-playbook",
+      annotated: annotateSessionEvidence(evidence),
+      lessons: [lesson()],
+      skillUsage: evidence.skillUsage
+    };
+    const bundled = buildGoalPrompt({ ...base, includeSkills: true });
+    expect(bundled).toContain("This export BUNDLES the skills");
+    expect(bundled).not.toContain("author equivalent skills");
+    const authorFirst = buildGoalPrompt(base);
+    expect(authorFirst).toContain("author equivalent skills");
+    expect(authorFirst).not.toContain("This export BUNDLES the skills");
+  });
+
   test("reviewerNamesForLessons mirrors the playbook's subagent selection", () => {
     expect(reviewerNamesForLessons([lesson()])).toEqual(["ux_hig_reviewer"]);
     expect(reviewerNamesForLessons([lesson({ classification: "app-specific" })])).toEqual([]);

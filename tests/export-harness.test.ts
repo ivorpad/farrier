@@ -191,6 +191,45 @@ describe("buildPlaybookProposal", () => {
     expect(withoutGoal.summary).not.toContain("/goal");
   });
 
+  test("includeInvokedSkills copies invoked skills per agent root; zero-invoked and symlinked skills stay out", async () => {
+    const project = await tempDir("farrier-export-project-");
+    await mkdir(join(project, ".agents/skills/swiftui-pro/references"), { recursive: true });
+    await writeFile(join(project, ".agents/skills/swiftui-pro/SKILL.md"), "---\nname: swiftui-pro\ndescription: x\n---\n\nBody\n", "utf8");
+    await writeFile(join(project, ".agents/skills/swiftui-pro/references/notes.md"), "notes\n", "utf8");
+    await mkdir(join(project, ".agents/skills/liquid-glass"), { recursive: true });
+    await writeFile(join(project, ".agents/skills/liquid-glass/SKILL.md"), "---\nname: liquid-glass\n---\n", "utf8");
+
+    const annotated = annotateSessionEvidence(evidence());
+    const report = {
+      projectDir: project,
+      playbookName: "walkledger-playbook",
+      evidence: evidence({
+        projectDir: project,
+        skillUsage: [
+          { name: "swiftui-pro", invocations: 2, sessions: 1, installed: true, missingSkillMd: false },
+          { name: "liquid-glass", invocations: 0, sessions: 0, installed: true, missingSkillMd: false }
+        ]
+      }),
+      annotated,
+      lessons: hintLessons(annotated),
+      droppedLessons: [],
+      llmClassified: false,
+      notes: [],
+      errors: []
+    };
+
+    const proposal = await buildExportProposal(report, { agents: ["claude", "codex"], includeInvokedSkills: true });
+    const paths = proposal.files.map((file) => file.path);
+    expect(paths).toContain(".agents/skills/swiftui-pro/SKILL.md");
+    expect(paths).toContain(".claude/skills/swiftui-pro/SKILL.md");
+    expect(paths).toContain(".agents/skills/swiftui-pro/references/notes.md");
+    expect(paths.some((path) => path.includes("liquid-glass"))).toBe(false);
+    expect(proposal.summary).toContain("Copies 1 invoked skill(s): swiftui-pro.");
+
+    const withoutToggle = await buildExportProposal(report, { agents: ["claude", "codex"] });
+    expect(withoutToggle.files.some((file) => file.path.includes("swiftui-pro"))).toBe(false);
+  });
+
   test("app-specific lessons and excluded gates stay out; proposed gates ship marked", async () => {
     const annotated = annotateSessionEvidence(evidence());
     const lessons: ExportLesson[] = [

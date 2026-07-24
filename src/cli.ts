@@ -29,8 +29,8 @@ Usage:
   farrier map --dir <target> [--json]
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--codex-sessions <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
-  farrier export --dir <source> [--codex-sessions <dir>] [--name <kebab>] [--send-session-evidence] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
-  farrier export --dir <source> --yes --install-dir <target> [--agents claude,codex] [--force]
+  farrier export --dir <source> [--codex-sessions <dir>] [--name <kebab>] [--send-session-evidence] [--include-skills] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
+  farrier export --dir <source> --yes --install-dir <target> [--agents claude,codex] [--include-skills] [--force]
   farrier doctor --dir <target> [--json] [--static] [--live]
   farrier ab-gate --result <result.json> [--json]
   farrier audit-panel prepare --manifest <panel.json> --output <new-directory> [--json]
@@ -435,6 +435,7 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
               llmAnalysisAvailable: !noInstalledBackend,
               llmBackendLabel:
                 session.backend === "claude" ? "Claude Code" : session.backend === "codex" ? "Codex" : undefined,
+              session,
             });
 
             if (typeof outcome === "object") {

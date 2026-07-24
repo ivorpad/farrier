@@ -49,6 +49,11 @@ export function renderSubagentToml(subagent: PackSubagent): string {
     `description = ${tomlBasicString(subagent.description)}`,
     `sandbox_mode = ${tomlBasicString(subagent.sandboxMode ?? "read-only")}`,
     `developer_instructions = ${tomlMultilineString(subagent.developerInstructions)}`,
+    ...(subagent.skills ?? []).flatMap((skill) => [
+      "",
+      "[[skills.config]]",
+      `path = ${tomlBasicString(`.agents/skills/${skill}`)}`
+    ]),
     ""
   ].join("\n");
 }
@@ -56,7 +61,10 @@ export function renderSubagentToml(subagent: PackSubagent): string {
 export function renderClaudeSubagentMd(subagent: PackSubagent): string {
   const readOnly = (subagent.sandboxMode ?? "read-only") === "read-only";
   const tools = readOnly ? "\ntools: Read, Grep, Glob, Bash" : "";
-  return `---\nname: ${kebab(subagent.name)}\ndescription: ${yamlValue(subagent.description)}${tools}\n---\n\n${subagent.developerInstructions.trim()}\n`;
+  const skills = subagent.skills?.length
+    ? `\nskills:\n${subagent.skills.map((skill) => `  - ${skill}`).join("\n")}`
+    : "";
+  return `---\nname: ${kebab(subagent.name)}\ndescription: ${yamlValue(subagent.description)}${tools}${skills}\n---\n\n${subagent.developerInstructions.trim()}\n`;
 }
 
 function skillFiles(root: string, skill: PlaybookSkill): RenderedFile[] {

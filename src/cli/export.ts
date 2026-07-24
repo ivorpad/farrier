@@ -16,6 +16,7 @@ type ExportCliOptions = {
   installDir?: string;
   agents: ("claude" | "codex")[];
   sendSessionEvidence: boolean;
+  includeSkills: boolean;
   noLlm: boolean;
   yes: boolean;
   force: boolean;
@@ -49,6 +50,7 @@ export function parseExportArgs(args: string[]): ExportCliOptions {
     dir: process.cwd(),
     agents: ["claude", "codex"],
     sendSessionEvidence: false,
+    includeSkills: false,
     noLlm: false,
     yes: false,
     force: false,
@@ -64,6 +66,7 @@ export function parseExportArgs(args: string[]): ExportCliOptions {
     else if (arg === "--json") options.json = true;
     else if (arg === "--no-llm") options.noLlm = true;
     else if (arg === "--send-session-evidence") options.sendSessionEvidence = true;
+    else if (arg === "--include-skills") options.includeSkills = true;
     else if (arg === "--dir") { options.dir = valueArg(args, index, arg); index += 1; }
     else if (arg.startsWith("--dir=")) options.dir = arg.slice("--dir=".length);
     else if (arg === "--codex-sessions") { options.codexSessions = valueArg(args, index, arg); index += 1; }
@@ -109,6 +112,7 @@ export async function runExport(args: string[], usage: () => string): Promise<nu
     transcriptsDir: options.transcripts ? resolve(options.transcripts) : undefined,
     playbookName: options.name,
     sendSessionEvidence: options.sendSessionEvidence,
+    includeInvokedSkills: options.includeSkills,
     noLlm: options.noLlm,
     backend,
     model: settings.model,
@@ -129,7 +133,7 @@ export async function runExport(args: string[], usage: () => string): Promise<nu
   }
 
   const installDir = resolve(options.installDir);
-  const proposal = await buildExportProposal(report, { agents: options.agents });
+  const proposal = await buildExportProposal(report, { agents: options.agents, includeInvokedSkills: options.includeSkills });
   if (proposal.files.length === 0) {
     console.error("farrier: no portable lessons selected; nothing to install.");
     return 1;

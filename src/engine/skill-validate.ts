@@ -180,14 +180,14 @@ async function listFilesRecursive(dir: string, prefix: string): Promise<string[]
   return files.sort();
 }
 
-type Frontmatter = {
+export type Frontmatter = {
   raw: string;
   body: string;
   name?: string;
   description?: string;
 };
 
-function parseFrontmatter(content: string): Frontmatter | undefined {
+export function parseFrontmatter(content: string): Frontmatter | undefined {
   if (!content.startsWith("---\n")) {
     return undefined;
   }
@@ -199,7 +199,10 @@ function parseFrontmatter(content: string): Frontmatter | undefined {
   }
 
   const raw = content.slice(4, end);
-  const body = content.slice(content.indexOf("\n", end + 1) + 1);
+  // A file ending exactly at the closing --- has no newline after it; the
+  // old `indexOf(...) + 1` slice would return the WHOLE file as the body.
+  const bodyStart = content.indexOf("\n", end + 1);
+  const body = bodyStart === -1 ? "" : content.slice(bodyStart + 1);
 
   const field = (key: string): string | undefined => {
     const match = raw.match(new RegExp(`^${key}:\\s*(.*)$`, "m"));
