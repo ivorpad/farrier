@@ -160,6 +160,37 @@ describe("buildPlaybookProposal", () => {
     expect(gatesMd).toContain("`xcodebuild -scheme` 239× across 1 session(s)");
   });
 
+  test("with an authored goal the proposal leads with GOAL.md as the driver; without one it doesn't", async () => {
+    const annotated = annotateSessionEvidence(evidence());
+    const base = {
+      projectDir: "/tmp/walkledger",
+      playbookName: "walkledger-playbook",
+      evidence: evidence(),
+      annotated,
+      lessons: hintLessons(annotated),
+      droppedLessons: [],
+      llmClassified: true,
+      notes: [],
+      errors: []
+    };
+
+    const withGoal = await buildExportProposal(
+      { ...base, goal: { goalMd: "# contract\n## 1.\n## 2.\n## 3.\n## 4.\n## 5.\n## 6.\n", condition: "Work per GOAL.md until every check prints." } },
+      { agents: ["claude", "codex"] }
+    );
+    expect(withGoal.files[0]!.path).toBe("GOAL.md");
+    expect(withGoal.files[1]!.path).toBe("README.md");
+    expect(withGoal.summary).toContain("runnable as a /goal");
+    const readme = withGoal.files[1]!.content;
+    expect(readme).toContain("Work per GOAL.md until every check prints.");
+    expect(readme).toContain("Codex 0.128.0+");
+    expect(readme).toContain("v2.1.139+");
+
+    const withoutGoal = await buildExportProposal(base, { agents: ["claude", "codex"] });
+    expect(withoutGoal.files.some((file) => file.path === "GOAL.md")).toBe(false);
+    expect(withoutGoal.summary).not.toContain("/goal");
+  });
+
   test("app-specific lessons and excluded gates stay out; proposed gates ship marked", async () => {
     const annotated = annotateSessionEvidence(evidence());
     const lessons: ExportLesson[] = [
@@ -398,6 +429,7 @@ describe("createExportReport", () => {
     // A lesson with no evidence indexes cannot come from validation, but the
     // builder still renders it; evidence lines are simply absent.
     const proposal = await buildExportProposal(withLessons, { agents: ["codex"] });
+    // No authored goal on this report, so no root-level goal artifacts either.
     expect(proposal.files.every((file) => file.path.startsWith(".agents/"))).toBe(true);
   });
 });

@@ -15,6 +15,8 @@ import {
   type AnnotatedSessionEvidence,
   type GateCatalogEntry
 } from "./gate-catalog";
+import { authorGoalArtifacts, type GoalArtifacts } from "./goal-authoring";
+import { goalFiles } from "./render-goal";
 import { prepareSessionEvidence, type SessionEvidence } from "./session-evidence";
 import { buildPlaybookProposal, type ExportLesson, type PlaybookProposal } from "./export-playbook";
 import type { PlaybookGateCheckRule } from "../packs/types";
@@ -71,6 +73,12 @@ export type ExportReport = {
   droppedLessons: DroppedLesson[];
   /** True when lessons came from the consented LLM classification. */
   llmClassified: boolean;
+  /**
+   * GOAL.md + /goal condition, authored by the consented LLM pass from the
+   * classified lessons and mechanics-validated. Absent without consent (one
+   * source of truth: no template fallback) or when authoring failed.
+   */
+  goal?: GoalArtifacts;
   notes: string[];
   errors: string[];
 };
@@ -497,6 +505,7 @@ export async function createExportReport(options: ExportOptions): Promise<Export
   let lessons: ExportLesson[];
   let droppedLessons: DroppedLesson[] = [];
   let llmClassified = false;
+  let goal: GoalArtifacts | undefined;
 
   if (options.noLlm || !options.sendSessionEvidence) {
     lessons = hintLessons(annotated);
@@ -505,6 +514,7 @@ export async function createExportReport(options: ExportOptions): Promise<Export
         ? "Lessons come from catalog signature hints only (--no-llm)."
         : "Lessons come from catalog signature hints only: LLM classification needs your explicit consent to send redacted session excerpts (TUI consent screen, or --send-session-evidence). Redaction is a deterministic denylist and does not catch secrets or PII written as ordinary prose."
     );
+    notes.push("GOAL.md is not emitted without the consented LLM pass (no template fallback; one source of truth).");
   } else {
     const backend = options.backend ?? "claude";
     try {
@@ -529,17 +539,42 @@ export async function createExportReport(options: ExportOptions): Promise<Export
       lessons = hintLessons(annotated);
       errors.push(`LLM classification failed (${message}); fell back to signature hints.`);
     }
+
+    if (llmClassified) {
+      try {
+        goal = await authorGoalArtifacts({
+          targetDir: projectDir,
+          playbookName,
+          annotated,
+          lessons,
+          skillUsage: evidence.skillUsage,
+          backend,
+          model: options.model,
+          reasoningEffort: options.reasoningEffort,
+          runner: options.runner ?? defaultBackendRunner
+        });
+        notes.push("GOAL.md and its /goal condition were authored from the classified lessons and validated (six sections, repo ledger, not_applicable escapes, evidence citations, condition length).");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`Goal authoring failed (${message}); the export proceeds without GOAL.md.`);
+      }
+    }
   }
 
-  return { projectDir, playbookName, evidence, annotated, lessons, droppedLessons, llmClassified, notes, errors };
+  return { projectDir, playbookName, evidence, annotated, lessons, droppedLessons, llmClassified, ...(goal ? { goal } : {}), notes, errors };
 }
 
-/** Deterministic assembly of the reviewed report into an installable file plan. */
-export function buildExportProposal(
+/**
+ * Deterministic assembly of the reviewed report into an installable file
+ * plan. When the consented pass authored a goal, GOAL.md + README.md lead
+ * the plan and GOAL.md is the driver: the playbook skill and its gates are
+ * the material the goal contract points at, not a second orchestrator.
+ */
+export async function buildExportProposal(
   report: ExportReport,
   input: { agents: readonly EnforcementAgent[]; lessons?: readonly ExportLesson[] }
 ): Promise<PlaybookProposal> {
-  return buildPlaybookProposal({
+  const proposal = await buildPlaybookProposal({
     projectDir: report.projectDir,
     playbookName: report.playbookName,
     lessons: input.lessons ?? report.lessons,
@@ -547,6 +582,12 @@ export function buildExportProposal(
     catalog: seedGateCatalog,
     agents: input.agents
   });
+  if (proposal.files.length === 0 || !report.goal) return proposal;
+  return {
+    ...proposal,
+    files: [...goalFiles(report.goal), ...proposal.files],
+    summary: `${proposal.summary} GOAL.md and README.md make the install runnable as a /goal (Claude Code v2.1.139+, Codex 0.128.0+).`
+  };
 }
 
 function renderList(values: string[], empty: string): string[] {
