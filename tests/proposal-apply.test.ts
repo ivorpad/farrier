@@ -321,9 +321,27 @@ describe("local proposal mining", () => {
     });
     expect(result.proposals.map((proposal) => proposal.id)).toContain("guard-large-file-commit");
     expect(result.harnessPresent).toBe(false);
+    expect(result.existingAgentFiles).toEqual([]);
 
     const guard = result.proposals.find((proposal) => proposal.kind === "guard-instance");
     if (!guard) throw new Error("expected a guard proposal");
     await expect(planPrimitiveProposal({ targetDir, proposal: guard })).rejects.toThrow(notFarrierProjectMessage);
+  });
+
+  test("a hand-harnessed repo without a manifest reports its existing agent files", async () => {
+    const targetDir = await tempDir();
+    await writeFile(join(targetDir, "AGENTS.md"), "# Agents\n", "utf8");
+    await mkdir(join(targetDir, ".agents/skills/swiftui-pro"), { recursive: true });
+    await mkdir(join(targetDir, ".agents/skills/playbook"), { recursive: true });
+    // The same skill installed for Claude too counts once.
+    await mkdir(join(targetDir, ".claude/skills/playbook"), { recursive: true });
+
+    const result = await minePrimitiveProposals({
+      targetDir,
+      transcriptsDir: await tempDir("farrier-proposal-empty-transcripts-"),
+      codexSessionsDir: await tempDir("farrier-proposal-codex-empty-")
+    });
+    expect(result.harnessPresent).toBe(false);
+    expect(result.existingAgentFiles).toEqual(["AGENTS.md", "2 installed skill(s)"]);
   });
 });

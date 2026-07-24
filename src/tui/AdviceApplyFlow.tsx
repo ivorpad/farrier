@@ -164,7 +164,7 @@ export function AdviceApplyFlow(props: {
         <text fg={palette.warn}>✗ Could not create this recommendation. Nothing on your computer was changed.</text>
         <text fg={palette.faint}>
           {missingHarness
-            ? "This project has no harness yet. Choose Create harness from the main menu, then come back."
+            ? "farrier isn't set up in this project yet (no manifest). Choose Create harness from the main menu, then come back."
             : error}
         </text>
         <KeyHints hint={bindingsHint(errorBindings)} />

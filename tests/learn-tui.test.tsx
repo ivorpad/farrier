@@ -74,6 +74,7 @@ function miningResult(proposals: PrimitiveProposal[]): ProposalMiningResult {
     signals: proposals.flatMap((proposal) => proposal.evidence),
     proposals,
     harnessPresent: true,
+    existingAgentFiles: [],
     notes: []
   };
 }
@@ -174,6 +175,39 @@ describe("learn proposal surface", () => {
       const after = view.captureCharFrame().replace(/\s+/g, " ");
       expect(after).toContain("Choose Create harness from the main menu first, then come back to apply it.");
       expect(after).not.toContain("Preparing the exact files");
+      expect(planned.length).toBe(0);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("a hand-harnessed repo (skills, no manifest) is never told it has no harness", async () => {
+    const planned: PrimitiveProposal[] = [];
+    const view = await renderLearn({
+      onMine: async () => ({
+        ...miningResult([guardProposal()]),
+        harnessPresent: false,
+        existingAgentFiles: ["AGENTS.md", "71 installed skill(s)"]
+      }),
+      onPlan: async (proposal) => {
+        planned.push(proposal);
+        return plannedFiles(proposal);
+      }
+    });
+    try {
+      const frame = await view.waitForFrame((value) => value.includes("read-only until farrier is set up"));
+      const normalized = frame.replace(/\s+/g, " ");
+      expect(normalized).toContain(
+        "Found AGENTS.md and 71 installed skill(s), but farrier isn't set up in this project yet, so proposals are read-only."
+      );
+      expect(normalized).toContain("existing files are reviewed first and can be kept as-is");
+      expect(normalized).not.toContain("No harness in this project yet");
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() =>
+        view.captureCharFrame().replace(/\s+/g, " ").includes("farrier's manifest (.farrier.json)")
+      );
+      const after = view.captureCharFrame().replace(/\s+/g, " ");
+      expect(after).toContain("your existing files are reviewed and can be kept");
       expect(planned.length).toBe(0);
     } finally {
       await interact(view, () => view.renderer.destroy());

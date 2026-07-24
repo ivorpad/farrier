@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { builtinCatalog, type PackCatalog } from "../registry/catalog";
 import type { AdviceCreationFile, AdviceCreationPlan } from "./advice-apply";
@@ -40,6 +40,13 @@ export type ProposalMiningResult = {
   proposals: PrimitiveProposal[];
   /** False when the repo has no .farrier.json: proposals can be read but not applied. */
   harnessPresent: boolean;
+  /**
+   * Agent files found when no manifest exists (e.g. "AGENTS.md", "71 installed
+   * skill(s)"). A repo can be thoroughly harnessed by hand — or by farrier's
+   * own skills/distill installs — without farrier managing it; the TUI must
+   * not tell such a user they have "no harness".
+   */
+  existingAgentFiles: string[];
   notes: string[];
 };
 
@@ -73,6 +80,7 @@ export async function minePrimitiveProposals(input: {
   // gates the apply action on it up front instead of letting the user walk
   // into planProposal's refusal.
   let harnessPresent = true;
+  let existingAgentFiles: string[] = [];
   try {
     const manifest = await readManifest({ targetDir, catalog: input.catalog ?? builtinCatalog() });
     installedHookIds = manifest.hookIds;
@@ -82,6 +90,7 @@ export async function minePrimitiveProposals(input: {
       throw error;
     }
     harnessPresent = false;
+    existingAgentFiles = await summarizeExistingAgentFiles(targetDir);
   }
   const transcriptsDir = input.transcriptsDir ? resolve(input.transcriptsDir) : defaultTranscriptDir(targetDir);
   const scan = await mineFailureSignalsFromSources({
@@ -94,7 +103,29 @@ export async function minePrimitiveProposals(input: {
     installedHookIds,
     guards
   });
-  return { transcriptsDir, signals: scan.signals, proposals, harnessPresent, notes: scan.notes };
+  return { transcriptsDir, signals: scan.signals, proposals, harnessPresent, existingAgentFiles, notes: scan.notes };
+}
+
+/**
+ * What a manifest-less repo already has in the way of agent files. Skill
+ * directories are deduplicated by name across the shared and Claude roots so
+ * a skill installed in both counts once.
+ */
+async function summarizeExistingAgentFiles(targetDir: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    const stats = await stat(join(targetDir, name)).catch(() => undefined);
+    if (stats?.isFile()) found.push(name);
+  }
+  const skillNames = new Set<string>();
+  for (const root of [".agents/skills", ".claude/skills"]) {
+    const entries = await readdir(join(targetDir, root), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.isDirectory()) skillNames.add(entry.name);
+    }
+  }
+  if (skillNames.size > 0) found.push(`${skillNames.size} installed skill(s)`);
+  return found;
 }
 
 /**

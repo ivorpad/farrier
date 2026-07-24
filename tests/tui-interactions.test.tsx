@@ -161,7 +161,7 @@ describe("TUI keyboard interactions", () => {
     try {
       const frame = await view.waitForFrame((value) => value.includes("Could not create this recommendation"));
       const normalized = frame.replace(/\s+/g, " ");
-      expect(normalized).toContain("This project has no harness yet. Choose Create harness from the main menu, then come back.");
+      expect(normalized).toContain("farrier isn't set up in this project yet (no manifest). Choose Create harness from the main menu, then come back.");
       expect(normalized).not.toContain("not a farrier project");
       expect(normalized).not.toContain("r retry");
     } finally {

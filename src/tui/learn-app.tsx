@@ -134,10 +134,16 @@ export function LearnApp(props: {
         setActionMessage(`Nothing to install for a skill. Open Find skills from the main menu and search: ${proposal.query}`);
         return;
       }
-      // Applying installs into the harness; without one, planProposal would
-      // refuse after the review screen. Say so here instead of at the end.
+      // Applying needs the farrier manifest; without it, planProposal would
+      // refuse after the review screen. Say so here instead of at the end —
+      // and if the repo already has agent files, never claim "no harness":
+      // the manifest is farrier's bookkeeping, not the user's setup.
       if (phase.kind === "list" && !phase.result.harnessPresent) {
-        setActionMessage("This proposal installs into the harness. Choose Create harness from the main menu first, then come back to apply it.");
+        setActionMessage(
+          phase.result.existingAgentFiles.length > 0
+            ? "Applying writes into farrier's manifest (.farrier.json), which this project doesn't have yet. Run Create harness from the main menu; your existing files are reviewed and can be kept."
+            : "This proposal installs into the harness. Choose Create harness from the main menu first, then come back to apply it."
+        );
         return;
       }
       setActionMessage(undefined);
@@ -211,9 +217,20 @@ export function LearnApp(props: {
               <text key={`note-${index}`} style={{ flexShrink: 0 }} fg={palette.faint}>{note}</text>
             ))}
             {!phase.result.harnessPresent ? (
-              <text style={{ flexShrink: 0 }} fg={palette.gold}>
-                No harness in this project yet, so proposals are read-only. Choose Create harness from the main menu first.
-              </text>
+              phase.result.existingAgentFiles.length > 0 ? (
+                <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
+                  <text style={{ flexShrink: 0 }} fg={palette.gold}>
+                    {`Found ${phase.result.existingAgentFiles.join(" and ")}, but farrier isn't set up in this project yet, so proposals are read-only.`}
+                  </text>
+                  <text style={{ flexShrink: 0 }} fg={palette.muted}>
+                    Create harness (main menu) sets it up; existing files are reviewed first and can be kept as-is.
+                  </text>
+                </box>
+              ) : (
+                <text style={{ flexShrink: 0 }} fg={palette.gold}>
+                  No harness in this project yet, so proposals are read-only. Choose Create harness from the main menu first.
+                </text>
+              )
             ) : null}
           </box>
         ) : null}
@@ -224,7 +241,7 @@ export function LearnApp(props: {
         ) : null}
         {phase.kind === "list" && proposals.length > 0 ? (
           <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
-            <text style={{ flexShrink: 0 }} fg={palette.gold}>{`${proposals.length} proposal(s) from ${phase.result.signals.length} failure signal(s) · ${phase.result.harnessPresent ? "nothing applied yet" : "read-only until a harness exists"}`}</text>
+            <text style={{ flexShrink: 0 }} fg={palette.gold}>{`${proposals.length} proposal(s) from ${phase.result.signals.length} failure signal(s) · ${phase.result.harnessPresent ? "nothing applied yet" : phase.result.existingAgentFiles.length > 0 ? "read-only until farrier is set up" : "read-only until a harness exists"}`}</text>
             {proposals.map((proposal, index) => {
               const focused = index === selectedIndex;
               const applied = appliedIds.has(proposal.id);
