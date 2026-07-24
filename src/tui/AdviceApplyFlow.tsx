@@ -3,6 +3,7 @@ import { useKeyboard } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import type { ApplyHarnessChangePlanResult, HarnessChangePlan } from "../engine/create-plan";
 import type { AdviceCreationPlan } from "../engine/advice-apply";
+import { notFarrierProjectMessage } from "../engine/manifest";
 import { applyConfirmLine, manifestOutcomeSummary } from "./advice-manifest";
 import { KeyHints, palette, scrollWindow, truncateTo, useSpinner } from "./chrome";
 import { fileActionWord } from "./file-action-markers";
@@ -79,7 +80,11 @@ export function AdviceApplyFlow(props: {
 
   const planningBindings = defineBindings(...runningCancellationBindings, binding(["escape", "b"], "back", "cancel plan"), binding("q", "quit", "quit"));
   const applyingBindings = defineBindings(binding(["ctrl+c", "q"], "interrupt", "close after saving"));
-  const errorBindings = defineBindings(binding("r", "retry", "retry"), binding(["escape", "b"], "back", "report"), binding(["q", "ctrl+c"], "quit", "close"));
+  // A missing harness is a precondition, not a transient failure: retrying
+  // re-reads the same absent manifest, so the retry key is withheld.
+  const missingHarness = error === notFarrierProjectMessage;
+  const retryBindings = missingHarness ? [] : [binding("r", "retry", "retry")];
+  const errorBindings = defineBindings(...retryBindings, binding(["escape", "b"], "back", "report"), binding(["q", "ctrl+c"], "quit", "close"));
   const doneBindings = defineBindings(binding(["enter", "escape", "b"], "back", "report"), binding(["q", "ctrl+c"], "quit", "close"));
   const reviewBindings = replacementArmed
     ? defineBindings(
@@ -157,7 +162,11 @@ export function AdviceApplyFlow(props: {
     return (
       <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
         <text fg={palette.warn}>✗ Could not create this recommendation. Nothing on your computer was changed.</text>
-        <text fg={palette.faint}>{error}</text>
+        <text fg={palette.faint}>
+          {missingHarness
+            ? "This project has no harness yet. Choose Create harness from the main menu, then come back."
+            : error}
+        </text>
         <KeyHints hint={bindingsHint(errorBindings)} />
       </box>
     );

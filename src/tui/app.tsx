@@ -7,14 +7,14 @@ import type { DetectedPackEvidence } from "../engine/detect";
 import { agentsHardRules } from "../engine/render";
 import { HarnessApplyError } from "../engine/create-plan";
 import { searchSkills, type SkillSearchResult } from "../engine/skills";
-import { resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
+import type { ModelsConfig } from "../config/farrier-config";
 import type { PackCatalog } from "../registry/catalog";
 import { createQueuedCollisionHandler, type CollisionPrompt } from "./collision";
 import { nextEvalPolicy, type SkillEvalPolicy } from "./create-eval";
 import { runHarnessWrite } from "./harness-write";
 import { generatorPresentation, selectedPackForWizard } from "./pack-presentation";
 import { WizardDone } from "./wizard-done";
-import { createInitialWizardState, wizardReducer, type PackDefaults, type WizardState } from "./machine";
+import { createInitialWizardState, cycleAgents, isFirstWizardStep, wizardReducer, type PackDefaults, type WizardState } from "./machine";
 import { skillInstallAgentIds } from "../engine/skill-paths";
 import { AgentStep } from "./AgentStep";
 import { StackStep } from "./StackStep";
@@ -24,13 +24,16 @@ import { HooksStep } from "./HooksStep";
 import { LearnStep } from "./LearnStep";
 import { ReviewStep, WritingStep } from "./ReviewStep";
 import { useHarnessReview } from "./use-harness-review";
-import { idleExitBindings, resolveIntent } from "./keymap";
-import type { SessionAgentContext } from "./session-context";
-import { loadWizardBootstrap } from "./wizard-bootstrap";
+import { KeyHints, palette, useSpinner } from "./chrome";
+import { binding, bindingsHint, defineBindings, idleExitBindings, resolveIntent } from "./keymap";
+import { sessionModelSettings, type SessionAgentContext } from "./session-context";
+import { loadWizardBootstrap, resolveWizardContext, type WizardBootstrap } from "./wizard-bootstrap";
 
 type WizardAppProps = {
   targetDir: string;
   detectedPacks: DetectedPackEvidence[];
+  /** Languages the deterministic profile saw; shown on the Stack step when no pack matched. */
+  profileLanguages?: string[];
   contextText?: string;
   contextSource?: string;
   adviseBackend?: AdviseBackend;
@@ -41,6 +44,8 @@ type WizardAppProps = {
   /** Startup pick: seeds the Agent step default and model overrides; never locks them. */
   session?: SessionAgentContext;
   onExit: (code: number) => void;
+  /** esc at the first step: return to the launcher instead of exiting farrier. */
+  onLauncher: () => void;
 };
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -66,23 +71,27 @@ function WizardApp(props: WizardAppProps) {
     );
   }, [packIds, props.catalog]);
 
-  const initialState = useMemo(
-    () =>
-      createInitialWizardState({
-        availablePackIds: packIds,
-        fallbackPackId: defaultPackId,
-        detectedPackId: props.detectedPacks[0]?.packId,
-        packDefaults,
-        contextText: props.contextText,
-        contextSource: props.contextSource,
-        adviseBackend: props.adviseBackend,
-        defaultAgents: props.session && props.session.agents.length > 0 ? props.session.agents : undefined,
-      }),
-    [defaultPackId, packDefaults, packIds, props.adviseBackend, props.contextSource, props.contextText, props.detectedPacks, props.session],
-  );
+  const initialState = useMemo(() => {
+    // The startup screen already asked which agent; an unambiguous pick seeds
+    // the default and skips the Agent step (Review keeps it editable via `a`).
+    const startupAgents = props.session && props.session.agents.length > 0 ? props.session.agents : undefined;
+
+    return createInitialWizardState({
+      availablePackIds: packIds,
+      fallbackPackId: defaultPackId,
+      detectedPackId: props.detectedPacks[0]?.packId,
+      packDefaults,
+      contextText: props.contextText,
+      contextSource: props.contextSource,
+      adviseBackend: props.adviseBackend,
+      defaultAgents: startupAgents,
+      skipAgentStep: startupAgents !== undefined,
+    });
+  }, [defaultPackId, packDefaults, packIds, props.adviseBackend, props.contextSource, props.contextText, props.detectedPacks, props.session]);
 
   const [state, dispatch] = useReducer(wizardReducer, initialState);
   const [agentAvailability, setAgentAvailability] = useState<AgentAvailability | undefined>(undefined);
+  const [contextResolving, setContextResolving] = useState(false);
   const [createCancelling, setCreateCancelling] = useState(false);
   const [collision, setCollision] = useState<CollisionPrompt | null>(null);
   const [evalPolicy, setEvalPolicy] = useState<SkillEvalPolicy>("ask");
@@ -219,13 +228,7 @@ function WizardApp(props: WizardAppProps) {
     dispatch({ type: "ADVISE_STARTED" });
 
     const adviseBackend = state.adviseBackend ?? "claude";
-    const adviseSettings = resolveModelSettings({
-      models: props.models,
-      backend: adviseBackend,
-      role: "advise",
-      explicitModel: props.session?.models[adviseBackend],
-      explicitReasoningEffort: props.session?.efforts[adviseBackend],
-    });
+    const adviseSettings = sessionModelSettings({ session: props.session, models: props.models, backend: adviseBackend, role: "advise" });
 
     adviseSkills({
       targetDir: props.targetDir,
@@ -266,6 +269,16 @@ function WizardApp(props: WizardAppProps) {
     });
   }
 
+  function submitContext(value: string): void {
+    setContextResolving(true);
+    // resolveWizardContext reads a path when the value names one, treats it as
+    // the brief text otherwise, and appends the deterministic project profile.
+    resolveWizardContext(props.targetDir, value)
+      .then((resolved) => dispatch({ type: "SET_CONTEXT", text: resolved.text, source: resolved.source }))
+      .catch(() => dispatch({ type: "SET_CONTEXT", text: value, source: "text" }))
+      .finally(() => setContextResolving(false));
+  }
+
   async function confirmWrite(forceReplace: boolean): Promise<void> {
     if (!review.plan || state.step !== "Review") {
       return;
@@ -293,20 +306,8 @@ function WizardApp(props: WizardAppProps) {
         onCollision,
         installAgents: skillInstallAgentIds(state.agents, state.shareSkillsWithOtherAgent),
         modelSettings: {
-          claude: resolveModelSettings({
-            models: props.models,
-            backend: "claude",
-            role: "skillCreation",
-            explicitModel: props.session?.models.claude,
-            explicitReasoningEffort: props.session?.efforts.claude,
-          }),
-          codex: resolveModelSettings({
-            models: props.models,
-            backend: "codex",
-            role: "skillCreation",
-            explicitModel: props.session?.models.codex,
-            explicitReasoningEffort: props.session?.efforts.codex,
-          }),
+          claude: sessionModelSettings({ session: props.session, models: props.models, backend: "claude", role: "skillCreation" }),
+          codex: sessionModelSettings({ session: props.session, models: props.models, backend: "codex", role: "skillCreation" }),
         },
       });
 
@@ -339,7 +340,8 @@ function WizardApp(props: WizardAppProps) {
           selectedAgents={state.agents}
           onSelectAgents={(agents) => dispatch({ type: "SELECT_AGENTS", agents })}
           onNext={() => dispatch({ type: "NEXT" })}
-          onCancel={() => props.onExit(1)}
+          onBack={props.onLauncher}
+          onQuit={() => props.onExit(1)}
         />
       );
 
@@ -351,9 +353,14 @@ function WizardApp(props: WizardAppProps) {
           warnings={props.registryWarnings}
           selectedPackId={state.packId}
           detectedPacks={props.detectedPacks}
+          profileLanguages={props.profileLanguages}
           onSelectPack={selectPack}
           onNext={() => dispatch({ type: "NEXT" })}
-          onCancel={() => props.onExit(1)}
+          onBack={() => (isFirstWizardStep(state) ? props.onLauncher() : dispatch({ type: "BACK" }))}
+          onQuit={() => props.onExit(1)}
+          contextSource={state.contextSource}
+          contextPending={contextResolving}
+          onContextSubmit={submitContext}
         />
       );
 
@@ -392,6 +399,8 @@ function WizardApp(props: WizardAppProps) {
           availability={agentAvailability}
           targetDir={props.targetDir}
           packId={state.packId}
+          models={props.models}
+          session={props.session}
           evalPolicy={evalPolicy}
           onCycleEvalPolicy={() => setEvalPolicy(nextEvalPolicy)}
           onAdd={(request) => dispatch({ type: "ADD_CREATE_REQUEST", request })}
@@ -440,6 +449,7 @@ function WizardApp(props: WizardAppProps) {
           error={review.error}
           canConfirm={Boolean(review.plan && !review.error && !review.existingHarness && review.blockerCount === 0)}
           onConfirm={confirmWrite}
+          onCycleAgents={() => dispatch({ type: "SELECT_AGENTS", agents: cycleAgents(state.agents) })}
           onBack={() => dispatch({ type: "BACK" })}
           onQuit={() => props.onExit(1)}
         />
@@ -479,9 +489,107 @@ function WizardApp(props: WizardAppProps) {
   }
 }
 
-export async function runWizard(targetDir: string, options?: { context?: string; session?: SessionAgentContext }): Promise<number> {
+const bootBindings = defineBindings(
+  binding(["escape", "b"], "back", "back"),
+  binding(["q", "ctrl+c"], "quit", "quit")
+);
+
+/**
+ * The frame shown while loadWizardBootstrap scans the repo. Keyboard handling
+ * lives here rather than in WizardBoot so the bindings unmount the moment the
+ * wizard takes over — otherwise b/q would keep firing on every wizard step.
+ */
+function WizardBootFrame(props: { error?: string; onBack: () => void; onQuit: () => void }) {
+  const spinner = useSpinner(!props.error);
+
+  useKeyboard((key) => {
+    const intent = resolveIntent(bootBindings, key);
+    if (intent === "back") props.onBack();
+    else if (intent === "quit") props.onQuit();
+  });
+
+  return (
+    <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
+      <box style={{ flexDirection: "column", gap: 0 }}>
+        <text fg={palette.accent}>{"🐴 farrier"}</text>
+        {props.error ? (
+          <text fg={palette.warn}>{`Repo inspection failed: ${props.error}`}</text>
+        ) : (
+          <text fg={palette.muted}>{`${spinner}  Inspecting the repo: detecting stacks, loading registries…`}</text>
+        )}
+      </box>
+      <KeyHints hint={bindingsHint(bootBindings)} />
+    </box>
+  );
+}
+
+type WizardBootProps = {
+  targetDir: string;
+  context?: string;
+  session?: SessionAgentContext;
+  /** Injectable for tests; the default scans the repo and loads registries. */
+  load?: typeof loadWizardBootstrap;
+  onExit: (code: number) => void;
+  onLauncher: () => void;
+};
+
+/**
+ * Runs the bootstrap scan behind a visible loading frame instead of before the
+ * renderer exists: awaiting loadWizardBootstrap first left the terminal on the
+ * normal buffer for the whole scan — a flash of shell scrollback, then a blank
+ * screen until the wizard painted. A scan failure renders in-frame (esc backs
+ * out to the launcher) rather than tearing the TUI down to stderr.
+ */
+export function WizardBoot(props: WizardBootProps) {
+  const [outcome, setOutcome] = useState<{ bootstrap?: WizardBootstrap; error?: string }>({});
+  const load = props.load ?? loadWizardBootstrap;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    load(props.targetDir, props.context).then(
+      (bootstrap) => {
+        if (!cancelled) setOutcome({ bootstrap });
+      },
+      (cause) => {
+        if (!cancelled) setOutcome({ error: errorMessage(cause) });
+      }
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [load, props.context, props.targetDir]);
+
+  const bootstrap = outcome.bootstrap;
+  if (!bootstrap) {
+    return <WizardBootFrame error={outcome.error} onBack={props.onLauncher} onQuit={() => props.onExit(1)} />;
+  }
+
+  return (
+    <WizardApp
+      targetDir={props.targetDir}
+      detectedPacks={bootstrap.detectedPacks}
+      profileLanguages={bootstrap.profileLanguages}
+      contextText={bootstrap.context?.text}
+      contextSource={bootstrap.context?.source}
+      adviseBackend={props.session?.backend ?? bootstrap.adviseBackend}
+      skillQueries={bootstrap.skillQueries}
+      catalog={bootstrap.catalog}
+      registryWarnings={bootstrap.registryWarnings}
+      models={bootstrap.models}
+      session={props.session}
+      onExit={props.onExit}
+      onLauncher={props.onLauncher}
+    />
+  );
+}
+
+export async function runWizard(
+  targetDir: string,
+  options?: { context?: string; session?: SessionAgentContext }
+): Promise<number | "back"> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
-  const bootstrap = await loadWizardBootstrap(targetDir, options?.context);
 
   try {
     // Default ctrl+c would destroy the renderer and orphan spawned agent
@@ -489,32 +597,26 @@ export async function runWizard(targetDir: string, options?: { context?: string;
     renderer = await createCliRenderer({ exitOnCtrlC: false });
     const cliRenderer = renderer;
 
-    return await new Promise<number>((resolve) => {
+    return await new Promise<number | "back">((resolve) => {
       let settled = false;
 
-      const finish = (code: number) => {
+      const finish = (result: number | "back") => {
         if (settled) {
           return;
         }
 
         settled = true;
         cliRenderer.destroy();
-        resolve(code);
+        resolve(result);
       };
 
       createRoot(cliRenderer).render(
-        <WizardApp
+        <WizardBoot
           targetDir={targetDir}
-          detectedPacks={bootstrap.detectedPacks}
-          contextText={bootstrap.context?.text}
-          contextSource={bootstrap.context?.source}
-          adviseBackend={options?.session?.backend ?? bootstrap.adviseBackend}
-          skillQueries={bootstrap.skillQueries}
-          catalog={bootstrap.catalog}
-          registryWarnings={bootstrap.registryWarnings}
-          models={bootstrap.models}
+          context={options?.context}
           session={options?.session}
           onExit={finish}
+          onLauncher={() => finish("back")}
         />,
       );
     });

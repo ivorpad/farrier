@@ -63,6 +63,8 @@ type ReviewStepProps = {
   error?: string;
   canConfirm: boolean;
   onConfirm: (forceReplace: boolean) => void;
+  /** When set, `a` cycles the enforcement target without walking back to the Agent step. */
+  onCycleAgents?: () => void;
   onBack: () => void;
   onQuit: () => void;
 };
@@ -195,6 +197,7 @@ export function ReviewStep(props: ReviewStepProps) {
         binding(["up", "down"], "move", "inspect file"),
         binding(["pageup", "pagedown"], "scroll", "scroll preview"),
         binding("enter", "activate", hasReplacements ? "review replacements" : "create harness"),
+        ...(props.onCycleAgents ? [binding("a", "agents", "change agent")] : []),
         binding(["escape", "b"], "back", "back"),
         binding(["q", "ctrl+c"], "quit", "quit")
       );
@@ -211,6 +214,10 @@ export function ReviewStep(props: ReviewStepProps) {
     }
     if (intent === "quit") {
       props.onQuit();
+      return;
+    }
+    if (intent === "agents") {
+      props.onCycleAgents?.();
       return;
     }
     if (intent === "confirm" && props.canConfirm && hasReplacements) {
@@ -283,6 +290,7 @@ export function ReviewStep(props: ReviewStepProps) {
       <text>
         <span fg={palette.gold}>Enforcement: </span>
         <span fg={palette.text}>{formatAgents(props.agents)}</span>
+        {props.onCycleAgents ? <span fg={palette.faint}>{"   (a changes it)"}</span> : null}
       </text>
 
       {props.files.length > 0 ? (

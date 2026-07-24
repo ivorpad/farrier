@@ -11,6 +11,8 @@ export type WizardBootstrap = {
   registryWarnings: string[];
   models: ModelsConfig;
   detectedPacks: DetectedPackEvidence[];
+  /** Languages the deterministic profile saw; the Stack step names them when no pack matched. */
+  profileLanguages: string[];
   skillQueries: string[];
   context?: ResolvedContext;
   adviseBackend?: AdviseBackend;
@@ -45,7 +47,8 @@ export async function loadWizardBootstrap(targetDir: string, context?: string): 
   try {
     const config = await loadFarrierConfig({ projectDir: targetDir });
     models = config.config.models;
-    if (Object.keys(config.config.registries).length > 0) console.error("Loading registries...");
+    // No stderr progress line here: this runs under the wizard's live renderer
+    // (WizardBoot's loading frame), where a raw write would corrupt the screen.
     catalog = await loadPackCatalog({ config: config.config });
     registryWarnings = catalog.warnings.map((warning) => `${warning.namespace}: ${warning.message}`);
   } catch (error) {
@@ -65,5 +68,14 @@ export async function loadWizardBootstrap(targetDir: string, context?: string): 
   let adviseBackend: AdviseBackend | undefined;
   try { adviseBackend = detectAgentBackend(); } catch { /* advice stays unavailable */ }
 
-  return { catalog, registryWarnings, models, detectedPacks, skillQueries, context: resolvedContext, adviseBackend };
+  return {
+    catalog,
+    registryWarnings,
+    models,
+    detectedPacks,
+    profileLanguages: profile?.languages ?? [],
+    skillQueries,
+    context: resolvedContext,
+    adviseBackend
+  };
 }

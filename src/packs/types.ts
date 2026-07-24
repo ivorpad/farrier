@@ -139,6 +139,71 @@ export type KonsistentTemplate = {
   conventions: KonsistentConvention[];
 };
 
+/**
+ * A review subagent a pack installs alongside its skills. The name is the
+ * tool-facing identifier (snake_case, e.g. "ux_hig_reviewer"); the
+ * instructions are the subagent's whole system prompt. Rendered natively per
+ * agent: a Claude Code agent markdown file and a Codex skill-local TOML.
+ */
+export type PackSubagent = {
+  name: string;
+  description: string;
+  /** Defaults to read-only: review subagents judge, they do not edit. */
+  sandboxMode?: "read-only" | "workspace-write";
+  developerInstructions: string;
+};
+
+export type PlaybookReference = {
+  /** File name under references/, extension included (e.g. "gates.md"). */
+  name: string;
+  content: string;
+};
+
+/** One inline-authored skill of a playbook bundle (content, not a registry ref). */
+export type PlaybookSkill = {
+  /** Kebab-case; becomes the skill directory name. */
+  name: string;
+  description: string;
+  /** Markdown body below the frontmatter. */
+  body: string;
+  references?: PlaybookReference[];
+};
+
+/**
+ * One declarative rule of a gate's deterministic exit check. Data only —
+ * rules are evaluated by the engine-owned checker script rendered next to
+ * them, never by model-authored code. Paths and glob patterns are
+ * repo-root-relative.
+ */
+export type PlaybookGateCheckRule =
+  | { kind: "file-exists"; path: string }
+  | { kind: "glob-min"; pattern: string; min: number }
+  | { kind: "file-contains"; path: string; pattern: string };
+
+/**
+ * A gate's deterministic exit-evidence check. A gate with no rules is still
+ * listed (the checker reports it as review-only) so the playbook's gate set
+ * and its checkable subset stay visibly in sync.
+ */
+export type PlaybookGateCheck = {
+  gateId: string;
+  description: string;
+  rules: PlaybookGateCheckRule[];
+};
+
+/**
+ * An orchestrator+phase skill bundle: the distilled process of a finished
+ * project (root orchestrator skill, optional phase skills), installable
+ * cross-project. Unlike `Pack.skills` (registry references resolved at
+ * install time), a playbook carries its authored content inline.
+ */
+export type PackPlaybook = {
+  orchestrator: PlaybookSkill;
+  phases: PlaybookSkill[];
+  /** Deterministic exit checks, rendered as gates/gates.json + an engine-owned checker. */
+  gateChecks?: PlaybookGateCheck[];
+};
+
 export type PackVerbs = {
   check: string;
   /**
@@ -191,13 +256,16 @@ export type Pack = {
   agentsRules?: string[];
   ruleBlocks?: PackRuleBlock[];
   secondaryDetectors?: SecondaryDetector[];
+  subagents?: PackSubagent[];
+  playbook?: PackPlaybook;
 };
 
-export type ResolvedPack = Omit<Pack, "toolPolicyRules" | "agentsRules" | "ruleBlocks" | "secondaryDetectors"> & {
+export type ResolvedPack = Omit<Pack, "toolPolicyRules" | "agentsRules" | "ruleBlocks" | "secondaryDetectors" | "subagents"> & {
   toolPolicyRules: ToolPolicyRule[];
   agentsRules: string[];
   ruleBlocks: PackRuleBlock[];
   secondaryDetectors: SecondaryDetector[];
+  subagents: PackSubagent[];
   packIds: string[];
   remoteHooks: ResolvedRemoteHook[];
 };

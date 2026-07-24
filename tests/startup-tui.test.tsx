@@ -510,9 +510,9 @@ describe("the confirmed pick reaches the workflows", () => {
 
   test("the launcher context marks LLM-dependent rows only when no CLI is installed", async () => {
     const zero = launcherSessionView(sessionAgentContext({ choice: "none", models: {}, detection: neitherInstalled }));
-    expect(zero.statusLine).toBe("No working agent selected. Create harness, Learn, and Doctor run without one.");
-    expect(zero.rowNotes?.advise).toBe("needs Claude Code or Codex installed");
-    expect(zero.rowNotes?.create).toBe("authoring needs Claude Code or Codex installed");
+    expect(zero.statusLine).toBe("No working agent selected. Create harness, skill search, Improve's local pass, and Doctor run without one.");
+    expect(zero.rowNotes?.improve).toBe("local counting works; LLM analysis needs Claude Code or Codex");
+    expect(zero.rowNotes?.skills).toBe("search works; suggestions and authoring need Claude Code or Codex");
 
     const working = launcherSessionView(
       sessionAgentContext({ choice: "claude", models: { claude: "sonnet" }, efforts: { claude: "max" }, detection: bothInstalled })
@@ -528,11 +528,12 @@ describe("the confirmed pick reaches the workflows", () => {
       renderOptions
     );
     try {
-      const frame = await view.waitForFrame((value) => value.includes("needs Claude Code or Codex installed"));
+      const frame = await view.waitForFrame((value) => value.includes("LLM analysis needs Claude Code or Codex"));
       expect(frame).toContain("No working agent selected.");
-      expect(frame).toContain("Advise");
-      expect(frame).not.toContain("analyze repo + recent sessions");
-      expect(frame).toContain("count repeated session failures");
+      expect(frame).toContain("Improve");
+      // The note replaces the detail column on the marked rows only.
+      expect(frame).not.toContain("count session failures locally");
+      expect(frame).toContain("export finished sessions as a portable playbook");
     } finally {
       await interact(view, () => view.renderer.destroy());
     }

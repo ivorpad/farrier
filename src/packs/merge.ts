@@ -1,4 +1,4 @@
-import type { PackDetect, PackRuleBlock, SecondaryDetector, ToolPolicyRule } from "./types";
+import type { PackDetect, PackRuleBlock, PackSubagent, SecondaryDetector, ToolPolicyRule } from "./types";
 
 export function dedupe<T>(values: T[]): T[] {
   return Array.from(new Set(values));
@@ -61,6 +61,25 @@ export function mergeRuleBlocks(parentBlocks: PackRuleBlock[], childBlocks: Pack
     }
 
     merged[existingIndex] = block;
+  }
+
+  return merged;
+}
+
+export function mergeSubagents(parentSubagents: PackSubagent[], childSubagents: PackSubagent[]): PackSubagent[] {
+  const merged = [...parentSubagents];
+  const indexByName = new Map(parentSubagents.map((subagent, index) => [subagent.name, index]));
+
+  for (const subagent of childSubagents) {
+    const existingIndex = indexByName.get(subagent.name);
+
+    if (existingIndex === undefined) {
+      indexByName.set(subagent.name, merged.length);
+      merged.push(subagent);
+      continue;
+    }
+
+    merged[existingIndex] = subagent;
   }
 
   return merged;

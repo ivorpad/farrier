@@ -33,6 +33,20 @@ import {
  * action.command) and may serialize outputs as JSON strings carrying
  * {"output":"...","metadata":{"exit_code":N}}. All are handled below.
  *
+ * Codex Desktop 0.145 (unified custom "exec" tool) records shell work as:
+ *
+ *   {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"call_...",
+ *     "input":"const r = await tools.exec_command({\n  cmd: \"sed -n '1,240p' ...\",\n  workdir: \"...\"});\ntext(r.output);\n"}}
+ *   {"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_...",
+ *     "output":[{"type":"input_text","text":"Script completed\nWall time 0.1 seconds\nOutput:\n"},...]}}
+ *
+ * The input is JavaScript source that may call tools.exec_command several
+ * times; the output is an array of text parts with no "Process exited with
+ * code" line. Failures surface only as a "Script failed"/"Script error:"
+ * wrapper or as printed "exit_code":N fragments, so this reader counts those
+ * markers alone and ignores word heuristics for this shape (outputs echo file
+ * contents, which would false-positive on words like "failed").
+ *
  * This reader is counting-only and local: no prose leaves the machine, so it
  * does not go through the App Server consent path (see advice-session-codex.ts
  * for the consented episode reader).
@@ -40,9 +54,12 @@ import {
 
 const rolloutFilePattern = /^rollout-.*\.jsonl$/;
 const shellToolNames = new Set(["exec_command", "shell", "local_shell", "container.exec"]);
+const customExecToolNames = new Set(["exec"]);
 const shellWrapperHeadPattern = /^(?:ba|z|da)?sh$/;
 const shellWrapperFlagPattern = /^-l?c$/;
 const exitCodeTextPattern = /Process exited with code (-?\d+)\b/i;
+const scriptFailurePattern = /^Script failed\b|Script error:/m;
+const scriptExitCodePattern = /"exit_code"\s*:\s*(-?\d+)/g;
 
 type CodexSourceScan = {
   notes: string[];
@@ -124,6 +141,51 @@ function commandFromValue(value: unknown): string | undefined {
   return undefined;
 }
 
+/** Reads a JS string literal ("", '', or ``) starting at `start`, with minimal unescaping. */
+function readJsStringLiteral(source: string, start: number): string | undefined {
+  const quote = source[start];
+  if (quote !== '"' && quote !== "'" && quote !== "`") return undefined;
+  let value = "";
+  for (let index = start + 1; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (char === "\\") {
+      const next = source[index + 1];
+      if (next === "n") value += "\n";
+      else if (next === "t") value += "\t";
+      else if (next !== undefined) value += next;
+      index += 1;
+      continue;
+    }
+    if (char === quote) return value;
+    value += char;
+  }
+  return undefined;
+}
+
+/**
+ * Extracts every tools.exec_command({cmd: "..."}) command from the JS source
+ * carried by a 0.145 custom "exec" tool call. Each cmd is searched only up to
+ * the next exec_command call so a script without a cmd never steals the
+ * following call's command.
+ */
+function execCommandsFromScript(script: string): string[] {
+  const starts: number[] = [];
+  const callPattern = /tools\.exec_command\s*\(/g;
+  for (let match = callPattern.exec(script); match; match = callPattern.exec(script)) {
+    starts.push(match.index + match[0].length);
+  }
+
+  const commands: string[] = [];
+  for (let index = 0; index < starts.length; index += 1) {
+    const window = script.slice(starts[index]!, starts[index + 1] ?? script.length);
+    const cmd = /\bcmd\s*:\s*/.exec(window);
+    if (!cmd) continue;
+    const literal = readJsStringLiteral(window, cmd.index + cmd[0].length);
+    if (literal && literal.trim().length > 0) commands.push(literal);
+  }
+  return commands;
+}
+
 function toolUseFromPayload(payload: Record<string, unknown>): ToolUse | undefined {
   let command: string | undefined;
 
@@ -139,7 +201,35 @@ function toolUseFromPayload(payload: Record<string, unknown>): ToolUse | undefin
   return { ...(id ? { id } : {}), command: normalizeCommand(command) };
 }
 
+/** All shell commands in one payload; a 0.145 exec script can carry several. */
+function toolUsesFromPayload(payload: Record<string, unknown>): ToolUse[] {
+  if (payload.type === "custom_tool_call" && typeof payload.name === "string" && customExecToolNames.has(payload.name)) {
+    const script = typeof payload.input === "string" ? payload.input : "";
+    const id = typeof payload.call_id === "string" ? payload.call_id : undefined;
+    // Commands share the call_id; the result lookup resolves to the last one.
+    return execCommandsFromScript(script).map((command) => ({ ...(id ? { id } : {}), command: normalizeCommand(command) }));
+  }
+  const single = toolUseFromPayload(payload);
+  return single ? [single] : [];
+}
+
 function toolResultFromPayload(payload: Record<string, unknown>): ToolResult | undefined {
+  if (payload.type === "custom_tool_call_output") {
+    const raw = payload.output;
+    const text = Array.isArray(raw)
+      ? raw.map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : "")).join("")
+      : typeof raw === "string"
+        ? raw
+        : JSON.stringify(raw ?? "");
+    // Only the script wrapper's own failure markers count for this shape;
+    // word heuristics false-positive on echoed file contents (see header).
+    const exitCodes = Array.from(text.matchAll(scriptExitCodePattern), (match) => Number(match[1]));
+    const failed = scriptFailurePattern.test(text) || exitCodes.some((code) => code !== 0);
+    if (!failed) return undefined;
+    const toolUseId = typeof payload.call_id === "string" ? payload.call_id : undefined;
+    return { ...(toolUseId ? { toolUseId } : {}), text, isError: true, isDenied: looksDenied(text) };
+  }
+
   if (payload.type !== "function_call_output" && payload.type !== "local_shell_call_output") return undefined;
   const raw = payload.output;
   let text = typeof raw === "string" ? raw : JSON.stringify(raw ?? "");
@@ -176,11 +266,23 @@ function toolResultFromPayload(payload: Record<string, unknown>): ToolResult | u
  * (realpath-resolved); a byte-level pre-filter skips files that never mention
  * the project path before any line is JSON-parsed.
  */
+/** A raw event_msg user_message from a session whose cwd matched the project. */
+export type CodexUserMessageEvent = {
+  text: string;
+  sessionRef: string;
+  date: string | undefined;
+};
+
 export async function scanCodexSessions(input: {
   projectDir: string;
   collector: SignalCollector;
   sessionsDir?: string;
   maxFiles?: number;
+  /**
+   * Tap for user steers (distill evidence). Called with the raw message text;
+   * the caller owns noise filtering, redaction, and bounding. Stays local.
+   */
+  onUserMessage?: (event: CodexUserMessageEvent) => void;
 }): Promise<CodexSourceScan> {
   const notes: string[] = [];
   const maxFiles = input.maxFiles ?? signalScanMaxFiles;
@@ -196,6 +298,7 @@ export async function scanCodexSessions(input: {
   let filesMatched = 0;
   let truncated = false;
   let malformedLines = 0;
+  let toolEvents = 0;
   for (const file of files) {
     if (filesScanned >= maxFiles) {
       truncated = true;
@@ -237,9 +340,19 @@ export async function scanCodexSessions(input: {
       // Gate every tool event on the session/turn cwd so a rollout from a
       // different project never contributes evidence, even when its bytes
       // mention the project path (e.g. in command output).
-      if (parsed.type !== "response_item" || !cwdMatchesProject) continue;
+      if (!cwdMatchesProject) continue;
+      if (
+        parsed.type === "event_msg" &&
+        payload.type === "user_message" &&
+        typeof payload.message === "string" &&
+        input.onUserMessage
+      ) {
+        input.onUserMessage({ text: payload.message, sessionRef, date: recordDate(parsed) });
+        continue;
+      }
+      if (parsed.type !== "response_item") continue;
 
-      const use = toolUseFromPayload(payload);
+      const uses = toolUsesFromPayload(payload);
       let result = toolResultFromPayload(payload);
       // Codex sessions carry outputs for many tools (MCP, apply_patch, ...);
       // only outputs of known shell calls may back a failure signal, so a
@@ -247,9 +360,10 @@ export async function scanCodexSessions(input: {
       if (result && !(result.toolUseId && state.commandByToolUseId.has(result.toolUseId))) {
         result = undefined;
       }
-      if (!use && !result) continue;
+      if (uses.length === 0 && !result) continue;
+      toolEvents += uses.length + (result ? 1 : 0);
       const context = { sessionRef, date: recordDate(parsed) };
-      scanToolEvents(use ? [use] : [], result ? [result] : [], context, input.collector, state);
+      scanToolEvents(uses, result ? [result] : [], context, input.collector, state);
     }
     if (cwdEverMatched) filesMatched += 1;
   }
@@ -259,6 +373,16 @@ export async function scanCodexSessions(input: {
   }
   if (malformedLines > 0) {
     notes.push(`Skipped ${malformedLines} malformed codex session line(s).`);
+  }
+  // Format-drift tripwire: sessions belong to this project but yielded zero
+  // shell tool events, which is how the Codex Desktop 0.145 shape went
+  // unnoticed (silent "nothing to propose"). Surface it instead.
+  if (filesMatched > 0 && toolEvents === 0) {
+    notes.push(
+      `No shell tool events could be extracted from ${filesMatched} matched codex session file(s); ` +
+        `the rollout format may have drifted beyond this reader (verified shapes: codex 0.116 function_call, ` +
+        `Codex Desktop 0.145 custom_tool_call "exec").`
+    );
   }
 
   return { notes, filesScanned, filesMatched, sessionsDirFound: true };

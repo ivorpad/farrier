@@ -1,15 +1,20 @@
 import { useState } from "react";
+import type { ModelsConfig } from "../config/farrier-config";
 import type { AgentAvailability } from "../engine/backend";
 import type { CreateAgent, SkillCreationRequest } from "../engine/create-skill";
 import { CreateStep } from "./CreateStep";
 import type { SkillEvalPolicy } from "./create-eval";
 import { RefineFlow } from "./RefineScreen";
+import { sessionBackendFor, sessionModelSettings, type SessionAgentContext } from "./session-context";
 
 type WizardCreateProps = {
   requests: SkillCreationRequest[];
   availability?: AgentAvailability;
   targetDir: string;
   packId?: string;
+  models: ModelsConfig;
+  /** Startup pick: refinement runs on its backend/model; never substituted. */
+  session?: SessionAgentContext;
   evalPolicy?: SkillEvalPolicy;
   onCycleEvalPolicy?: () => void;
   onAdd: (request: SkillCreationRequest) => void;
@@ -28,19 +33,18 @@ export function WizardCreate(props: WizardCreateProps) {
   const [refine, setRefine] = useState(true);
   const [flow, setFlow] = useState<{ request: SkillCreationRequest; thenNext: boolean } | null>(null);
 
-  const refineBackend: CreateAgent | undefined = props.availability?.claude
-    ? "claude"
-    : props.availability?.codex
-      ? "codex"
-      : undefined;
+  const refineBackend: CreateAgent | undefined = sessionBackendFor(props.session, props.availability);
 
   if (flow && refineBackend) {
+    const refineSettings = sessionModelSettings({ session: props.session, models: props.models, backend: refineBackend, role: "refine" });
     return (
       <RefineFlow
         request={flow.request}
         backend={refineBackend}
         targetDir={props.targetDir}
         packId={props.packId}
+        model={refineSettings.model}
+        reasoningEffort={refineSettings.reasoningEffort}
         onDone={(refined) => {
           props.onAdd(refined);
           setFlow(null);

@@ -1,6 +1,6 @@
 import { useKeyboard } from "@opentui/react";
 import { useState } from "react";
-import type { EnforcementAgent } from "../engine/agent-selection";
+import { enforcementAgentCombos, type EnforcementAgent } from "../engine/agent-selection";
 import { ButtonBar } from "./ButtonBar";
 import { palette, StepHeader } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
@@ -16,31 +16,37 @@ type AgentChoice = {
  * decides which native bindings farrier writes (CLAUDE.md + .claude, AGENTS.md +
  * .codex, or both) and which agents skills install for. It is a single-select of
  * three concrete choices, not a per-agent toggle — the Hooks step no longer owns
- * this decision.
+ * this decision. The choices come from enforcementAgentCombos, ordered to match
+ * this presentation list.
  */
-const agentChoices: AgentChoice[] = [
+const comboPresentation = [
   {
     label: "Claude Code",
-    agents: ["claude"],
     detail: "writes CLAUDE.md (imports AGENTS.md), hooks in .claude/settings.json, skills in .claude/skills/",
   },
   {
     label: "Codex",
-    agents: ["codex"],
     detail: "writes AGENTS.md, hooks in .codex/hooks.json, skills in .agents/skills/",
   },
   {
     label: "Both",
-    agents: ["claude", "codex"],
     detail: "writes both bindings; skills installed for both",
   },
 ];
+
+const agentChoices: AgentChoice[] = enforcementAgentCombos.map((agents, index) => ({
+  ...comboPresentation[index]!,
+  agents: [...agents],
+}));
 
 type AgentStepProps = {
   selectedAgents: EnforcementAgent[];
   onSelectAgents: (agents: EnforcementAgent[]) => void;
   onNext: () => void;
-  onCancel: () => void;
+  /** esc/b: this is the first step, so back leaves the wizard one level up. */
+  onBack: () => void;
+  /** q/ctrl+c: quit farrier. */
+  onQuit: () => void;
 };
 
 const agentBindings = defineBindings(
@@ -63,8 +69,12 @@ export function AgentStep(props: AgentStepProps) {
 
   useKeyboard((key) => {
     const intent = resolveIntent(agentBindings, key);
-    if (intent === "back" || intent === "quit") {
-      props.onCancel();
+    if (intent === "back") {
+      props.onBack();
+      return;
+    }
+    if (intent === "quit") {
+      props.onQuit();
       return;
     }
     if (intent === "move" && key.name === "down") {

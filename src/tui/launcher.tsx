@@ -4,7 +4,7 @@ import { useState } from "react";
 import { KeyHints, palette } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
-export type LaunchChoice = "harness" | "create" | "advise" | "learn" | "doctor" | "cancel";
+export type LaunchChoice = "harness" | "skills" | "improve" | "distill" | "doctor" | "cancel";
 export type LauncherState = { index: number };
 export type LauncherEvent = { type: "up" | "down" | "choose" | "cancel" };
 
@@ -14,10 +14,10 @@ export type LauncherEvent = { type: "up" | "down" | "choose" | "cancel" };
 // row marker (chrome palette rule), and labels stay pure ASCII so padEnd aligns
 // by display width, not just UTF-16 length.
 export const launcherRows: ReadonlyArray<{ choice: Exclude<LaunchChoice, "cancel">; label: string; detail: string }> = [
-  { choice: "harness", label: "Create harness", detail: "detect the stack; generate AGENTS.md, hooks, and skills" },
-  { choice: "create", label: "Create skill", detail: "author a new skill (SKILL.md) with your agent's skill creator" },
-  { choice: "advise", label: "Advise", detail: "analyze repo + recent sessions; recommend hooks, skills, MCP" },
-  { choice: "learn", label: "Learn from failures", detail: "count repeated session failures; propose hooks, AGENTS.md rules, skills" },
+  { choice: "harness", label: "Create harness", detail: "detect the stack or start from a PRD; generate AGENTS.md, hooks, and skills" },
+  { choice: "skills", label: "Find/Create skills", detail: "search the registry with a query or a PRD; install or author what's missing" },
+  { choice: "improve", label: "Improve harness", detail: "count session failures locally, then LLM analysis; hooks, rules, skills" },
+  { choice: "distill", label: "Distill playbook", detail: "export finished sessions as a portable playbook: gates, evidence, subagents" },
   { choice: "doctor", label: "Doctor & update", detail: "check harness health; repair drift after upgrades" }
 ];
 

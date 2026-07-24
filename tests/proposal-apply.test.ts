@@ -320,7 +320,7 @@ describe("local proposal mining", () => {
       codexSessionsDir: await tempDir("farrier-proposal-codex-empty-")
     });
     expect(result.proposals.map((proposal) => proposal.id)).toContain("guard-large-file-commit");
-    expect(result.notes.some((note) => note.includes("run farrier create first"))).toBe(true);
+    expect(result.harnessPresent).toBe(false);
 
     const guard = result.proposals.find((proposal) => proposal.kind === "guard-instance");
     if (!guard) throw new Error("expected a guard proposal");

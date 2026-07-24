@@ -2,6 +2,13 @@ export const enforcementAgentOrder = ["claude", "codex"] as const;
 
 export type EnforcementAgent = (typeof enforcementAgentOrder)[number];
 
+/**
+ * The three enforcement targets in the order the wizard's Agent step offers
+ * them; the Review-step cycle derives from the same list so the two can't
+ * drift apart.
+ */
+export const enforcementAgentCombos: ReadonlyArray<readonly EnforcementAgent[]> = [["claude"], ["codex"], ["claude", "codex"]];
+
 const enforcementAgentSet = new Set<string>(enforcementAgentOrder);
 
 export function isEnforcementAgent(value: unknown): value is EnforcementAgent {

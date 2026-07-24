@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "gates": [
+    {
+      "gateId": "skeleton-before-features",
+      "description": "Exit evidence for skeleton-before-features",
+      "rules": []
+    },
+    {
+      "gateId": "vertical-slice-before-capabilities",
+      "description": "Exit evidence for vertical-slice-before-capabilities",
+      "rules": []
+    },
+    {
+      "gateId": "evidence-before-complete",
+      "description": "Exit evidence for evidence-before-complete",
+      "rules": []
+    },
+    {
+      "gateId": "one-task-one-session",
+      "description": "Exit evidence for one-task-one-session",
+      "rules": [
+        {
+          "kind": "file-exists",
+          "path": "docs/plans/repository-harness-product-2026-07-14.md"
+        }
+      ]
+    }
+  ]
+}

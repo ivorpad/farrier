@@ -1,0 +1,128 @@
+import { resolve } from "node:path";
+import { boundSessionText, stripSessionAmbient } from "./advice-patterns";
+import { defaultTranscriptDir } from "./learn";
+import { SignalCollector, scanClaudeTranscripts, type FailureSignal } from "./learn-signals";
+import { scanCodexSessions } from "./learn-signals-codex";
+
+/**
+ * Distill evidence preparation: local, complete, no vetoes.
+ *
+ * Deterministic mining alone cannot produce a playbook — on the WalkLedger
+ * fixture (45 sessions) the threshold-gated miner finds zero repeated
+ * failures while every lesson that mattered lives in user steers and the
+ * crystallized final docs. So this layer only prepares: it extracts steers
+ * (user messages minus known machine noise), clusters every failure
+ * including the verification/build failures learn's proposal thresholds
+ * exclude, and hands counts, quotes, and clusters to a review surface. It
+ * classifies nothing, and nothing here leaves the machine; the LLM layer
+ * that judges this evidence is consented and review-gated separately.
+ */
+
+export type DistillSteer = {
+  /** Redacted, ambient-stripped, bounded steer text. */
+  text: string;
+  sessionRef: string;
+  date?: string;
+  truncated: boolean;
+};
+
+export type DistillEvidence = {
+  projectDir: string;
+  steers: DistillSteer[];
+  /** Full clustered failure record: work-loop failures included, no thresholds. */
+  failureClusters: FailureSignal[];
+  codexSessionsMatched: number;
+  codexSessionsScanned: number;
+  notes: string[];
+};
+
+export type DistillEvidenceOptions = {
+  projectDir: string;
+  /** Override for tests; defaults to ~/.codex/sessions. */
+  codexSessionsDir?: string;
+  /** Claude JSONL transcripts for failure clusters; defaults to ~/.claude/projects/<slug>. */
+  claudeTranscriptsDir?: string;
+  maxFiles?: number;
+};
+
+const maxSteerBytes = 1_500;
+const maxSteers = 500;
+
+/**
+ * Machine-generated user_message shapes observed in Codex Desktop 0.145
+ * rollouts (validated on the WalkLedger sessions, 2026-07-23). These are
+ * noise filters, not judgment: each matches a producer that is not the human
+ * steering the agent.
+ */
+const judgeDumpPattern = /^\s*The following is the Codex agent history/i;
+const attachmentDumpPattern = /^\s*#\s*Files mentioned by the user:/i;
+const agentsDumpPattern = /^\s*#\s*AGENTS\.md instructions/i;
+const internalAdvisorMarker = "farrier's read-only project advisor";
+
+/**
+ * Turns one raw user_message into a steer, or undefined when the message is
+ * machine noise (stop/approval-judge history dumps, attachment manifests,
+ * AGENTS.md dumps, farrier's own advisor sessions, or pure ambient context).
+ * The surviving text is redacted and bounded by boundSessionText.
+ */
+export function steerFromUserMessage(raw: string): { text: string; truncated: boolean } | undefined {
+  if (judgeDumpPattern.test(raw) || attachmentDumpPattern.test(raw) || agentsDumpPattern.test(raw)) {
+    return undefined;
+  }
+  if (raw.toLowerCase().includes(internalAdvisorMarker)) {
+    return undefined;
+  }
+  const stripped = stripSessionAmbient(raw);
+  const bounded = boundSessionText(stripped, maxSteerBytes);
+  if (bounded.text.length < 2) {
+    return undefined;
+  }
+  return bounded;
+}
+
+export async function prepareDistillEvidence(options: DistillEvidenceOptions): Promise<DistillEvidence> {
+  const projectDir = resolve(options.projectDir);
+  const collector = new SignalCollector({ keepAllFailures: true });
+  const steers: DistillSteer[] = [];
+  let omittedSteers = 0;
+
+  const codex = await scanCodexSessions({
+    projectDir,
+    sessionsDir: options.codexSessionsDir,
+    maxFiles: options.maxFiles,
+    collector,
+    onUserMessage: ({ text, sessionRef, date }) => {
+      const steer = steerFromUserMessage(text);
+      if (!steer) return;
+      if (steers.length >= maxSteers) {
+        omittedSteers += 1;
+        return;
+      }
+      steers.push({ ...steer, sessionRef, ...(date ? { date } : {}) });
+    }
+  });
+
+  const claude = await scanClaudeTranscripts(
+    options.claudeTranscriptsDir ?? defaultTranscriptDir(projectDir),
+    collector
+  );
+
+  const notes = [...codex.notes, ...claude.notes];
+  if (omittedSteers > 0) {
+    notes.push(`Steer extraction kept the newest ${maxSteers} steer(s); ${omittedSteers} older one(s) were omitted.`);
+  }
+  notes.push(
+    `Distill evidence: ${steers.length} steer(s) from ${codex.filesMatched} codex session(s) ` +
+      `(of ${codex.filesScanned} scanned) plus ${claude.filesScanned} Claude transcript file(s) for failure clusters. ` +
+      "Every failure cluster is kept (verification and build failures included) with no thresholds. Nothing left this machine."
+  );
+
+  return {
+    projectDir,
+    steers,
+    failureClusters: collector.signals(),
+    codexSessionsMatched: codex.filesMatched,
+    codexSessionsScanned: codex.filesScanned,
+    notes
+  };
+}

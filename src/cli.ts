@@ -29,6 +29,8 @@ Usage:
   farrier map --dir <target> [--json]
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--codex-sessions <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
+  farrier distill --dir <source> [--codex-sessions <dir>] [--name <kebab>] [--send-session-evidence] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
+  farrier distill --dir <source> --yes --install-dir <target> [--agents claude,codex] [--force]
   farrier doctor --dir <target> [--json] [--static] [--live]
   farrier ab-gate --result <result.json> [--json]
   farrier audit-panel prepare --manifest <panel.json> --output <new-directory> [--json]
@@ -73,6 +75,7 @@ Note:
   --yes approves a conflict-free plan. Replacing existing differing files additionally requires --force.
   farrier registry list shows configured private registries without executing payloads.
   farrier learn is report-only unless --yes is provided; it appends new declarative ToolPolicyRule data only.
+  farrier distill mines a finished project's sessions into a portable playbook (orchestrator skill, gate catalog, review subagents). Report-only by default; evidence stays local unless --send-session-evidence consents to the LLM classification, and installing requires --yes --install-dir after review.
   farrier map regenerates the repository-map section of AGENTS.md (layout, test conventions, git co-change coupling) in place, preserving all other AGENTS.md content. update --yes also refreshes it.
   farrier ab-gate enforces the harness release thresholds against a recorded paired evaluation; it exits 1 listing violated thresholds.
   farrier doctor runs static checks plus runtime hook probes (fixture payloads through the installed bindings). --static skips probes; --live adds one real Codex session that must get blocked. Exits 0 only when every executed layer is healthy.
@@ -303,6 +306,11 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
       return await runLearn(args.slice(1));
     }
 
+    if (args[0] === "distill") {
+      const { runDistill } = await import("./cli/distill");
+      return await runDistill(args.slice(1), usage);
+    }
+
     if (args[0] === "doctor") {
       const { runDoctor } = await import("./cli/doctor");
       return await runDoctor(args.slice(1), usage);
@@ -368,57 +376,89 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
         const launcherContext = launcherSessionView(session);
         const noInstalledBackend = !session.detection.claude.installed && !session.detection.codex.installed;
 
+        // Advise is Improve's deeper tier; Skills is reachable directly or
+        // from an Improve skill suggestion. Each flow returns an exit code to
+        // bubble up, or undefined to fall back to the launcher.
+        const adviseFlow = async (): Promise<number | undefined> => {
+          const { runAdviceWizard } = await import("./tui/advise-app");
+          const outcome = await runAdviceWizard(targetDir, {
+            initialBackend: session.backend,
+            // "Both" is the only startup choice that leaves the analysis
+            // backend genuinely undecided; a single-agent pick already
+            // answered "Analyze with", so the wizard hides that row.
+            backendLocked: session.backend !== undefined && session.choice !== "both",
+            modelOverrides: session.models,
+            effortOverrides: session.efforts,
+            probeAvailability: async () => ({
+              claude: session.detection.claude.installed,
+              codex: session.detection.codex.installed,
+            }),
+          });
+
+          if (typeof outcome === "object" && outcome.kind === "create-skill") {
+            const { runCreateWizard } = await import("./tui/create-app");
+            const code = await runCreateWizard(targetDir, [outcome.request], session, { backToLauncher: true });
+            return code === "back" ? undefined : code;
+          }
+
+          if (outcome === "done") {
+            return 0;
+          }
+
+          if (outcome === "cancel") {
+            console.error("farrier: cancelled.");
+            return 1;
+          }
+
+          // "back" returns to the launcher.
+          return undefined;
+        };
+
+        const skillsFlow = async (initialQuery?: string): Promise<number | undefined> => {
+          const { runSkillsFlow } = await import("./cli/skills-flow");
+          return await runSkillsFlow(targetDir, session, initialQuery);
+        };
+
         for (;;) {
           const choice = await runLauncher(launcherContext);
 
-          if (choice === "advise") {
-            if (noInstalledBackend) {
-              // The launcher row is marked; analysis cannot run without a CLI.
-              continue;
-            }
-            const { runAdviceWizard } = await import("./tui/advise-app");
-            const outcome = await runAdviceWizard(targetDir, {
-              initialBackend: session.backend,
-              // "Both" is the only startup choice that leaves the analysis
-              // backend genuinely undecided; a single-agent pick already
-              // answered "Analyze with", so the wizard hides that row.
-              backendLocked: session.backend !== undefined && session.choice !== "both",
-              modelOverrides: session.models,
-              effortOverrides: session.efforts,
-              probeAvailability: async () => ({
-                claude: session.detection.claude.installed,
-                codex: session.detection.codex.installed,
-              }),
-            });
-
-            if (typeof outcome === "object" && outcome.kind === "create-skill") {
-              const { runCreateWizard } = await import("./tui/create-app");
-              return await runCreateWizard(targetDir, [outcome.request], session);
-            }
-
-            if (outcome === "done") {
-              return 0;
-            }
-
-            if (outcome === "cancel") {
-              console.error("farrier: cancelled.");
-              return 1;
-            }
-
-            // "back" returns to the launcher.
-            continue;
-          }
-
-          if (choice === "learn") {
+          if (choice === "improve") {
             // Deliberate divergence from a literal "sessions follow the agent
-            // pick": learn keeps mining BOTH Claude transcripts and Codex
-            // rollouts regardless of the startup choice. Mining is local
+            // pick": the local tier keeps mining BOTH Claude transcripts and
+            // Codex rollouts regardless of the startup choice. Mining is local
             // counting only, more evidence is strictly better, and the mined
             // source note in the report states both counts. The pick governs
             // which CLI farrier runs and which defaults it seeds, not which
             // local evidence it may read.
-            const { runLearnApp } = await import("./tui/learn-app");
-            await runLearnApp(targetDir);
+            const { runImproveApp } = await import("./tui/learn-app");
+            const outcome = await runImproveApp(targetDir, {
+              llmAnalysisAvailable: !noInstalledBackend,
+              llmBackendLabel:
+                session.backend === "claude" ? "Claude Code" : session.backend === "codex" ? "Codex" : undefined,
+            });
+
+            if (typeof outcome === "object") {
+              const code = outcome.kind === "advise" ? await adviseFlow() : await skillsFlow(outcome.query);
+              if (code !== undefined) {
+                return code;
+              }
+            }
+            continue;
+          }
+
+          if (choice === "skills") {
+            const code = await skillsFlow();
+            if (code !== undefined) {
+              return code;
+            }
+            continue;
+          }
+
+          if (choice === "distill") {
+            // Mining is local; the LLM classification inside the app runs
+            // only after its own consent screen, on the startup-picked backend.
+            const { runDistillApp } = await import("./tui/distill-app");
+            await runDistillApp(targetDir, { session });
             continue;
           }
 
@@ -428,17 +468,16 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
             continue;
           }
 
-          if (choice === "create") {
-            const { runCreateWizard } = await import("./tui/create-app");
-            return await runCreateWizard(targetDir, [], session);
-          }
-
           if (choice === "harness") {
             const { runWizard } = await import("./tui/app");
-            return await runWizard(targetDir, {
+            const result = await runWizard(targetDir, {
               context: renderOptions.context,
               session,
             });
+            if (result === "back") {
+              continue;
+            }
+            return result;
           }
 
           console.error("farrier: cancelled.");

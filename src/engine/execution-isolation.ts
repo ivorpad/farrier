@@ -185,16 +185,29 @@ export async function withIsolatedExecution<T>(input: {
   retainWorkspace?: boolean;
   retainWorkspaceOnError?: boolean;
   readOnlyWorkspace?: boolean;
+  /**
+   * "reject" (default) fails the run when the target project's fingerprint
+   * changed while the external process ran. "tolerate" skips that fence for
+   * call sites whose run neither reads from nor stages writes into the target
+   * AND whose target is expected to be concurrently edited (distill classifies
+   * evidence from projects with live agent sessions; their rollouts append
+   * mid-run). The workspace fence always stays; the relaxation is recorded in
+   * the returned isolation fact.
+   */
+  concurrentTargetWrites?: "reject" | "tolerate";
   run: (context: IsolatedExecutionContext) => Promise<T>;
 }): Promise<{ value: T; isolation: IsolationFact }> {
   const workspace = await mkdtemp(join(tmpdir(), `farrier-exec-${process.pid}-${randomUUID().slice(0, 8)}-`));
-  const before = await targetDigest(input.targetDir);
+  const fenceTarget = (input.concurrentTargetWrites ?? "reject") === "reject";
+  const before = fenceTarget ? await targetDigest(input.targetDir) : "";
   const timeout = combinedAbort(input.signal, input.timeoutMs ?? defaultIsolatedTimeoutMs);
   const isolation: IsolationFact = input.nativeConfinement
     ? { mode: "native-confinement", residualRisk: null }
     : {
         mode: "staged-best-effort",
-        residualRisk: "The installed CLI has no supported native write-root confinement; output was staged and the target fingerprint was verified, but the process retained OS-user access.",
+        residualRisk: fenceTarget
+          ? "The installed CLI has no supported native write-root confinement; output was staged and the target fingerprint was verified, but the process retained OS-user access."
+          : "The installed CLI has no supported native write-root confinement; the target fingerprint was NOT verified because the caller tolerates concurrent target writes (live agent sessions), so the process retained unverified OS-user access to the project.",
       };
   let succeeded = false;
   let deferredCleanup = false;
@@ -254,14 +267,21 @@ export async function withIsolatedExecution<T>(input: {
     if (workspaceBefore && await targetDigest(workspace, new Set(["home", "tmp"])) !== workspaceBefore) {
       throw new Error("External process changed read-only staged inputs or produced unexpected output.");
     }
-    if (!(await targetUnchanged(input.targetDir, before))) {
+    if (fenceTarget && !(await targetUnchanged(input.targetDir, before))) {
       throw new Error("External process changed the target project or prevented integrity verification; staged output was rejected and the project must be reviewed for unaccepted writes.");
     }
     succeeded = true;
     return { value, isolation };
   } catch (error) {
-    if (!deferredCleanup && !(await targetUnchanged(input.targetDir, before))) {
-      throw new Error("External execution failed and changed the target project or prevented integrity verification; review the project for unaccepted writes.");
+    if (fenceTarget && !deferredCleanup && !(await targetUnchanged(input.targetDir, before))) {
+      // Keep the underlying failure visible: masking it behind the integrity
+      // message alone makes a plain backend error undiagnosable, and on a
+      // repo with live agent sessions the drift is usually not the real story.
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `External execution failed and changed the target project (or its integrity could not be verified) while it ran; review the project for unaccepted writes. Underlying failure: ${message}`,
+        { cause: error }
+      );
     }
     throw error;
   } finally {

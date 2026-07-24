@@ -73,6 +73,7 @@ function miningResult(proposals: PrimitiveProposal[]): ProposalMiningResult {
     transcriptsDir: "/tmp/transcripts",
     signals: proposals.flatMap((proposal) => proposal.evidence),
     proposals,
+    harnessPresent: true,
     notes: []
   };
 }
@@ -147,6 +148,33 @@ describe("learn proposal surface", () => {
       expect(frame).toContain("Seen 3× across 2 session(s) (2026-07-19 to 2026-07-21)");
       expect(frame).toContain("e.g. git filter-repo");
       expect(frame).toContain("nothing applied yet");
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("without a harness the list is read-only: banner up front, review gated before planning", async () => {
+    const planned: PrimitiveProposal[] = [];
+    const view = await renderLearn({
+      onMine: async () => ({ ...miningResult([guardProposal(), ruleProposal()]), harnessPresent: false }),
+      onPlan: async (proposal) => {
+        planned.push(proposal);
+        return plannedFiles(proposal);
+      }
+    });
+    try {
+      const frame = await view.waitForFrame((value) => value.includes("read-only until a harness exists"));
+      expect(frame.replace(/\s+/g, " ")).toContain(
+        "No harness in this project yet, so proposals are read-only. Choose Create harness from the main menu first."
+      );
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() =>
+        view.captureCharFrame().replace(/\s+/g, " ").includes("then come back to apply it.")
+      );
+      const after = view.captureCharFrame().replace(/\s+/g, " ");
+      expect(after).toContain("Choose Create harness from the main menu first, then come back to apply it.");
+      expect(after).not.toContain("Preparing the exact files");
+      expect(planned.length).toBe(0);
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -229,9 +257,43 @@ describe("learn proposal surface", () => {
     try {
       await view.waitForFrame((value) => value.includes("1 proposal(s)"));
       await interact(view, () => view.mockInput.pressEnter());
-      const frame = await view.waitForFrame((value) => value.includes("Use Create skill from the main menu and search: npm deploy"));
+      const frame = await view.waitForFrame((value) => value.includes("Open Find skills from the main menu and search: npm deploy"));
       expect(frame).not.toContain("Review recommendation creation");
       expect(plans).toBe(0);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("a skill suggestion jumps to the Skills surface with its query when wired", async () => {
+    const queries: string[] = [];
+    const view = await renderLearn({
+      onMine: async () => miningResult([skillProposal()]),
+      onFindSkills: (query) => queries.push(query)
+    });
+    try {
+      await view.waitForFrame((value) => value.includes("1 proposal(s)"));
+      await interact(view, () => view.mockInput.pressEnter());
+      expect(queries).toEqual(["npm deploy"]);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("the deeper LLM analysis is offered and fires on a", async () => {
+    let deeper = 0;
+    const view = await renderLearn({
+      onDeeper: () => {
+        deeper += 1;
+      },
+      llmBackendLabel: "Claude Code"
+    });
+    try {
+      const frame = await view.waitForFrame((value) => value.includes("3 proposal(s)"));
+      expect(frame).toContain("Deeper pass: a runs the LLM analysis");
+      expect(frame).toContain("Claude Code");
+      await interact(view, () => view.mockInput.typeText("a"));
+      expect(deeper).toBe(1);
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -245,7 +307,7 @@ describe("learn proposal surface", () => {
     });
     const view = await renderLearn(props);
     try {
-      const frame = await view.waitForFrame((value) => value.includes("Learn failed:"));
+      const frame = await view.waitForFrame((value) => value.includes("Failure mining failed:"));
       expect(frame).toContain("not a farrier project; run farrier create first");
     } finally {
       await interact(view, () => view.renderer.destroy());

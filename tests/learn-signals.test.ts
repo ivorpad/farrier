@@ -315,6 +315,9 @@ describe("learn report integration", () => {
     const report = await createLearnReport({
       targetDir: project,
       transcriptsDir: transcripts,
+      // Keep the test hermetic: the default scans the machine's real
+      // ~/.codex/sessions, whose size alone can exceed the test timeout.
+      codexSessionsDir: join(transcripts, "no-codex-sessions"),
       noLlm: true
     });
 

@@ -395,7 +395,9 @@ export async function runSkillNew(args: string[]): Promise<number> {
 
     if (process.stdout.isTTY === true && !headlessIntent) {
       const { runCreateWizard } = await import("../tui/create-app");
-      return runCreateWizard(resolve(options.dir));
+      // No launcher to fall back to here; "back" cannot occur without the option.
+      const code = await runCreateWizard(resolve(options.dir));
+      return code === "back" ? 1 : code;
     }
 
     console.error('farrier skill new: a description is required. Usage: farrier skill new "<description>" [--help]');

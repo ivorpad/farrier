@@ -5,6 +5,7 @@ import {
   mergeDetect,
   mergeRuleBlocks,
   mergeSecondaryDetectors,
+  mergeSubagents,
   mergeToolPolicyRules
 } from "./merge";
 import { pythonFastapiPack } from "./python-fastapi";
@@ -141,6 +142,7 @@ export function resolvePack(id: string): ResolvedPack {
       agentsRules: pack.agentsRules ?? [],
       ruleBlocks: pack.ruleBlocks ?? [],
       secondaryDetectors: pack.secondaryDetectors ?? [],
+      subagents: pack.subagents ?? [],
       packIds: [pack.id],
       remoteHooks: []
     };
@@ -167,6 +169,8 @@ export function resolvePack(id: string): ResolvedPack {
     agentsRules: dedupe([...parent.agentsRules, ...(pack.agentsRules ?? [])]),
     ruleBlocks: mergeRuleBlocks(parent.ruleBlocks, pack.ruleBlocks ?? []),
     secondaryDetectors: mergeSecondaryDetectors(parent.secondaryDetectors, pack.secondaryDetectors ?? []),
+    subagents: mergeSubagents(parent.subagents, pack.subagents ?? []),
+    playbook: pack.playbook ?? parent.playbook,
     packIds: [...parent.packIds, pack.id],
     remoteHooks: [...parent.remoteHooks]
   };

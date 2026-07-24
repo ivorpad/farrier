@@ -16,13 +16,17 @@ import { DetailPane, KeyHints, palette, useSpinner, type PaneLine } from "./chro
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
 /**
- * The learn surface: deterministic failure mining over this project's local
- * session transcripts, each mined failure routed to the cheapest primitive
- * (hook, AGENTS.md rule, skill) as a reviewable proposal. Mining counts on
- * this computer only; nothing is sent anywhere. Applying goes through the
- * shared AdviceApplyFlow review — exact files first, explicit confirmation,
- * atomic write with backups.
+ * The Improve surface, tier one: deterministic failure mining over this
+ * project's local session transcripts, each mined failure routed to the
+ * cheapest primitive (hook, AGENTS.md rule, skill) as a reviewable proposal.
+ * Mining counts on this computer only; nothing is sent anywhere. Applying
+ * goes through the shared AdviceApplyFlow review — exact files first,
+ * explicit confirmation, atomic write with backups. Tier two (the consented
+ * LLM analysis) is the existing advise wizard, reached via onDeeper; skill
+ * suggestions jump to the Skills surface via onFindSkills.
  */
+
+export type ImproveOutcome = "back" | { kind: "advise" } | { kind: "find-skills"; query: string };
 
 type LearnPhase =
   | { kind: "mining" }
@@ -50,7 +54,7 @@ export function proposalDetailLines(proposal: PrimitiveProposal, applied: boolea
   }
   if (proposal.kind === "skill-suggestion") {
     lines.push({ fg: palette.gold, text: `Skill search: ${proposal.query}` });
-    lines.push({ fg: palette.muted, text: "Nothing is installed from here; use Create skill from the main menu." });
+    lines.push({ fg: palette.muted, text: "Nothing is installed from here; enter searches the Skills registry." });
   }
   if (applied) {
     lines.push({ fg: palette.success, text: "Applied in this session." });
@@ -63,6 +67,12 @@ export function LearnApp(props: {
   onPlan: (proposal: PrimitiveProposal) => Promise<PlannedProposal>;
   onApply: (plan: AdviceCreationPlan, force: boolean) => Promise<ApplyHarnessChangePlanResult>;
   onExit: () => void;
+  /** Tier two: hands off to the consented LLM analysis (the advise wizard). */
+  onDeeper?: () => void;
+  /** Label for the tier-two hint line, e.g. "claude (default model)". */
+  llmBackendLabel?: string;
+  /** Skill suggestions jump to the Skills surface with the query prefilled. */
+  onFindSkills?: (query: string) => void;
 }) {
   const [phase, setPhase] = useState<LearnPhase>({ kind: "mining" });
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -86,14 +96,17 @@ export function LearnApp(props: {
     };
   }, []);
 
+  const deeperBindings = props.onDeeper ? [binding("a", "deeper", "LLM analysis")] : [];
   const listBindings = defineBindings(
     binding(["up", "down"], "move", "proposals"),
     binding("enter", "activate", "review"),
+    ...deeperBindings,
     binding(["pageup", "pagedown"], "scroll", "scroll"),
     binding(["escape", "b"], "back", "launcher"),
     binding(["q", "ctrl+c"], "quit", "quit")
   );
   const idleBindings = defineBindings(
+    ...deeperBindings,
     binding(["escape", "b"], "back", "launcher"),
     binding(["q", "ctrl+c"], "quit", "quit")
   );
@@ -105,6 +118,7 @@ export function LearnApp(props: {
     if (reviewing) return;
     const intent = resolveIntent(activeBindings, key);
     if (intent === "back" || intent === "quit") props.onExit();
+    else if (intent === "deeper" && phase.kind !== "mining") props.onDeeper?.();
     else if (intent === "scroll") bodyScrollRef.current?.scrollBy(key.name === "pagedown" ? 0.85 : -0.85, "viewport");
     else if (intent === "move") {
       setActionMessage(undefined);
@@ -113,7 +127,17 @@ export function LearnApp(props: {
       const proposal = proposals[selectedIndex];
       if (!proposal) return;
       if (proposal.kind === "skill-suggestion") {
-        setActionMessage(`Nothing to install for a skill. Use Create skill from the main menu and search: ${proposal.query}`);
+        if (props.onFindSkills) {
+          props.onFindSkills(proposal.query);
+          return;
+        }
+        setActionMessage(`Nothing to install for a skill. Open Find skills from the main menu and search: ${proposal.query}`);
+        return;
+      }
+      // Applying installs into the harness; without one, planProposal would
+      // refuse after the review screen. Say so here instead of at the end.
+      if (phase.kind === "list" && !phase.result.harnessPresent) {
+        setActionMessage("This proposal installs into the harness. Choose Create harness from the main menu first, then come back to apply it.");
         return;
       }
       setActionMessage(undefined);
@@ -129,7 +153,7 @@ export function LearnApp(props: {
         onPlan={async () => {
           const planned = await props.onPlan(proposal);
           if (planned.kind !== "files") {
-            throw new Error("This proposal does not create files; use Create skill from the main menu.");
+            throw new Error("This proposal does not create files; use Find skills from the main menu.");
           }
           return { plan: planned.plan, inspection: planned.inspection };
         }}
@@ -150,8 +174,13 @@ export function LearnApp(props: {
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <box style={{ flexDirection: "column", flexShrink: 0 }}>
-        <text fg={palette.accent}>✦ Learn from failures</text>
+        <text fg={palette.accent}>✦ Improve</text>
         <text fg={palette.muted}>Counts repeated failures in this project's local session transcripts. Counting stays on this computer.</text>
+        {props.onDeeper ? (
+          <text fg={palette.faint}>
+            {`Deeper pass: a runs the LLM analysis (repo + consented session evidence${props.llmBackendLabel ? ` with ${props.llmBackendLabel}` : ""}).`}
+          </text>
+        ) : null}
       </box>
       {/*
         The body is a bounded scroll region with flexShrink:0 children — on a
@@ -173,7 +202,7 @@ export function LearnApp(props: {
           <text style={{ flexShrink: 0 }} fg={palette.agent}>{`${spinner}  Reading local session transcripts…`}</text>
         ) : null}
         {phase.kind === "error" ? (
-          <text style={{ flexShrink: 0 }} fg={palette.warn}>Learn failed: {phase.message}</text>
+          <text style={{ flexShrink: 0 }} fg={palette.warn}>Failure mining failed: {phase.message}</text>
         ) : null}
         {phase.kind === "list" ? (
           <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
@@ -181,14 +210,21 @@ export function LearnApp(props: {
             {phase.result.notes.map((note, index) => (
               <text key={`note-${index}`} style={{ flexShrink: 0 }} fg={palette.faint}>{note}</text>
             ))}
+            {!phase.result.harnessPresent ? (
+              <text style={{ flexShrink: 0 }} fg={palette.gold}>
+                No harness in this project yet, so proposals are read-only. Choose Create harness from the main menu first.
+              </text>
+            ) : null}
           </box>
         ) : null}
         {phase.kind === "list" && proposals.length === 0 ? (
-          <text style={{ flexShrink: 0 }} fg={palette.muted}>No repeated failures found in the local transcripts. Nothing to propose.</text>
+          <text style={{ flexShrink: 0 }} fg={palette.muted}>
+            {`No repeated failures found in the local transcripts. Nothing to propose.${props.onDeeper ? " The deeper LLM analysis (a) may still find improvements." : ""}`}
+          </text>
         ) : null}
         {phase.kind === "list" && proposals.length > 0 ? (
           <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
-            <text style={{ flexShrink: 0 }} fg={palette.gold}>{`${proposals.length} proposal(s) from ${phase.result.signals.length} failure signal(s) · nothing applied yet`}</text>
+            <text style={{ flexShrink: 0 }} fg={palette.gold}>{`${proposals.length} proposal(s) from ${phase.result.signals.length} failure signal(s) · ${phase.result.harnessPresent ? "nothing applied yet" : "read-only until a harness exists"}`}</text>
             {proposals.map((proposal, index) => {
               const focused = index === selectedIndex;
               const applied = appliedIds.has(proposal.id);
@@ -218,7 +254,10 @@ export function LearnApp(props: {
   );
 }
 
-export async function runLearnApp(targetDir: string): Promise<void> {
+export async function runImproveApp(
+  targetDir: string,
+  options: { llmAnalysisAvailable?: boolean; llmBackendLabel?: string } = {}
+): Promise<ImproveOutcome> {
   const loadCatalog = async () => {
     const { loadConfiguredCatalog, registryRefsFromManifest } = await import("../cli/registry");
     const requireRefs = await registryRefsFromManifest(targetDir);
@@ -228,25 +267,29 @@ export async function runLearnApp(targetDir: string): Promise<void> {
   try {
     renderer = await createCliRenderer();
     const cliRenderer = renderer;
-    await new Promise<void>((done) => {
+    return await new Promise<ImproveOutcome>((done) => {
       let settled = false;
-      const finish = () => {
+      const finish = (outcome: ImproveOutcome) => {
         if (settled) return;
         settled = true;
         cliRenderer.destroy();
-        done();
+        done(outcome);
       };
       createRoot(cliRenderer).render(
         <LearnApp
           onMine={async () => minePrimitiveProposals({ targetDir, catalog: await loadCatalog() })}
           onPlan={async (proposal) => planPrimitiveProposal({ targetDir, proposal, catalog: await loadCatalog() })}
           onApply={(plan, force) => applyProposalPlan(targetDir, plan, force)}
-          onExit={finish}
+          onExit={() => finish("back")}
+          onDeeper={options.llmAnalysisAvailable ? () => finish({ kind: "advise" }) : undefined}
+          llmBackendLabel={options.llmBackendLabel}
+          onFindSkills={(query) => finish({ kind: "find-skills", query })}
         />
       );
     });
   } catch (error) {
     renderer?.destroy();
     console.error(`farrier: ${error instanceof Error ? error.message : String(error)}`);
+    return "back";
   }
 }

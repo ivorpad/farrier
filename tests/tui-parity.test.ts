@@ -45,6 +45,24 @@ describe("TUI pack presentation", () => {
     expect(stackSelectionAssumption("python-uv", [])).toBe("Selected python-uv; no supported stack signals matched, so nothing was assumed for you.");
   });
 
+  test("with no detection but profiled languages, names them instead of claiming ignorance", () => {
+    // No pack family exists for these: point at the neutral starter.
+    expect(stackSelectionAssumption("", [], ["Swift"])).toBe(
+      "Detected Swift — no matching pack yet. Any language (neutral starter) still works."
+    );
+    expect(stackSelectionAssumption("", [], ["Swift", "Go", "Rust"])).toBe(
+      "Detected Swift, Go +1 — no matching pack yet. Any language (neutral starter) still works."
+    );
+    // A pack family exists but no lockfile matched: the languages are still named.
+    expect(stackSelectionAssumption("", [], ["TypeScript"])).toBe(
+      "Detected TypeScript sources, but no lockfile matched a pack. Pick the closest one."
+    );
+    // An explicit pick still wins over the language hint.
+    expect(stackSelectionAssumption("generic", [], ["Swift"])).toBe(
+      "Selected generic; no supported stack signals matched, so nothing was assumed for you."
+    );
+  });
+
   test("attributes built-in and inherited generators to the pack that declared them", () => {
     const builtins = builtinCatalog();
     const fastapi = builtins.resolvePack("python-fastapi");

@@ -55,6 +55,38 @@ function execOutput(callId: string, cmd: string, exitCode: number, body: string,
   };
 }
 
+// Codex Desktop 0.145.0-alpha.30 shapes (observed 2026-07-23): shell work is a
+// custom_tool_call named "exec" whose input is JS source calling
+// tools.exec_command({cmd: ...}); the output is an array of input_text parts
+// prefixed "Script completed"/"Script failed", with exit codes only as
+// printed "exit_code":N fragments.
+function customExecCall(callId: string, cmds: string[], workdir: string, timestamp = "2026-07-20T08:02:00.000Z"): unknown {
+  const input = cmds
+    .map(
+      (cmd, index) =>
+        `const r${index} = await tools.exec_command({\n  cmd: ${JSON.stringify(cmd)},\n  workdir: ${JSON.stringify(workdir)},\n  yield_time_ms: 10000\n});\ntext(r${index}.output);`
+    )
+    .join("\n");
+  return {
+    timestamp,
+    type: "response_item",
+    payload: { type: "custom_tool_call", id: "ctc_0", status: "completed", call_id: callId, name: "exec", input }
+  };
+}
+
+function customExecOutput(callId: string, parts: string[], timestamp = "2026-07-20T08:02:05.000Z"): unknown {
+  return {
+    timestamp,
+    type: "response_item",
+    payload: {
+      type: "custom_tool_call_output",
+      id: "ctco_0",
+      call_id: callId,
+      output: parts.map((text) => ({ type: "input_text", text }))
+    }
+  };
+}
+
 async function writeRollout(sessionsDir: string, stem: string, records: unknown[]): Promise<void> {
   const day = join(sessionsDir, "2026", "07", "20");
   await mkdir(day, { recursive: true });
@@ -202,6 +234,93 @@ describe("codex session mining", () => {
 
     const { signals } = await bareCollectorScan(project, sessions);
     expect(signals).toEqual([]);
+  });
+});
+
+describe("codex desktop 0.145 custom exec mining", () => {
+  test("extracts commands and failures from custom_tool_call exec records", async () => {
+    const project = await tempDir("farrier-codex-project-");
+    const sessions = await tempDir("farrier-codex-sessions-");
+    for (const stem of ["rollout-2026-07-20T08-00-00-m145", "rollout-2026-07-20T09-00-00-n145"]) {
+      await writeRollout(sessions, stem, [
+        sessionMeta(project),
+        customExecCall("call_1", ["npm deploy"], project),
+        customExecOutput("call_1", ["Script failed\nWall time 0.0 seconds\nOutput:\n", "Script error:\nnpm ERR! missing script: deploy"])
+      ]);
+    }
+
+    const { scan, signals } = await bareCollectorScan(project, sessions);
+    const repeated = signals.find((signal) => signal.class === "repeated-failure");
+
+    expect(repeated?.key).toBe("npm deploy");
+    expect(repeated?.sessionCount).toBe(2);
+    // Events were extracted, so the format-drift tripwire stays quiet.
+    expect(scan.notes).toEqual([]);
+  });
+
+  test("Script completed output is not a failure even when the text looks error-ish", async () => {
+    const project = await tempDir("farrier-codex-project-");
+    const sessions = await tempDir("farrier-codex-sessions-");
+    for (const stem of ["rollout-2026-07-20T08-00-00-o145", "rollout-2026-07-20T09-00-00-p145"]) {
+      await writeRollout(sessions, stem, [
+        sessionMeta(project),
+        customExecCall("call_1", ["npm deploy"], project),
+        // Echoed file contents mention failures and a zero exit code; the
+        // old word heuristics would have flagged this on every success.
+        customExecOutput("call_1", [
+          "Script completed\nWall time 0.1 seconds\nOutput:\n",
+          'PLANS.md says recording_start_failed was fixed; last run {"exit_code":0} and no error remained'
+        ])
+      ]);
+    }
+
+    const { signals } = await bareCollectorScan(project, sessions);
+    expect(signals.filter((signal) => signal.class === "repeated-failure")).toEqual([]);
+  });
+
+  test("a nonzero printed exit_code fragment marks the command failed", async () => {
+    const project = await tempDir("farrier-codex-project-");
+    const sessions = await tempDir("farrier-codex-sessions-");
+    for (const stem of ["rollout-2026-07-20T08-00-00-q145", "rollout-2026-07-20T09-00-00-r145"]) {
+      await writeRollout(sessions, stem, [
+        sessionMeta(project),
+        customExecCall("call_1", ["npm deploy"], project),
+        customExecOutput("call_1", ["Script completed\nWall time 3.2 seconds\nOutput:\n", '{"exit_code":65,"output":"BUILD FAILED"}'])
+      ]);
+    }
+
+    const { signals } = await bareCollectorScan(project, sessions);
+    const repeated = signals.find((signal) => signal.class === "repeated-failure");
+    expect(repeated?.key).toBe("npm deploy");
+    expect(repeated?.sessionCount).toBe(2);
+  });
+
+  test("every exec_command in a multi-command script registers as a use", async () => {
+    const project = await tempDir("farrier-codex-project-");
+    const sessions = await tempDir("farrier-codex-sessions-");
+    for (const stem of ["rollout-2026-07-20T08-00-00-s145", "rollout-2026-07-20T09-00-00-t145"]) {
+      await writeRollout(sessions, stem, [
+        sessionMeta(project),
+        customExecCall("call_1", ["pkill -f Electron", "pkill -f GhostHelper"], project)
+      ]);
+    }
+
+    const { signals } = await bareCollectorScan(project, sessions);
+    const leftovers = signals.filter((signal) => signal.class === "leftover-process").map((signal) => signal.key).sort();
+    expect(leftovers).toEqual(["Electron", "GhostHelper"]);
+  });
+
+  test("matched sessions yielding zero tool events raise the format-drift note", async () => {
+    const project = await tempDir("farrier-codex-project-");
+    const sessions = await tempDir("farrier-codex-sessions-");
+    await writeRollout(sessions, "rollout-2026-07-20T08-00-00-u145", [
+      sessionMeta(project),
+      { timestamp: "2026-07-20T08:02:00.000Z", type: "response_item", payload: { type: "some_future_shape", call_id: "call_1" } }
+    ]);
+
+    const { scan } = await bareCollectorScan(project, sessions);
+    expect(scan.filesMatched).toBe(1);
+    expect(scan.notes.some((note) => note.includes("rollout format may have drifted"))).toBe(true);
   });
 });
 

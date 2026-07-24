@@ -23,6 +23,7 @@ export type KeyChord =
   | "super+z"
   | "a"
   | "b"
+  | "i"
   | "q"
   | "r"
   | "t"
@@ -81,6 +82,7 @@ const keyLabels: Record<KeyChord, string> = {
   "super+z": "cmd+z",
   a: "a",
   b: "b",
+  i: "i",
   q: "q",
   r: "r",
   t: "t",

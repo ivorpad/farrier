@@ -1,3 +1,4 @@
+import { resolveModelSettings, type ModelRole, type ModelsConfig, type ResolvedModelSettings } from "../config/farrier-config";
 import type { StartupAgentChoice, StartupEffortChoices, StartupModelChoices } from "../config/startup-choice";
 import type { AgentDetectionInventory } from "../engine/agent-detection";
 import type { EnforcementAgent } from "../engine/agent-selection";
@@ -63,7 +64,46 @@ export function sessionAgentContext(input: {
   };
 }
 
-function agentProductName(backend: AgentBackend): string {
+/**
+ * The one resolution rule for farrier's own LLM calls: the startup pick is
+ * explicit and wins; the config's role entry, then backend default, fill the
+ * rest. TUI call sites resolve through here so the session pick cannot be
+ * silently dropped or overridden by a config default. (Exception: the advise
+ * wizard still receives the same picks as exploded model/effort overrides
+ * through cli.ts and resolves them itself.)
+ */
+export function sessionModelSettings(input: {
+  session: SessionAgentContext | undefined;
+  models: ModelsConfig;
+  backend: AgentBackend;
+  role: ModelRole;
+}): ResolvedModelSettings {
+  return resolveModelSettings({
+    models: input.models,
+    backend: input.backend,
+    role: input.role,
+    explicitModel: input.session?.models[input.backend],
+    explicitReasoningEffort: input.session?.efforts[input.backend]
+  });
+}
+
+/**
+ * Which backend a surface may run against a live availability probe: with a
+ * startup pick, the chosen backend or nothing — never the other one (the user
+ * said which agent they work with). The claude-first fallback only serves
+ * session-less callers (the headless `farrier skill new` entry).
+ */
+export function sessionBackendFor(
+  session: SessionAgentContext | undefined,
+  availability: Partial<Record<AgentBackend, boolean>> | undefined
+): AgentBackend | undefined {
+  if (session) return session.backend && availability?.[session.backend] ? session.backend : undefined;
+  if (availability?.claude) return "claude";
+  if (availability?.codex) return "codex";
+  return undefined;
+}
+
+export function agentProductName(backend: AgentBackend): string {
   return backend === "claude" ? "Claude Code" : "Codex";
 }
 
@@ -72,14 +112,14 @@ export function launcherSessionView(context: SessionAgentContext): LauncherConte
 
   const rowNotes: LauncherRowNotes = neitherInstalled
     ? {
-        advise: "needs Claude Code or Codex installed",
-        create: "authoring needs Claude Code or Codex installed"
+        improve: "local counting works; LLM analysis needs Claude Code or Codex",
+        skills: "search works; suggestions and authoring need Claude Code or Codex"
       }
     : {};
 
   if (context.choice === "none") {
     return {
-      statusLine: "No working agent selected. Create harness, Learn, and Doctor run without one.",
+      statusLine: "No working agent selected. Create harness, skill search, Improve's local pass, and Doctor run without one.",
       rowNotes
     };
   }

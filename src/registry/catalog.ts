@@ -5,6 +5,7 @@ import {
   mergeDetect,
   mergeRuleBlocks,
   mergeSecondaryDetectors,
+  mergeSubagents,
   mergeToolPolicyRules
 } from "../packs/merge";
 import type { Pack, PackHookRef, ResolvedPack, ResolvedRemoteHook, SkillRef } from "../packs/types";
@@ -135,7 +136,9 @@ function packFrom(namespace: string, result: RegistryFetchResult<Extract<Registr
       konsistentTool: result.value.pack.konsistentTool,
       verbs: result.value.pack.verbs ?? ({} as Pack["verbs"]),
       agentsRules: result.value.pack.agentsRules,
-      secondaryDetectors: result.value.pack.secondaryDetectors
+      secondaryDetectors: result.value.pack.secondaryDetectors,
+      subagents: result.value.pack.subagents,
+      playbook: result.value.pack.playbook
     },
     description: result.value.description,
     version: result.value.version,
@@ -180,6 +183,8 @@ function mergeResolvedPack(parent: ResolvedPack, pack: Pack, remoteHooks: Resolv
     agentsRules: dedupe([...parent.agentsRules, ...(pack.agentsRules ?? [])]),
     ruleBlocks: mergeRuleBlocks(parent.ruleBlocks, pack.ruleBlocks ?? []),
     secondaryDetectors: mergeSecondaryDetectors(parent.secondaryDetectors, pack.secondaryDetectors ?? []),
+    subagents: mergeSubagents(parent.subagents, pack.subagents ?? []),
+    playbook: pack.playbook ?? parent.playbook,
     packIds: [...parent.packIds, pack.id],
     remoteHooks: dedupe([...parent.remoteHooks, ...remoteHooks])
   };
@@ -237,6 +242,7 @@ function createCatalog(input: {
         agentsRules: pack.agentsRules ?? [],
         ruleBlocks: pack.ruleBlocks ?? [],
         secondaryDetectors: pack.secondaryDetectors ?? [],
+        subagents: pack.subagents ?? [],
         packIds: [pack.id],
         remoteHooks
       };

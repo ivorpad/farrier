@@ -13,17 +13,43 @@ type StackStepProps = {
   warnings?: string[];
   selectedPackId: string;
   detectedPacks: DetectedPackEvidence[];
+  /** Languages the deterministic profile saw; named in the zero-detection line. */
+  profileLanguages?: string[];
   onSelectPack: (packId: string) => void;
   onNext: () => void;
-  onCancel: () => void;
+  /** esc/b: back to the Agent step. */
+  onBack: () => void;
+  /** q/ctrl+c: quit farrier. */
+  onQuit: () => void;
+  /** The active context source (e.g. "file:docs/PRP.md", "text", "deterministic-project-profile"). */
+  contextSource?: string;
+  /** True while a submitted PRD path/text is being resolved. */
+  contextPending?: boolean;
+  onContextSubmit?: (value: string) => void;
 };
 
 const stackBindings = defineBindings(
   binding(["up", "down"], "move", "move"),
+  binding(["tab", "shift+tab"], "focus", "PRD field"),
   binding("enter", "choose", "choose"),
   binding(["escape", "b"], "back", "back"),
   binding(["q", "ctrl+c"], "quit", "quit")
 );
+const contextBindings = defineBindings(
+  binding(["tab", "shift+tab"], "focus", "back to stacks"),
+  binding("enter", "submit", "save"),
+  binding("escape", "leaveField", "leave field"),
+  binding("ctrl+c", "quit", "quit")
+);
+
+/** Human label for the active context source shown under the PRD field. */
+export function stackContextLabel(source?: string): string {
+  if (!source) return "none yet — suggestions will read the detected project profile";
+  if (source === "deterministic-project-profile") return "detected project profile";
+  if (source.startsWith("detected:")) return `${source.slice("detected:".length)} (auto-detected) + project profile`;
+  if (source.startsWith("file:")) return `${source.slice("file:".length)} + project profile`;
+  return "pasted text + project profile";
+}
 
 /**
  * Human one-line summaries for each real pack, shown in muted text next to the
@@ -72,6 +98,9 @@ function summaryFor(packId: string, listings: PackListing[]): string {
 
 export function StackStep(props: StackStepProps) {
   const [focusedIndex, setFocusedIndex] = useState<number>(Math.max(props.packIds.indexOf(props.selectedPackId), 0));
+  const [focus, setFocus] = useState<"list" | "context">("list");
+  const [contextDraft, setContextDraft] = useState("");
+  const contextAvailable = props.onContextSubmit !== undefined;
 
   const nameWidth = props.packIds.reduce((width, packId) => Math.max(width, displayNameFor(packId).length), 0);
   const detectedByPack = new Map(detectedPackPresentations(props.detectedPacks).map((match) => [match.packId, match]));
@@ -89,10 +118,34 @@ export function StackStep(props: StackStepProps) {
     }
   }
 
+  function submitContext(): void {
+    const trimmed = contextDraft.trim();
+    if (trimmed.length === 0) return;
+    props.onContextSubmit?.(trimmed);
+    setFocus("list");
+  }
+
   useKeyboard((key) => {
-    const intent = resolveIntent(stackBindings, key);
-    if (intent === "back" || intent === "quit") {
-      props.onCancel();
+    const intent = resolveIntent(focus === "context" ? contextBindings : stackBindings, key, {
+      textInputFocused: focus === "context",
+    });
+    if (intent === "quit") {
+      props.onQuit();
+      return;
+    }
+    if (intent === "focus" && contextAvailable) {
+      setFocus((current) => (current === "list" ? "context" : "list"));
+      return;
+    }
+    if (intent === "leaveField") {
+      setFocus("list");
+      return;
+    }
+    if (focus === "context") {
+      return;
+    }
+    if (intent === "back") {
+      props.onBack();
       return;
     }
     if (intent === "move" && key.name === "down") {
@@ -152,9 +205,32 @@ export function StackStep(props: StackStepProps) {
           );
         })}
       </box>
-      <text fg={props.selectedPackId === props.detectedPacks[0]?.packId ? palette.faint : palette.gold}>{stackSelectionAssumption(props.selectedPackId, props.detectedPacks)}</text>
+      <text fg={props.selectedPackId === props.detectedPacks[0]?.packId ? palette.faint : palette.gold}>{stackSelectionAssumption(props.selectedPackId, props.detectedPacks, props.profileLanguages ?? [])}</text>
       <text fg={palette.faint}>The pack decides everything downstream: which hooks make sense, which skills exist for it, what `just check` runs.</text>
-      <ButtonBar hint={bindingsHint(stackBindings)} />
+      {contextAvailable ? (
+        <box style={{ flexDirection: "column", gap: 0 }}>
+          <text fg={focus === "context" ? palette.gold : palette.muted}>
+            Optional: what are you building? Paste a PRD / brief, or a path to one. It powers the skill suggestions later.
+          </text>
+          <input
+            placeholder="e.g. docs/PRD.md, or paste the brief itself — enter saves"
+            focused={focus === "context"}
+            onInput={(value) => setContextDraft(String(value))}
+            onSubmit={submitContext}
+            onKeyDown={(key) => {
+              if (resolveIntent(contextBindings, key) === "leaveField" && (key.name === "escape" || key.sequence === "\u001b")) {
+                key.preventDefault();
+                key.stopPropagation();
+                setFocus("list");
+              }
+            }}
+          />
+          <text fg={palette.faint}>
+            {props.contextPending ? "reading the brief…" : `context: ${stackContextLabel(props.contextSource)}`}
+          </text>
+        </box>
+      ) : null}
+      <ButtonBar hint={bindingsHint(focus === "context" ? contextBindings : stackBindings)} />
     </box>
   );
 }

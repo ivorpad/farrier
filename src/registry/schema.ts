@@ -1,7 +1,12 @@
 import type {
   KonsistentTemplate,
   PackDetect,
+  PackPlaybook,
+  PackSubagent,
   PackVerbs,
+  PlaybookGateCheck,
+  PlaybookGateCheckRule,
+  PlaybookSkill,
   SecondaryDetector,
   ToolPolicyRule
 } from "../packs/types";
@@ -39,6 +44,8 @@ export type RegistryPackPayload = {
   verbs?: PackVerbs;
   agentsRules?: string[];
   secondaryDetectors?: SecondaryDetector[];
+  subagents?: PackSubagent[];
+  playbook?: PackPlaybook;
 };
 
 export type RegistryPackItem = {
@@ -296,6 +303,116 @@ function validateSecondaryDetectors(value: unknown, path: string): SecondaryDete
   });
 }
 
+const subagentNamePattern = /^[a-z][a-z0-9_]*$/;
+const maxPlaybookFileBytes = 256_000;
+
+function validateSubagents(value: unknown, path: string): PackSubagent[] | undefined {
+  return recordArray(value, path)?.map((subagent, index) => {
+    const subagentPath = `${path}.${index}`;
+    const name = stringField(subagent.name, `${subagentPath}.name`);
+    if (!subagentNamePattern.test(name)) {
+      fail(`${subagentPath}.name`, "must match ^[a-z][a-z0-9_]*$");
+    }
+    const sandboxMode = subagent.sandboxMode;
+    if (sandboxMode !== undefined && sandboxMode !== "read-only" && sandboxMode !== "workspace-write") {
+      fail(`${subagentPath}.sandboxMode`, 'must be "read-only" or "workspace-write"');
+    }
+    return {
+      name,
+      description: boundedString(subagent.description, `${subagentPath}.description`, 4_000),
+      ...(sandboxMode !== undefined ? { sandboxMode } : {}),
+      developerInstructions: boundedString(
+        subagent.developerInstructions,
+        `${subagentPath}.developerInstructions`,
+        maxPlaybookFileBytes
+      )
+    };
+  });
+}
+
+function validatePlaybookSkill(value: unknown, path: string): PlaybookSkill {
+  if (!isRecord(value)) {
+    fail(path, "must be an object");
+  }
+  const name = validateItemName(value.name, `${path}.name`);
+  const references = recordArray(value.references, `${path}.references`)?.map((reference, index) => {
+    const referencePath = `${path}.references.${index}`;
+    const referenceName = stringField(reference.name, `${referencePath}.name`).replaceAll("\\", "/");
+    if (referenceName.startsWith("/") || referenceName.split("/").includes("..")) {
+      fail(`${referencePath}.name`, "must be relative and must not contain ..");
+    }
+    return {
+      name: referenceName,
+      content: boundedString(reference.content, `${referencePath}.content`, maxPlaybookFileBytes)
+    };
+  });
+  return {
+    name,
+    description: boundedString(value.description, `${path}.description`, 4_000),
+    body: boundedString(value.body, `${path}.body`, maxPlaybookFileBytes),
+    ...(references === undefined ? {} : { references })
+  };
+}
+
+function validateCheckPath(value: unknown, path: string): string {
+  const checkPath = stringField(value, path).replaceAll("\\", "/");
+  if (checkPath.startsWith("/") || checkPath.startsWith("~") || checkPath.split("/").includes("..")) {
+    fail(path, "must be relative and must not contain ..");
+  }
+  return checkPath;
+}
+
+function validateGateCheckRule(rule: Record<string, unknown>, path: string): PlaybookGateCheckRule {
+  if (rule.kind === "file-exists") {
+    return { kind: "file-exists", path: validateCheckPath(rule.path, `${path}.path`) };
+  }
+  if (rule.kind === "glob-min") {
+    const min = rule.min;
+    if (typeof min !== "number" || !Number.isInteger(min) || min < 1 || min > 1000) {
+      fail(`${path}.min`, "must be an integer between 1 and 1000");
+    }
+    return { kind: "glob-min", pattern: validateCheckPath(rule.pattern, `${path}.pattern`), min };
+  }
+  if (rule.kind === "file-contains") {
+    return {
+      kind: "file-contains",
+      path: validateCheckPath(rule.path, `${path}.path`),
+      pattern: boundedString(rule.pattern, `${path}.pattern`, 1_000)
+    };
+  }
+  fail(`${path}.kind`, 'must be "file-exists", "glob-min", or "file-contains"');
+}
+
+function validateGateChecks(value: unknown, path: string): PlaybookGateCheck[] | undefined {
+  return recordArray(value, path)?.map((check, index) => {
+    const checkPath = `${path}.${index}`;
+    return {
+      gateId: validateItemName(check.gateId, `${checkPath}.gateId`),
+      description: boundedString(check.description, `${checkPath}.description`, 1_000),
+      rules: (recordArray(check.rules, `${checkPath}.rules`) ?? []).map((rule, ruleIndex) =>
+        validateGateCheckRule(rule, `${checkPath}.rules.${ruleIndex}`)
+      )
+    };
+  });
+}
+
+function validatePlaybook(value: unknown, path: string): PackPlaybook | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    fail(path, "must be an object");
+  }
+  const gateChecks = validateGateChecks(value.gateChecks, `${path}.gateChecks`);
+  return {
+    orchestrator: validatePlaybookSkill(value.orchestrator, `${path}.orchestrator`),
+    phases: (recordArray(value.phases, `${path}.phases`) ?? []).map((phase, index) =>
+      validatePlaybookSkill(phase, `${path}.phases.${index}`)
+    ),
+    ...(gateChecks === undefined ? {} : { gateChecks })
+  };
+}
+
 function validateKonsistentTemplate(value: unknown, path: string): KonsistentTemplate | undefined {
   if (value === undefined) {
     return undefined;
@@ -377,7 +494,9 @@ function validatePackItem(record: Record<string, unknown>, base: Omit<RegistryPa
       konsistentTool: optionalStringField(record.pack.konsistentTool, "pack.konsistentTool"),
       verbs,
       agentsRules: stringArray(record.pack.agentsRules, "pack.agentsRules"),
-      secondaryDetectors: validateSecondaryDetectors(record.pack.secondaryDetectors, "pack.secondaryDetectors")
+      secondaryDetectors: validateSecondaryDetectors(record.pack.secondaryDetectors, "pack.secondaryDetectors"),
+      subagents: validateSubagents(record.pack.subagents, "pack.subagents"),
+      playbook: validatePlaybook(record.pack.playbook, "pack.playbook")
     }
   };
 }

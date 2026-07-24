@@ -10,8 +10,12 @@ import { DoneStep, ReviewStep } from "../src/tui/ReviewStep";
 import { EvalConfirmScreen, EvalVerdictScreen } from "../src/tui/create-eval";
 import { CreateDoneScreen, CreateProgressScreen } from "../src/tui/create-progress";
 import { LauncherApp } from "../src/tui/launcher";
+import { WizardBoot } from "../src/tui/app";
+import type { WizardBootstrap } from "../src/tui/wizard-bootstrap";
 import { AdviceApp } from "../src/tui/advise-app";
+import { AdviceApplyFlow } from "../src/tui/AdviceApplyFlow";
 import { AdviceBatchFlow } from "../src/tui/AdviceBatchFlow";
+import { notFarrierProjectMessage } from "../src/engine/manifest";
 import { createInitialAdviceBatchState, type AdviceBatchState } from "../src/engine/advice-batch";
 import type { SessionConsent } from "../src/engine/advice-sessions";
 import type { AdviceReport } from "../src/engine/advice-types";
@@ -107,7 +111,94 @@ describe("TUI keyboard interactions", () => {
     try {
       await interact(view, () => view.mockInput.pressArrow("down"));
       await interact(view, () => view.mockInput.pressEnter());
-      expect(choice).toBe("create");
+      expect(choice).toBe("skills");
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("Create harness shows a loading frame during the repo scan and b backs out to the launcher", async () => {
+    let backs = 0;
+    // Never resolves — the wizard stays on the boot frame for the whole test.
+    const load = () => new Promise<WizardBootstrap>(() => undefined);
+    const view = await testRender(
+      <WizardBoot targetDir="/tmp/example" load={load} onExit={() => undefined} onLauncher={() => { backs += 1; }} />,
+      renderOptions
+    );
+    try {
+      await view.waitForFrame((frame) => frame.includes("Inspecting the repo"));
+      const frame = view.captureCharFrame();
+      expect(frame).toContain("esc/b back");
+      expect(frame).toContain("q/ctrl+c quit");
+      // esc shares the binding but a bare ESC byte sits in the parser's
+      // escape-sequence timeout, which the test scheduler never advances.
+      await interact(view, () => view.mockInput.pressKey("b"));
+      expect(backs).toBe(1);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("a missing-harness plan failure explains the fix and withholds retry", async () => {
+    const applyFlowProps = {
+      recommendation: { id: "hook: deny oversized commits" },
+      onApply: async () => {
+        throw new Error("unused");
+      },
+      onBack: () => undefined,
+      onCancel: () => undefined,
+      onDone: () => undefined
+    };
+    const view = await testRender(
+      <AdviceApplyFlow
+        {...applyFlowProps}
+        onPlan={async () => {
+          throw new Error(notFarrierProjectMessage);
+        }}
+      />,
+      renderOptions
+    );
+    try {
+      const frame = await view.waitForFrame((value) => value.includes("Could not create this recommendation"));
+      const normalized = frame.replace(/\s+/g, " ");
+      expect(normalized).toContain("This project has no harness yet. Choose Create harness from the main menu, then come back.");
+      expect(normalized).not.toContain("not a farrier project");
+      expect(normalized).not.toContain("r retry");
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+
+    // Any other failure keeps the retry affordance and the raw message.
+    const generic = await testRender(
+      <AdviceApplyFlow
+        {...applyFlowProps}
+        onPlan={async () => {
+          throw new Error("backend timed out");
+        }}
+      />,
+      renderOptions
+    );
+    try {
+      const frame = await generic.waitForFrame((value) => value.includes("Could not create this recommendation"));
+      const normalized = frame.replace(/\s+/g, " ");
+      expect(normalized).toContain("backend timed out");
+      expect(normalized).toContain("r retry");
+    } finally {
+      await interact(generic, () => generic.renderer.destroy());
+    }
+  });
+
+  test("a failed repo scan renders in-frame instead of tearing the wizard down", async () => {
+    let exitCode: number | undefined;
+    const load = () => Promise.reject(new Error("registry unreachable"));
+    const view = await testRender(
+      <WizardBoot targetDir="/tmp/example" load={load} onExit={(code) => { exitCode = code; }} onLauncher={() => undefined} />,
+      renderOptions
+    );
+    try {
+      await view.waitForFrame((frame) => frame.includes("Repo inspection failed: registry unreachable"));
+      await interact(view, () => view.mockInput.pressKey("q"));
+      expect(exitCode).toBe(1);
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -740,12 +831,15 @@ describe("TUI keyboard interactions", () => {
   test("Agent step starts on Claude Code and Enter selects the focused target", async () => {
     const selected: string[][] = [];
     let advanced = 0;
+    let backed = 0;
+    let quit = 0;
     const view = await testRender(
       <AgentStep
         selectedAgents={["claude"]}
         onSelectAgents={(agents) => selected.push([...agents])}
         onNext={() => { advanced += 1; }}
-        onCancel={() => undefined}
+        onBack={() => { backed += 1; }}
+        onQuit={() => { quit += 1; }}
       />,
       renderOptions
     );
@@ -763,6 +857,13 @@ describe("TUI keyboard interactions", () => {
 
       expect(selected.at(-1)).toEqual(["claude", "codex"]);
       expect(advanced).toBe(1);
+
+      // b walks back one level (the launcher); q quits farrier.
+      await interact(view, () => view.mockInput.typeText("b"));
+      expect(backed).toBe(1);
+      expect(quit).toBe(0);
+      await interact(view, () => view.mockInput.typeText("q"));
+      expect(quit).toBe(1);
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -843,6 +944,34 @@ describe("TUI keyboard interactions", () => {
       await review.waitForFrame((value) => value.includes("content sha256"));
     } finally {
       await interact(review, () => review.renderer.destroy());
+    }
+  });
+
+  test("review keeps the agent pick editable: a cycles the enforcement target", async () => {
+    let cycled = 0;
+    const view = await testRender(
+      <ReviewStep
+        agents={["codex"]}
+        createRequests={[]}
+        files={[]}
+        existingHarness={false}
+        blockerCount={0}
+        loading={false}
+        canConfirm
+        onConfirm={() => undefined}
+        onCycleAgents={() => { cycled += 1; }}
+        onBack={() => undefined}
+        onQuit={() => undefined}
+      />,
+      renderOptions
+    );
+    try {
+      const frame = await view.waitForFrame((value) => value.includes("(a changes it)"));
+      expect(frame).toContain("Enforcement: Codex");
+      await interact(view, () => view.mockInput.typeText("a"));
+      expect(cycled).toBe(1);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
     }
   });
 

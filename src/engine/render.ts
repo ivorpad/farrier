@@ -9,6 +9,7 @@ import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
 import { evaluatePackRules, type EvaluatedPackRules } from "./detect";
 import { resolveToolchain, type ToolchainResolution } from "./toolchain";
 import { generateRepoMapSection, spliceRepoMapSection } from "./repo-map";
+import { playbookFiles } from "./render-playbook";
 
 /** Provider-neutral home for generated hook implementations and their tests. */
 export const hooksDirectory = ".farrier/hooks";
@@ -802,6 +803,12 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     for (const agent of agents) {
       files.push(...(await advisorSkillFiles(agent)));
     }
+  }
+
+  // Playbook bundles and review subagents render inline from pack content
+  // (unlike pack.skills, which are registry refs installed separately).
+  if (pack.playbook || pack.subagents.length > 0) {
+    files.push(...(await playbookFiles({ playbook: pack.playbook, subagents: pack.subagents, agents })));
   }
 
   // Every builtin hook imports the shared runtime (bounded subprocess/file

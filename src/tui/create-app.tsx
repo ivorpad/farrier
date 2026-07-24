@@ -1,7 +1,7 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
-import { loadFarrierConfig, resolveModelSettings, type ModelsConfig } from "../config/farrier-config";
+import { loadFarrierConfig, type ModelsConfig } from "../config/farrier-config";
 import { probeAgents, type AgentAvailability } from "../engine/backend";
 import {
   createSkills,
@@ -16,7 +16,7 @@ import { CreateDoneScreen, CreateProgressScreen, type RequestStatus } from "./cr
 import { CreateStep } from "./CreateStep";
 import { RefineFlow } from "./RefineScreen";
 import { idleExitBindings, resolveIntent } from "./keymap";
-import type { SessionAgentContext } from "./session-context";
+import { sessionBackendFor, sessionModelSettings, type SessionAgentContext } from "./session-context";
 
 type Phase = "form" | "questions" | "writing" | "done" | "eval";
 
@@ -27,6 +27,8 @@ type CreateAppProps = {
   /** Startup pick: seeds the agent default and refinement backend; never locks them. */
   session?: SessionAgentContext;
   onExit: (code: number, message?: string) => void;
+  /** esc on the form: return to the launcher instead of exiting farrier. */
+  onBack?: () => void;
 };
 
 function CreateApp(props: CreateAppProps) {
@@ -48,15 +50,7 @@ function CreateApp(props: CreateAppProps) {
   // Concurrent runs can collide at once; prompts are shown one at a time.
   const collisionChainRef = useRef<Promise<void>>(Promise.resolve());
 
-  const sessionBackend = props.session?.backend;
-  const refineBackend: CreateAgent | undefined =
-    sessionBackend && availability?.[sessionBackend]
-      ? sessionBackend
-      : availability?.claude
-        ? "claude"
-        : availability?.codex
-          ? "codex"
-          : undefined;
+  const refineBackend: CreateAgent | undefined = sessionBackendFor(props.session, availability);
   const evalBackend = refineBackend;
 
   // exitOnCtrlC is off (it would orphan the spawned agent runs), so ctrl+c is
@@ -118,20 +112,8 @@ function CreateApp(props: CreateAppProps) {
     // Concurrent authoring (each run has its own staging root); lock-touching
     // installs are serialized inside createSkills.
     const modelSettings = {
-      claude: resolveModelSettings({
-        models: props.models,
-        backend: "claude",
-        role: "skillCreation",
-        explicitModel: props.session?.models.claude,
-        explicitReasoningEffort: props.session?.efforts.claude
-      }),
-      codex: resolveModelSettings({
-        models: props.models,
-        backend: "codex",
-        role: "skillCreation",
-        explicitModel: props.session?.models.codex,
-        explicitReasoningEffort: props.session?.efforts.codex
-      })
+      claude: sessionModelSettings({ session: props.session, models: props.models, backend: "claude", role: "skillCreation" }),
+      codex: sessionModelSettings({ session: props.session, models: props.models, backend: "codex", role: "skillCreation" })
     };
 
     createSkills(requests, props.targetDir, { signal: controller.signal, onCollision, modelSettings }, (event) => {
@@ -214,14 +196,18 @@ function CreateApp(props: CreateAppProps) {
             setGrillIndex(0);
             setPhase(refine && refineBackend ? "questions" : "writing");
           }}
-          onBack={() =>
+          onBack={() => {
+            if (props.onBack) {
+              props.onBack();
+              return;
+            }
             props.onExit(
               1,
               requests.length === 0
                 ? "farrier skill new: cancelled — nothing created."
                 : `farrier skill new: cancelled — ${requests.length} queued skill(s) discarded, nothing created.`
-            )
-          }
+            );
+          }}
           onQuit={() => props.onExit(1, "farrier skill new: cancelled — nothing created.")}
         />
       );
@@ -233,13 +219,7 @@ function CreateApp(props: CreateAppProps) {
         return null;
       }
 
-      const refineSettings = resolveModelSettings({
-        models: props.models,
-        backend: refineBackend,
-        role: "refine",
-        explicitModel: props.session?.models[refineBackend],
-        explicitReasoningEffort: props.session?.efforts[refineBackend]
-      });
+      const refineSettings = sessionModelSettings({ session: props.session, models: props.models, backend: refineBackend, role: "refine" });
 
       return (
         <RefineFlow
@@ -322,8 +302,9 @@ function CreateApp(props: CreateAppProps) {
 export async function runCreateWizard(
   targetDir: string,
   initialRequests: SkillCreationRequest[] = [],
-  session?: SessionAgentContext
-): Promise<number> {
+  session?: SessionAgentContext,
+  options: { backToLauncher?: boolean } = {}
+): Promise<number | "back"> {
   let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
 
   const models = await loadFarrierConfig({ projectDir: targetDir })
@@ -337,10 +318,10 @@ export async function runCreateWizard(
     renderer = await createCliRenderer({ exitOnCtrlC: false });
     const cliRenderer = renderer;
 
-    return await new Promise<number>((resolve) => {
+    return await new Promise<number | "back">((resolve) => {
       let settled = false;
 
-      const finish = (code: number, message?: string) => {
+      const finish = (result: number | "back", message?: string) => {
         if (settled) {
           return;
         }
@@ -352,11 +333,18 @@ export async function runCreateWizard(
           console.error(message);
         }
 
-        resolve(code);
+        resolve(result);
       };
 
       createRoot(cliRenderer).render(
-        <CreateApp targetDir={targetDir} models={models} initialRequests={initialRequests} session={session} onExit={finish} />
+        <CreateApp
+          targetDir={targetDir}
+          models={models}
+          initialRequests={initialRequests}
+          session={session}
+          onExit={finish}
+          onBack={options.backToLauncher ? () => finish("back") : undefined}
+        />
       );
     });
   } catch (error) {

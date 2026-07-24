@@ -38,6 +38,8 @@ export type ProposalMiningResult = {
   transcriptsDir: string;
   signals: FailureSignal[];
   proposals: PrimitiveProposal[];
+  /** False when the repo has no .farrier.json: proposals can be read but not applied. */
+  harnessPresent: boolean;
   notes: string[];
 };
 
@@ -67,7 +69,10 @@ export async function minePrimitiveProposals(input: {
   // only applying a proposal does, and planProposal still refuses without one.
   let installedHookIds: NormalizedManifest["hookIds"] = [];
   let guards: unknown;
-  const notes: string[] = [];
+  // The missing-harness case is a structured flag, not a note string: the TUI
+  // gates the apply action on it up front instead of letting the user walk
+  // into planProposal's refusal.
+  let harnessPresent = true;
   try {
     const manifest = await readManifest({ targetDir, catalog: input.catalog ?? builtinCatalog() });
     installedHookIds = manifest.hookIds;
@@ -76,7 +81,7 @@ export async function minePrimitiveProposals(input: {
     if (!(error instanceof Error) || error.message !== notFarrierProjectMessage) {
       throw error;
     }
-    notes.push("No .farrier.json here yet. Proposals can be reviewed; applying one installs into the harness, so run farrier create first.");
+    harnessPresent = false;
   }
   const transcriptsDir = input.transcriptsDir ? resolve(input.transcriptsDir) : defaultTranscriptDir(targetDir);
   const scan = await mineFailureSignalsFromSources({
@@ -89,7 +94,7 @@ export async function minePrimitiveProposals(input: {
     installedHookIds,
     guards
   });
-  return { transcriptsDir, signals: scan.signals, proposals, notes: [...notes, ...scan.notes] };
+  return { transcriptsDir, signals: scan.signals, proposals, harnessPresent, notes: scan.notes };
 }
 
 /**

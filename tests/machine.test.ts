@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SkillSearchResult } from "../src/engine/skills";
 import type { HookId, SkillRef } from "../src/packs/types";
-import { createInitialWizardState, wizardReducer, type WizardState } from "../src/tui/machine";
+import { createInitialWizardState, cycleAgents, wizardReducer, type WizardState } from "../src/tui/machine";
 
 const defaultSkills: SkillRef[] = [
   "wshobson/agents@python-code-style",
@@ -77,6 +77,51 @@ describe("wizard machine", () => {
 
     state = wizardReducer(state, { type: "SELECT_AGENTS", agents: ["codex", "claude"] });
     expect(state.agents).toEqual(["claude", "codex"]);
+  });
+
+  test("an unambiguous startup pick skips the agent step and back on Stack stays put", () => {
+    const state = createInitialWizardState({
+      availablePackIds: ["python-fastapi", "python-uv"],
+      defaultPackId: "python-fastapi",
+      defaultAgents: ["codex"],
+      skipAgentStep: true
+    });
+
+    expect(state.step).toBe("Stack");
+    expect(state.agentStepSkipped).toBe(true);
+    expect(state.agents).toEqual(["codex"]);
+
+    // Stack is now the first step: the reducer refuses to reopen Agent; the
+    // app-level back handler leaves the wizard instead.
+    const backed = wizardReducer(state, { type: "BACK" });
+    expect(backed).toBe(state);
+
+    // Walking back from deeper steps still stops at Stack, never at Agent.
+    let deeper = wizardReducer(state, { type: "SELECT_PACK", packId: "python-uv", skills: [], hooks: [] });
+    deeper = wizardReducer(deeper, { type: "NEXT" });
+    expect(deeper.step).toBe("Skills");
+    deeper = wizardReducer(deeper, { type: "BACK" });
+    expect(deeper.step).toBe("Stack");
+    expect(wizardReducer(deeper, { type: "BACK" }).step).toBe("Stack");
+  });
+
+  test("skipAgentStep without a startup pick still opens on the agent step", () => {
+    const state = createInitialWizardState({
+      availablePackIds: ["python-fastapi"],
+      defaultPackId: "python-fastapi",
+      skipAgentStep: true
+    });
+
+    expect(state.step).toBe("Agent");
+    expect(state.agentStepSkipped).toBe(false);
+  });
+
+  test("cycleAgents walks the same three choices the agent step offers", () => {
+    expect(cycleAgents(["claude"])).toEqual(["codex"]);
+    expect(cycleAgents(["codex"])).toEqual(["claude", "codex"]);
+    expect(cycleAgents(["claude", "codex"])).toEqual(["claude"]);
+    // Order-insensitive input, canonical output.
+    expect(cycleAgents(["codex", "claude"])).toEqual(["claude"]);
   });
 
   test("preselects detected pack and uses detected pack defaults", () => {
@@ -351,6 +396,24 @@ describe("wizard machine", () => {
 
     state = wizardReducer(state, { type: "TOGGLE_LEARN" });
     expect(state.learnEnabled).toBe(false);
+  });
+
+  test("setting a new context resets suggestions computed from the old one", () => {
+    let state: WizardState = {
+      ...initialState(),
+      contextText: "old brief",
+      contextSource: "deterministic-project-profile",
+      adviseStatus: "ready",
+      adviseError: undefined,
+      recommendations: [{ ref: "acme@old-skill", name: "old-skill", installs: 3, reason: "stale" }]
+    };
+
+    state = wizardReducer(state, { type: "SET_CONTEXT", text: "We are building a wallet ledger.", source: "text" });
+
+    expect(state.contextText).toBe("We are building a wallet ledger.");
+    expect(state.contextSource).toBe("text");
+    expect(state.adviseStatus).toBe("idle");
+    expect(state.recommendations).toEqual([]);
   });
 
   test("toggles cross-agent skill install", () => {

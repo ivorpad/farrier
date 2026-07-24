@@ -2,7 +2,7 @@ import type { AdviseBackend, SkillRecommendation } from "../engine/advise";
 import type { SkillCreationOutcome, SkillCreationRequest } from "../engine/create-skill";
 import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import type { InstallSkillResult, SkillSearchResult } from "../engine/skills";
-import { normalizeAgents, type EnforcementAgent } from "../engine/agent-selection";
+import { enforcementAgentCombos, normalizeAgents, type EnforcementAgent } from "../engine/agent-selection";
 import type { PackHookRef, SkillRef } from "../packs/types";
 
 export type WizardStep = "Agent" | "Stack" | "Skills" | "Create" | "Hooks" | "Learn" | "Review" | "Writing" | "Done";
@@ -30,6 +30,8 @@ export type WizardWriteStatus = {
 
 export type WizardState = {
   step: WizardStep;
+  /** Startup pick was unambiguous: the wizard opens on Stack and back from Stack leaves it. */
+  agentStepSkipped: boolean;
   packId: string;
   detectedPackId?: string;
   availablePackIds: string[];
@@ -78,6 +80,7 @@ export type WizardEvent =
   | { type: "TOGGLE_AGENT"; agent: EnforcementAgent }
   | { type: "TOGGLE_SHARE_SKILLS" }
   | { type: "TOGGLE_LEARN" }
+  | { type: "SET_CONTEXT"; text: string; source: string }
   | { type: "TOGGLE_ADVISE" }
   | { type: "ADVISE_STARTED" }
   | { type: "ADVISE_SUCCEEDED"; recommendations: SkillRecommendation[] }
@@ -112,6 +115,12 @@ export type CreateInitialWizardStateInput = {
   defaultSkills?: SkillRef[];
   defaultHooks?: PackHookRef[];
   defaultAgents?: EnforcementAgent[];
+  /**
+   * Startup already asked which agent the user works with; when that pick is
+   * unambiguous (defaultAgents present) the Agent step repeats the question,
+   * so the wizard opens on Stack and the Review step keeps the pick editable.
+   */
+  skipAgentStep?: boolean;
   packDefaults?: PackDefaults;
   contextText?: string;
   contextSource?: string;
@@ -151,9 +160,11 @@ export function createInitialWizardState(input: CreateInitialWizardStateInput): 
   // available list is non-empty; it is no longer a preselection.
   const selectedPackId = detectedPackId ?? "";
   const defaults = selectedPackId ? packDefaultFor(input, selectedPackId) : { skills: [], hooks: [] };
+  const agentStepSkipped = input.skipAgentStep === true && (input.defaultAgents?.length ?? 0) > 0;
 
   return {
-    step: "Agent",
+    step: agentStepSkipped ? "Stack" : "Agent",
+    agentStepSkipped,
     packId: selectedPackId,
     detectedPackId,
     availablePackIds,
@@ -186,6 +197,23 @@ function toggle<T>(values: T[], value: T): T[] {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
 
+/**
+ * Review-step edit: cycle the enforcement target through the shared combo
+ * list, so it offers exactly the choices the Agent step does.
+ */
+export function cycleAgents(agents: readonly EnforcementAgent[]): EnforcementAgent[] {
+  const normalized = normalizeAgents(agents);
+  const index = enforcementAgentCombos.findIndex(
+    (combo) => combo.length === normalized.length && combo.every((agent, position) => agent === normalized[position])
+  );
+  return [...enforcementAgentCombos[(index + 1) % enforcementAgentCombos.length]!];
+}
+
+/** The step back leaves the wizard from; the app maps that to the launcher. */
+export function isFirstWizardStep(state: WizardState): boolean {
+  return state.step === "Agent" || (state.step === "Stack" && state.agentStepSkipped);
+}
+
 function nextStep(step: WizardStep): WizardStep {
   switch (step) {
     case "Agent":
@@ -207,10 +235,13 @@ function nextStep(step: WizardStep): WizardStep {
   }
 }
 
-function previousStep(step: WizardStep): WizardStep {
+function previousStep(step: WizardStep, agentStepSkipped: boolean): WizardStep {
   switch (step) {
     case "Stack":
-      return "Agent";
+      // With the Agent step skipped, Stack is the first step: BACK clamps
+      // here the same way it clamps at Agent; the app-level handler leaves
+      // the wizard (isFirstWizardStep).
+      return agentStepSkipped ? "Stack" : "Agent";
     case "Skills":
       return "Stack";
     case "Create":
@@ -349,6 +380,18 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         learnEnabled: !state.learnEnabled,
       };
 
+    case "SET_CONTEXT":
+      // A new brief invalidates suggestions computed from the old one; the
+      // Skills-step effect re-runs when it is enabled and idle.
+      return {
+        ...state,
+        contextText: event.text,
+        contextSource: event.source,
+        adviseStatus: "idle",
+        adviseError: undefined,
+        recommendations: [],
+      };
+
     case "TOGGLE_ADVISE": {
       const adviseEnabled = !state.adviseEnabled;
 
@@ -410,11 +453,10 @@ export function wizardReducer(state: WizardState, event: WizardEvent): WizardSta
         step: nextStep(state.step),
       };
 
-    case "BACK":
-      return {
-        ...state,
-        step: previousStep(state.step),
-      };
+    case "BACK": {
+      const step = previousStep(state.step, state.agentStepSkipped);
+      return step === state.step ? state : { ...state, step };
+    }
 
     case "START_WRITING":
       if (state.step !== "Review") {

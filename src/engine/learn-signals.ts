@@ -15,7 +15,15 @@ export type FailureSignalClass =
   | "oversized-commit"
   | "rejected-push"
   | "leftover-process"
-  | "repeated-failure";
+  | "repeated-failure"
+  /**
+   * Failing exploration/verification/build commands, clustered by command
+   * prefix. Only collected in evidence mode (keepAllFailures): for learn's
+   * zero-LLM proposals these are the normal work loop and stay excluded, but
+   * the distill evidence set must receive the full clustered record (a 239-run
+   * build storm is exactly the evidence a playbook gate comes from).
+   */
+  | "work-loop-failure";
 
 export type FailureSignal = {
   class: FailureSignalClass;
@@ -333,8 +341,53 @@ function eligibleFailureCommand(command: string): string | undefined {
   return command;
 }
 
+/**
+ * Coarse cluster key for work-loop failures: the first one or two meaningful
+ * tokens (head basename + subcommand/flag). A day of 239 xcodebuild variants
+ * clusters to a handful of keys instead of 239 exact commands.
+ */
+export function workLoopClusterKey(command: string): string | undefined {
+  const tokens = command.match(shellWordPattern) ?? [];
+  const meaningful = tokens.filter((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token));
+  const headToken = meaningful[0];
+  if (!headToken) return undefined;
+  const head = (headToken.split("/").pop() ?? headToken).toLowerCase();
+  const second = meaningful[1];
+  return second && second.length <= 40 ? `${head} ${second}` : head;
+}
+
+/**
+ * The most informative line of a failed tool result, for work-loop failure
+ * samples: prefer the first error-looking line (codex exec output opens with
+ * a "Command: ..." wrapper line that says nothing), else the first non-empty
+ * line.
+ */
+function firstUsefulLine(text: string): string | undefined {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.find((line) => /\b(?:error|failed|failure|denied|traceback|exception|fatal)\b/i.test(line)) ?? lines[0];
+}
+
+export type SignalCollectorOptions = {
+  /**
+   * Evidence mode (distill): additionally cluster the work-loop failures that
+   * `eligibleFailureCommand` excludes, and report every accumulated signal
+   * without proposal thresholds. The deterministic layer prepares and
+   * clusters evidence; it never vetoes it — thresholds decide what learn
+   * proposes FIRST, never what exists.
+   */
+  keepAllFailures?: boolean;
+};
+
 export class SignalCollector {
+  readonly keepAllFailures: boolean;
   private readonly accumulators = new Map<string, SignalAccumulator>();
+
+  constructor(options: SignalCollectorOptions = {}) {
+    this.keepAllFailures = options.keepAllFailures ?? false;
+  }
 
   add(signalClass: FailureSignalClass, key: string, context: RecordContext, sample: string): void {
     const id = `${signalClass}\u0000${key}`;
@@ -358,7 +411,7 @@ export class SignalCollector {
 
   signals(): FailureSignal[] {
     return Array.from(this.accumulators.values())
-      .filter((entry) => meetsThreshold(entry))
+      .filter((entry) => this.keepAllFailures || meetsThreshold(entry))
       .map((entry) => ({
         class: entry.class,
         key: entry.key,
@@ -434,7 +487,13 @@ export function scanToolEvents(
     }
     if (result.isDenied || result.isError) {
       const eligible = eligibleFailureCommand(command);
-      if (eligible) addOnce("repeated-failure", eligible, command);
+      if (eligible) {
+        addOnce("repeated-failure", eligible, command);
+      } else if (collector.keepAllFailures) {
+        const cluster = workLoopClusterKey(command);
+        const reason = firstUsefulLine(result.text);
+        if (cluster) addOnce("work-loop-failure", cluster, reason ? `${command} — ${reason}` : command);
+      }
     }
   }
 }
