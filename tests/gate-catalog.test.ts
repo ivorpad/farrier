@@ -12,6 +12,7 @@ function evidence(overrides: Partial<SessionEvidence> = {}): SessionEvidence {
     projectDir: "/tmp/project",
     steers: [],
     failureClusters: [],
+    skillUsage: [],
     codexSessionsMatched: 0,
     codexSessionsScanned: 0,
     notes: [],

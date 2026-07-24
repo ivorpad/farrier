@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { prepareSessionEvidence, steerFromUserMessage } from "../src/engine/session-evidence";
@@ -188,6 +188,91 @@ describe("prepareSessionEvidence", () => {
     ]);
     expect(evidence.steers[0]!.sessionRef).toBe("claude:6f0a-session");
     expect(evidence.steers[0]!.date).toBe("2026-07-23");
+  });
+
+  test("counts skill invocations from both backends and diffs against the installed dirs", async () => {
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
+    const transcripts = await tempDir("farrier-export-claude-");
+
+    // Installed: one skill invoked, one never invoked, one dir without SKILL.md,
+    // and one symlinked install (the skills package links shared trees).
+    for (const name of ["swiftui-pro", "liquid-glass"]) {
+      await mkdir(join(project, ".agents/skills", name), { recursive: true });
+      await writeFile(join(project, ".agents/skills", name, "SKILL.md"), `# ${name}\n`, "utf8");
+    }
+    await mkdir(join(project, ".claude/skills/broken-skill"), { recursive: true });
+    const shared = await tempDir("farrier-export-shared-skill-");
+    await writeFile(join(shared, "SKILL.md"), "# linked-skill\n", "utf8");
+    await symlink(shared, join(project, ".agents/skills/linked-skill"));
+
+    // Claude: a Skill tool_use, a slash-command expansion, and a Bash read into a skill tree.
+    const claudeRecords = [
+      {
+        type: "assistant",
+        timestamp: "2026-07-23T10:00:00.000Z",
+        message: { content: [{ type: "tool_use", id: "s1", name: "Skill", input: { skill: "swiftui-pro" } }] }
+      },
+      { type: "user", timestamp: "2026-07-23T10:01:00.000Z", isMeta: true, message: { role: "user", content: "<command-name>/cua</command-name>" } },
+      {
+        type: "assistant",
+        timestamp: "2026-07-23T10:02:00.000Z",
+        message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command: "cat .agents/skills/swiftui-pro/SKILL.md" } }] }
+      }
+    ];
+    await writeFile(
+      join(transcripts, "aaaa-session.jsonl"),
+      `${claudeRecords.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      "utf8"
+    );
+    // Codex: a shell read of a skill file counts as that skill's invocation.
+    await writeRollout(sessions, "rollout-2026-07-22T08-00-00-dddd", [
+      sessionMeta(project),
+      execCall("call_1", "sed -n 1,40p .agents/skills/swiftui-pro/SKILL.md", project)
+    ]);
+
+    const evidence = await prepareSessionEvidence({
+      projectDir: project,
+      codexSessionsDir: sessions,
+      claudeTranscriptsDir: transcripts
+    });
+
+    const byName = new Map(evidence.skillUsage.map((usage) => [usage.name, usage]));
+    expect(byName.get("swiftui-pro")).toEqual({
+      name: "swiftui-pro",
+      invocations: 3,
+      sessions: 2,
+      installed: true,
+      missingSkillMd: false
+    });
+    expect(byName.get("liquid-glass")).toEqual({
+      name: "liquid-glass",
+      invocations: 0,
+      sessions: 0,
+      installed: true,
+      missingSkillMd: false
+    });
+    expect(byName.get("broken-skill")).toEqual({
+      name: "broken-skill",
+      invocations: 0,
+      sessions: 0,
+      installed: true,
+      missingSkillMd: true
+    });
+    // The symlinked install counts as installed, SKILL.md resolved through the link.
+    expect(byName.get("linked-skill")).toEqual({
+      name: "linked-skill",
+      invocations: 0,
+      sessions: 0,
+      installed: true,
+      missingSkillMd: false
+    });
+    // The slash command is an invoked-but-not-installed row.
+    expect(byName.get("cua")?.installed).toBe(false);
+    expect(byName.get("cua")?.invocations).toBe(1);
+    // Most-invoked first.
+    expect(evidence.skillUsage[0]!.name).toBe("swiftui-pro");
+    expect(evidence.notes.join("\n")).toContain("Skill usage: 4 installed, 1 invoked in the scanned sessions, 3 never invoked, 1 without a SKILL.md.");
   });
 
   test("learn's default collector still excludes work-loop failures and applies thresholds", async () => {

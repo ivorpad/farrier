@@ -9,8 +9,10 @@ import {
   scanClaudeTranscripts,
   scanToolEvents,
   signalScanMaxFiles,
+  skillNamesFromCommand,
   type FailureSignalScan,
   type SessionScanState,
+  type SkillInvocationEvent,
   type ToolResult,
   type ToolUse
 } from "./learn-signals";
@@ -283,6 +285,8 @@ export async function scanCodexSessions(input: {
    * the caller owns noise filtering, redaction, and bounding. Stays local.
    */
   onUserMessage?: (event: CodexUserMessageEvent) => void;
+  /** Tap for skill invocations (shell reads into a skill's directory). */
+  onSkillInvocation?: (event: SkillInvocationEvent) => void;
 }): Promise<CodexSourceScan> {
   const notes: string[] = [];
   const maxFiles = input.maxFiles ?? signalScanMaxFiles;
@@ -353,6 +357,10 @@ export async function scanCodexSessions(input: {
       if (parsed.type !== "response_item") continue;
 
       const uses = toolUsesFromPayload(payload);
+      if (input.onSkillInvocation) {
+        const names = new Set(uses.flatMap((use) => skillNamesFromCommand(use.command)));
+        for (const skill of names) input.onSkillInvocation({ skill, sessionRef, date: recordDate(parsed) });
+      }
       let result = toolResultFromPayload(payload);
       // Codex sessions carry outputs for many tools (MCP, apply_patch, ...);
       // only outputs of known shell calls may back a failure signal, so a

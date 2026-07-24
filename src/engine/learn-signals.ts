@@ -228,6 +228,55 @@ export function toolUseFromRecord(record: Record<string, unknown>): ToolUse[] {
   return dedupeToolUses(uses);
 }
 
+/** One observed skill invocation; sessionRef is the scanner's session id. */
+export type SkillInvocationEvent = {
+  skill: string;
+  sessionRef: string;
+  date: string | undefined;
+};
+
+/**
+ * Skill directory names referenced by one shell command. Reading
+ * skills/<name>/SKILL.md (or anything under the skill's directory) is the
+ * observable invocation signal shared by both backends: Codex loads skills
+ * through shell reads, and Claude Bash commands that reach into a skill tree
+ * count the same way. Bare roots ("ls .agents/skills") name no skill.
+ */
+export function skillNamesFromCommand(command: string): string[] {
+  const names = new Set<string>();
+  const pattern = /(?:\.agents\/|\.claude\/|(?<![\w.-]))skills\/([A-Za-z0-9][\w.-]*)/g;
+  for (const match of command.matchAll(pattern)) {
+    const name = match[1]!;
+    // A trailing "-" is a glob prefix (skills/hig-*/SKILL.md), not a name.
+    if (name !== "SKILL.md" && !name.endsWith("-")) names.add(name);
+  }
+  return Array.from(names);
+}
+
+/**
+ * Skill names invoked by one Claude transcript record: the Skill tool
+ * (input.skill) and slash-command expansions (<command-name>/x</command-name>,
+ * which live in isMeta records the steer extraction deliberately skips).
+ */
+export function skillInvocationsFromRecord(record: Record<string, unknown>): string[] {
+  const names = new Set<string>();
+
+  const message = isRecord(record.message) ? record.message : undefined;
+  const content = Array.isArray(message?.content) ? message.content : Array.isArray(record.content) ? record.content : [];
+  for (const item of content) {
+    if (!isRecord(item) || item.type !== "tool_use" || item.name !== "Skill") continue;
+    const input = isRecord(item.input) ? item.input : undefined;
+    const skill = input ? optionalString(input.skill) : undefined;
+    if (skill) names.add(skill);
+  }
+
+  for (const match of textFrom(record).matchAll(/<command-name>\s*\/?([^<\s]+)\s*<\/command-name>/g)) {
+    names.add(match[1]!);
+  }
+
+  return Array.from(names);
+}
+
 /**
  * Human-authored text from one Claude transcript record. Tool results, meta
  * records (command wrappers, caveats), and sidechain (subagent) prompts all
@@ -547,6 +596,8 @@ export type ClaudeTranscriptScanOptions = {
    * the caller owns noise filtering, redaction, and bounding. Stays local.
    */
   onUserMessage?: (event: ClaudeUserMessageEvent) => void;
+  /** Tap for skill invocations (Skill tool, slash commands, skill-tree reads). */
+  onSkillInvocation?: (event: SkillInvocationEvent) => void;
 };
 
 /** Scans Claude transcript JSONL files into a shared collector (merged-source mining). */
@@ -597,7 +648,15 @@ export async function scanClaudeTranscripts(
         const text = userTextFromRecord(parsed);
         if (text) options.onUserMessage({ text, sessionRef, date: context.date });
       }
-      scanToolEvents(toolUseFromRecord(parsed), toolResultsFromRecord(parsed), context, collector, state);
+      const uses = toolUseFromRecord(parsed);
+      if (options.onSkillInvocation) {
+        const names = new Set([
+          ...skillInvocationsFromRecord(parsed),
+          ...uses.flatMap((use) => skillNamesFromCommand(use.command))
+        ]);
+        for (const skill of names) options.onSkillInvocation({ skill, sessionRef, date: context.date });
+      }
+      scanToolEvents(uses, toolResultsFromRecord(parsed), context, collector, state);
     }
   }
 

@@ -1,7 +1,8 @@
-import { resolve } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { boundSessionText, stripSessionAmbient } from "./advice-patterns";
 import { defaultTranscriptDir } from "./learn";
-import { SignalCollector, scanClaudeTranscripts, type FailureSignal } from "./learn-signals";
+import { SignalCollector, scanClaudeTranscripts, type FailureSignal, type SkillInvocationEvent } from "./learn-signals";
 import { scanCodexSessions } from "./learn-signals-codex";
 
 /**
@@ -26,11 +27,30 @@ export type SteerSignal = {
   truncated: boolean;
 };
 
+/**
+ * One skill's observed use across the scanned sessions, diffed against the
+ * on-disk install. Zero-invoked installed skills and skill dirs without a
+ * SKILL.md are the evidence rows pruning and scoping proposals feed on.
+ */
+export type SkillUsage = {
+  name: string;
+  /** Invocation events across all scanned sessions (both backends). */
+  invocations: number;
+  /** Distinct sessions that invoked it. */
+  sessions: number;
+  /** Present under skills/, .agents/skills, or .claude/skills. */
+  installed: boolean;
+  /** Installed but no root provides a SKILL.md (empty or broken dir). */
+  missingSkillMd: boolean;
+};
+
 export type SessionEvidence = {
   projectDir: string;
   steers: SteerSignal[];
   /** Full clustered failure record: work-loop failures included, no thresholds. */
   failureClusters: FailureSignal[];
+  /** Installed ∪ invoked skills, most-invoked first. */
+  skillUsage: SkillUsage[];
   codexSessionsMatched: number;
   codexSessionsScanned: number;
   notes: string[];
@@ -87,6 +107,33 @@ export function steerFromUserMessage(raw: string): { text: string; truncated: bo
   return bounded;
 }
 
+/**
+ * Skill directories on disk across the three roots, deduplicated by name.
+ * missingSkillMd stays true only when NO root provides a SKILL.md.
+ */
+async function installedSkillDirs(projectDir: string): Promise<Map<string, { missingSkillMd: boolean }>> {
+  const installed = new Map<string, { missingSkillMd: boolean }>();
+  for (const root of ["skills", ".agents/skills", ".claude/skills"]) {
+    const dir = join(projectDir, root);
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      // Skill installs are often symlinks (the skills package links shared
+      // trees); stat follows them where entry.isDirectory() would not.
+      const isDirectory = await stat(join(dir, entry.name))
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (!isDirectory) continue;
+      const hasSkillMd = await stat(join(dir, entry.name, "SKILL.md"))
+        .then((stats) => stats.isFile())
+        .catch(() => false);
+      const existing = installed.get(entry.name);
+      installed.set(entry.name, { missingSkillMd: (existing?.missingSkillMd ?? true) && !hasSkillMd });
+    }
+  }
+  return installed;
+}
+
 export async function prepareSessionEvidence(options: SessionEvidenceOptions): Promise<SessionEvidence> {
   const projectDir = resolve(options.projectDir);
   const collector = new SignalCollector({ keepAllFailures: true });
@@ -103,12 +150,21 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
     steers.push({ ...steer, sessionRef: event.sessionRef, ...(event.date ? { date: event.date } : {}) });
   };
 
+  const invoked = new Map<string, { invocations: number; sessions: Set<string> }>();
+  const collectSkill = (event: SkillInvocationEvent): void => {
+    const entry = invoked.get(event.skill) ?? { invocations: 0, sessions: new Set<string>() };
+    entry.invocations += 1;
+    entry.sessions.add(event.sessionRef);
+    invoked.set(event.skill, entry);
+  };
+
   const codex = await scanCodexSessions({
     projectDir,
     sessionsDir: options.codexSessionsDir,
     maxFiles: options.maxFiles,
     collector,
-    onUserMessage: collectSteer
+    onUserMessage: collectSteer,
+    onSkillInvocation: collectSkill
   });
 
   const claude = await scanClaudeTranscripts(
@@ -117,11 +173,33 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
     {
       // The Claude scanner's sessionRefs are bare transcript stems; prefix the
       // source so mixed-backend evidence stays attributable.
-      onUserMessage: ({ text, sessionRef, date }) => collectSteer({ text, sessionRef: `claude:${sessionRef}`, date })
+      onUserMessage: ({ text, sessionRef, date }) => collectSteer({ text, sessionRef: `claude:${sessionRef}`, date }),
+      onSkillInvocation: ({ skill, sessionRef, date }) => collectSkill({ skill, sessionRef: `claude:${sessionRef}`, date })
     }
   );
 
+  const installed = await installedSkillDirs(projectDir);
+  const skillUsage: SkillUsage[] = Array.from(new Set([...installed.keys(), ...invoked.keys()]))
+    .map((name) => ({
+      name,
+      invocations: invoked.get(name)?.invocations ?? 0,
+      sessions: invoked.get(name)?.sessions.size ?? 0,
+      installed: installed.has(name),
+      missingSkillMd: installed.get(name)?.missingSkillMd ?? false
+    }))
+    .sort((left, right) => right.invocations - left.invocations || left.name.localeCompare(right.name));
+
   const notes = [...codex.notes, ...claude.notes];
+  const installedNames = skillUsage.filter((usage) => usage.installed);
+  if (installedNames.length > 0 || invoked.size > 0) {
+    const neverInvoked = installedNames.filter((usage) => usage.invocations === 0).length;
+    const broken = installedNames.filter((usage) => usage.missingSkillMd).length;
+    notes.push(
+      `Skill usage: ${installedNames.length} installed, ` +
+        `${installedNames.length - neverInvoked} invoked in the scanned sessions, ${neverInvoked} never invoked` +
+        `${broken > 0 ? `, ${broken} without a SKILL.md` : ""}.`
+    );
+  }
   if (omittedSteers > 0) {
     notes.push(`Steer extraction kept the newest ${maxSteers} steer(s); ${omittedSteers} older one(s) were omitted.`);
   }
@@ -135,6 +213,7 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
     projectDir,
     steers,
     failureClusters: collector.signals(),
+    skillUsage,
     codexSessionsMatched: codex.filesMatched,
     codexSessionsScanned: codex.filesScanned,
     notes

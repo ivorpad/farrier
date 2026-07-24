@@ -38,6 +38,7 @@ function evidence(overrides: Partial<SessionEvidence> = {}): SessionEvidence {
         samples: ["xcodebuild -scheme App build — error opening '~/.cache/clang/ModuleCache/x' for output: Operation not permitted"]
       }
     ],
+    skillUsage: [],
     codexSessionsMatched: 2,
     codexSessionsScanned: 2,
     notes: [],
