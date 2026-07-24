@@ -29,8 +29,8 @@ Usage:
   farrier map --dir <target> [--json]
   farrier registry list [--dir <target>] [--json]
   farrier learn --dir <target> [--transcripts <dir>] [--codex-sessions <dir>] [--yes] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
-  farrier distill --dir <source> [--codex-sessions <dir>] [--name <kebab>] [--send-session-evidence] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
-  farrier distill --dir <source> --yes --install-dir <target> [--agents claude,codex] [--force]
+  farrier export --dir <source> [--codex-sessions <dir>] [--name <kebab>] [--send-session-evidence] [--no-llm] [--backend claude|codex] [--model <name>] [--json]
+  farrier export --dir <source> --yes --install-dir <target> [--agents claude,codex] [--force]
   farrier doctor --dir <target> [--json] [--static] [--live]
   farrier ab-gate --result <result.json> [--json]
   farrier audit-panel prepare --manifest <panel.json> --output <new-directory> [--json]
@@ -75,7 +75,7 @@ Note:
   --yes approves a conflict-free plan. Replacing existing differing files additionally requires --force.
   farrier registry list shows configured private registries without executing payloads.
   farrier learn is report-only unless --yes is provided; it appends new declarative ToolPolicyRule data only.
-  farrier distill mines a finished project's sessions into a portable playbook (orchestrator skill, gate catalog, review subagents). Report-only by default; evidence stays local unless --send-session-evidence consents to the LLM classification, and installing requires --yes --install-dir after review.
+  farrier export mines a finished project's sessions into a portable playbook (orchestrator skill, gate catalog, review subagents). Report-only by default; evidence stays local unless --send-session-evidence consents to the LLM classification, and installing requires --yes --install-dir after review.
   farrier map regenerates the repository-map section of AGENTS.md (layout, test conventions, git co-change coupling) in place, preserving all other AGENTS.md content. update --yes also refreshes it.
   farrier ab-gate enforces the harness release thresholds against a recorded paired evaluation; it exits 1 listing violated thresholds.
   farrier doctor runs static checks plus runtime hook probes (fixture payloads through the installed bindings). --static skips probes; --live adds one real Codex session that must get blocked. Exits 0 only when every executed layer is healthy.
@@ -306,9 +306,9 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
       return await runLearn(args.slice(1));
     }
 
-    if (args[0] === "distill") {
-      const { runDistill } = await import("./cli/distill");
-      return await runDistill(args.slice(1), usage);
+    if (args[0] === "export") {
+      const { runExport } = await import("./cli/export");
+      return await runExport(args.slice(1), usage);
     }
 
     if (args[0] === "doctor") {
@@ -454,11 +454,11 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
             continue;
           }
 
-          if (choice === "distill") {
+          if (choice === "export") {
             // Mining is local; the LLM classification inside the app runs
             // only after its own consent screen, on the startup-picked backend.
-            const { runDistillApp } = await import("./tui/distill-app");
-            await runDistillApp(targetDir, { session });
+            const { runExportApp } = await import("./tui/export-app");
+            await runExportApp(targetDir, { session });
             continue;
           }
 

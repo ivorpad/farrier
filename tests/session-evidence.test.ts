@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { prepareDistillEvidence, steerFromUserMessage } from "../src/engine/distill-evidence";
+import { prepareSessionEvidence, steerFromUserMessage } from "../src/engine/session-evidence";
 import { SignalCollector, workLoopClusterKey } from "../src/engine/learn-signals";
 import { scanCodexSessions } from "../src/engine/learn-signals-codex";
 
-async function tempDir(prefix = "farrier-distill-evidence-"): Promise<string> {
+async function tempDir(prefix = "farrier-session-evidence-"): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
 }
 
@@ -102,11 +102,11 @@ describe("workLoopClusterKey", () => {
   });
 });
 
-describe("prepareDistillEvidence", () => {
+describe("prepareSessionEvidence", () => {
   test("collects steers and unvetoed failure clusters from project sessions only", async () => {
-    const project = await tempDir("farrier-distill-project-");
-    const other = await tempDir("farrier-distill-other-");
-    const sessions = await tempDir("farrier-distill-sessions-");
+    const project = await tempDir("farrier-export-project-");
+    const other = await tempDir("farrier-export-other-");
+    const sessions = await tempDir("farrier-export-sessions-");
 
     await writeRollout(sessions, "rollout-2026-07-22T08-00-00-aaaa", [
       sessionMeta(project),
@@ -126,7 +126,7 @@ describe("prepareDistillEvidence", () => {
       execOutput("call_3", `ls ${project}`, 1, `ls: ${project}: No such file or directory`)
     ]);
 
-    const evidence = await prepareDistillEvidence({
+    const evidence = await prepareSessionEvidence({
       projectDir: project,
       codexSessionsDir: sessions,
       claudeTranscriptsDir: join(project, "no-claude-transcripts")
@@ -138,7 +138,7 @@ describe("prepareDistillEvidence", () => {
     expect(evidence.steers[0]!.date).toBe("2026-07-22");
 
     // xcodebuild is a verification-style command learn's proposals exclude;
-    // the distill record keeps it, clustered, in a single session (below
+    // the evidence record keeps it, clustered, in a single session (below
     // learn's two-session threshold).
     const cluster = evidence.failureClusters.find((signal) => signal.class === "work-loop-failure");
     expect(cluster?.key).toBe("xcodebuild -scheme");
@@ -148,9 +148,9 @@ describe("prepareDistillEvidence", () => {
   });
 
   test("collects Claude transcript steers alongside codex sessions", async () => {
-    const project = await tempDir("farrier-distill-project-");
-    const sessions = await tempDir("farrier-distill-sessions-");
-    const transcripts = await tempDir("farrier-distill-claude-");
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
+    const transcripts = await tempDir("farrier-export-claude-");
 
     // Real record shapes observed in Claude Code JSONL transcripts (2026-07-24):
     // human steers are type:"user" with string content or text items; tool
@@ -176,7 +176,7 @@ describe("prepareDistillEvidence", () => {
       "utf8"
     );
 
-    const evidence = await prepareDistillEvidence({
+    const evidence = await prepareSessionEvidence({
       projectDir: project,
       codexSessionsDir: sessions,
       claudeTranscriptsDir: transcripts
@@ -191,8 +191,8 @@ describe("prepareDistillEvidence", () => {
   });
 
   test("learn's default collector still excludes work-loop failures and applies thresholds", async () => {
-    const project = await tempDir("farrier-distill-project-");
-    const sessions = await tempDir("farrier-distill-sessions-");
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
     await writeRollout(sessions, "rollout-2026-07-22T08-00-00-cccc", [
       sessionMeta(project),
       execCall("call_1", "xcodebuild -scheme App build", project),

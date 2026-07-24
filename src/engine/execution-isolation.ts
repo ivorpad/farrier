@@ -189,7 +189,7 @@ export async function withIsolatedExecution<T>(input: {
    * "reject" (default) fails the run when the target project's fingerprint
    * changed while the external process ran. "tolerate" skips that fence for
    * call sites whose run neither reads from nor stages writes into the target
-   * AND whose target is expected to be concurrently edited (distill classifies
+   * AND whose target is expected to be concurrently edited (export classifies
    * evidence from projects with live agent sessions; their rollouts append
    * mid-run). The workspace fence always stays; the relaxation is recorded in
    * the returned isolation fact.

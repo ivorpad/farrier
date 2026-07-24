@@ -7,7 +7,7 @@ describe("primary launcher", () => {
       "Create harness",
       "Find/Create skills",
       "Improve harness",
-      "Distill playbook",
+      "Export harness",
       "Doctor & update"
     ]);
   });
@@ -25,9 +25,9 @@ describe("primary launcher", () => {
     expect(launcherReducer(skills, { type: "choose" }).choice).toBe("skills");
     const improve = launcherReducer(skills, { type: "down" }).state;
     expect(launcherReducer(improve, { type: "choose" }).choice).toBe("improve");
-    const distill = launcherReducer(improve, { type: "down" }).state;
-    expect(launcherReducer(distill, { type: "choose" }).choice).toBe("distill");
-    const doctor = launcherReducer(distill, { type: "down" }).state;
+    const exportRow = launcherReducer(improve, { type: "down" }).state;
+    expect(launcherReducer(exportRow, { type: "choose" }).choice).toBe("export");
+    const doctor = launcherReducer(exportRow, { type: "down" }).state;
     expect(launcherReducer(doctor, { type: "choose" }).choice).toBe("doctor");
     expect(launcherReducer({ index: 0 }, { type: "cancel" }).choice).toBe("cancel");
   });

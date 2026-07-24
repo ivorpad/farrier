@@ -20,7 +20,7 @@ export type FailureSignalClass =
    * Failing exploration/verification/build commands, clustered by command
    * prefix. Only collected in evidence mode (keepAllFailures): for learn's
    * zero-LLM proposals these are the normal work loop and stay excluded, but
-   * the distill evidence set must receive the full clustered record (a 239-run
+   * the session evidence set must receive the full clustered record (a 239-run
    * build storm is exactly the evidence a playbook gate comes from).
    */
   | "work-loop-failure";
@@ -406,7 +406,7 @@ function firstUsefulLine(text: string): string | undefined {
 
 export type SignalCollectorOptions = {
   /**
-   * Evidence mode (distill): additionally cluster the work-loop failures that
+   * Evidence mode (export): additionally cluster the work-loop failures that
    * `eligibleFailureCommand` excludes, and report every accumulated signal
    * without proposal thresholds. The deterministic layer prepares and
    * clusters evidence; it never vetoes it — thresholds decide what learn

@@ -3,15 +3,15 @@ import { createRoot, useKeyboard } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import type { AdviceCreationPlan } from "../engine/advice-apply";
 import type { ApplyHarnessChangePlanResult, HarnessChangePlan } from "../engine/create-plan";
-import type { DistillReport, DroppedLesson } from "../engine/distill";
-import type { DistillLesson } from "../engine/distill-playbook";
+import type { ExportReport, DroppedLesson } from "../engine/export-harness";
+import type { ExportLesson } from "../engine/export-playbook";
 import { AdviceApplyFlow, advicePlanPreviewLines } from "./AdviceApplyFlow";
 import { DetailPane, KeyHints, palette, useSpinner, type PaneLine } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 import { sessionModelSettings, type SessionAgentContext } from "./session-context";
 
 /**
- * The distill surface: turn this project's finished sessions into a portable
+ * The export surface: turn this project's finished sessions into a portable
  * playbook. Mining and signature hints are local; the LLM lesson
  * classification runs only after the explicit consent screen (redacted
  * excerpts go to the selected backend). Every lesson is reviewed here, the
@@ -19,21 +19,21 @@ import { sessionModelSettings, type SessionAgentContext } from "./session-contex
  * AdviceApplyFlow with backups.
  */
 
-type Classified = { lessons: DistillLesson[]; dropped: DroppedLesson[] };
+type Classified = { lessons: ExportLesson[]; dropped: DroppedLesson[] };
 
-type DistillPhase =
+type ExportPhase =
   | { kind: "mining" }
-  | { kind: "consent"; report: DistillReport }
-  | { kind: "classifying"; report: DistillReport }
-  | { kind: "lessons"; report: DistillReport; excluded: ReadonlySet<string> }
+  | { kind: "consent"; report: ExportReport }
+  | { kind: "classifying"; report: ExportReport }
+  | { kind: "lessons"; report: ExportReport; excluded: ReadonlySet<string> }
   | { kind: "error"; message: string };
 
-export function lessonRowLabel(lesson: DistillLesson): string {
+export function lessonRowLabel(lesson: ExportLesson): string {
   const evidence = `${lesson.steerIndexes.length} steer(s), ${lesson.clusterIndexes.length} cluster(s)`;
   return `${lesson.proposedGate ? "NEW " : ""}${lesson.gateId} — ${evidence}`;
 }
 
-export function lessonDetailLines(lesson: DistillLesson, report: DistillReport, included: boolean): PaneLine[] {
+export function lessonDetailLines(lesson: ExportLesson, report: ExportReport, included: boolean): PaneLine[] {
   const lines: PaneLine[] = [
     {
       fg: lesson.classification === "portable" ? palette.gold : palette.warn,
@@ -60,17 +60,17 @@ export function lessonDetailLines(lesson: DistillLesson, report: DistillReport, 
   return lines;
 }
 
-export function DistillApp(props: {
-  onMine: () => Promise<DistillReport>;
-  onClassify: (report: DistillReport) => Promise<Classified>;
-  onPlan: (report: DistillReport, lessons: DistillLesson[]) => Promise<{ plan: AdviceCreationPlan; inspection: HarnessChangePlan }>;
+export function ExportApp(props: {
+  onMine: () => Promise<ExportReport>;
+  onClassify: (report: ExportReport) => Promise<Classified>;
+  onPlan: (report: ExportReport, lessons: ExportLesson[]) => Promise<{ plan: AdviceCreationPlan; inspection: HarnessChangePlan }>;
   onApply: (plan: AdviceCreationPlan, force: boolean) => Promise<ApplyHarnessChangePlanResult>;
   backendLabel: string;
   onExit: () => void;
 }) {
-  const [phase, setPhase] = useState<DistillPhase>({ kind: "mining" });
+  const [phase, setPhase] = useState<ExportPhase>({ kind: "mining" });
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [reviewing, setReviewing] = useState<DistillLesson[]>();
+  const [reviewing, setReviewing] = useState<ExportLesson[]>();
   const [applied, setApplied] = useState(false);
   const bodyScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const spinner = useSpinner(phase.kind === "mining" || phase.kind === "classifying");
@@ -112,7 +112,7 @@ export function DistillApp(props: {
   const activeBindings =
     phase.kind === "consent" ? consentBindings : phase.kind === "lessons" && lessons.length > 0 ? lessonsBindings : idleBindings;
 
-  const startClassify = (report: DistillReport) => {
+  const startClassify = (report: ExportReport) => {
     setPhase({ kind: "classifying", report });
     props.onClassify(report)
       .then((classified) => {
@@ -195,7 +195,7 @@ export function DistillApp(props: {
   return (
     <box style={{ border: true, padding: 1, flexDirection: "column", gap: 1, width: "100%", height: "100%" }}>
       <box style={{ flexDirection: "column", flexShrink: 0 }}>
-        <text fg={palette.accent}>✦ Distill playbook</text>
+        <text fg={palette.accent}>✦ Export harness</text>
         <text fg={palette.muted}>Turns this project's finished sessions into a portable playbook: gates, evidence, review subagents.</text>
       </box>
       {/* Bounded scroll region with flexShrink:0 children (short-terminal overlap rule). */}
@@ -217,7 +217,7 @@ export function DistillApp(props: {
           <text style={{ flexShrink: 0 }} fg={palette.agent}>{`${spinner}  Classifying lessons with ${props.backendLabel}…`}</text>
         ) : null}
         {phase.kind === "error" ? (
-          <text style={{ flexShrink: 0 }} fg={palette.warn}>Distill failed: {phase.message}</text>
+          <text style={{ flexShrink: 0 }} fg={palette.warn}>Export failed: {phase.message}</text>
         ) : null}
         {phase.kind === "consent" ? (
           <box style={{ flexDirection: "column", flexShrink: 0, gap: 0 }}>
@@ -289,7 +289,7 @@ export function DistillApp(props: {
   );
 }
 
-export async function runDistillApp(
+export async function runExportApp(
   targetDir: string,
   options: { session?: SessionAgentContext } = {}
 ): Promise<void> {
@@ -302,8 +302,8 @@ export async function runDistillApp(
   // model/effort when set, the config default otherwise.
   const settings = sessionModelSettings({ session: options.session, models, backend, role: "advise" });
 
-  const { buildDistillProposal, classifyDistillLessons, createDistillReport } = await import("../engine/distill");
-  const { seedGateCatalog } = await import("../engine/distill-catalog");
+  const { buildExportProposal, classifyExportLessons, createExportReport } = await import("../engine/export-harness");
+  const { seedGateCatalog } = await import("../engine/gate-catalog");
   const { defaultBackendRunner } = await import("../engine/backend");
   const { applyHarnessChangePlan, inspectHarnessChangePlan } = await import("../engine/create-plan");
   const { readManifest } = await import("../engine/manifest");
@@ -325,11 +325,11 @@ export async function runDistillApp(
         done();
       };
       createRoot(cliRenderer).render(
-        <DistillApp
+        <ExportApp
           backendLabel={`${backend} (${settings.model ?? "default model"})`}
-          onMine={() => createDistillReport({ targetDir, sendSessionEvidence: false })}
+          onMine={() => createExportReport({ targetDir, sendSessionEvidence: false })}
           onClassify={(report) =>
-            classifyDistillLessons({
+            classifyExportLessons({
               targetDir,
               annotated: report.annotated,
               catalog: seedGateCatalog,
@@ -340,7 +340,7 @@ export async function runDistillApp(
             })
           }
           onPlan={async (report, included) => {
-            const proposal = await buildDistillProposal(report, { agents: [...agents], lessons: included });
+            const proposal = await buildExportProposal(report, { agents: [...agents], lessons: included });
             const plan: AdviceCreationPlan = {
               recommendationId: report.playbookName,
               summary: proposal.summary,

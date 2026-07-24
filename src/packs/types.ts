@@ -192,7 +192,7 @@ export type PlaybookGateCheck = {
 };
 
 /**
- * An orchestrator+phase skill bundle: the distilled process of a finished
+ * An orchestrator+phase skill bundle: the exported process of a finished
  * project (root orchestrator skill, optional phase skills), installable
  * cross-project. Unlike `Pack.skills` (registry references resolved at
  * install time), a playbook carries its authored content inline.

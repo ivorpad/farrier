@@ -4,7 +4,7 @@
 Reads gates.json next to this script and verifies each gate's exit evidence
 against the repository root (git toplevel, else the current directory). The
 rules are declarative data (file-exists, glob-min, file-contains); this
-script is the only executable, so a distilled playbook never ships
+script is the only executable, so an exported playbook never ships
 model-authored code. A gate with no rules is reported as SKIP: its exit
 evidence is review work (screenshot judgment, human approval), not files.
 

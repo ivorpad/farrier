@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import type { PackPlaybook, PackSubagent, PlaybookGateCheck, PlaybookGateCheckRule, PlaybookSkill } from "../packs/types";
 import type { AdviceCreationFile } from "./advice-apply";
 import type { EnforcementAgent } from "./agent-selection";
-import type { AnnotatedDistillEvidence, GateCatalogEntry } from "./distill-catalog";
+import type { AnnotatedSessionEvidence, GateCatalogEntry } from "./gate-catalog";
 import { playbookFiles } from "./render-playbook";
 
 /**
@@ -20,7 +20,7 @@ export type ProposedGate = {
   symptom: string;
 };
 
-export type DistillLesson = {
+export type ExportLesson = {
   gateId: string;
   /** Only portable lessons enter the playbook; app-specific ones stay evidence. */
   classification: "portable" | "app-specific";
@@ -42,7 +42,7 @@ export type DistillLesson = {
 
 /**
  * Review subagents keyed by the gate that needs them. Seeded from the
- * hand-authored WalkLedger distillation (ios-prd-playbook agents/, 2026-07-23).
+ * hand-authored WalkLedger playbook (ios-prd-playbook agents/, 2026-07-23).
  */
 export const gateSubagents: Readonly<Record<string, PackSubagent>> = {
   "visual-review-multi": {
@@ -57,8 +57,8 @@ export const gateSubagents: Readonly<Record<string, PackSubagent>> = {
 export type PlaybookProposalInput = {
   projectDir: string;
   playbookName: string;
-  lessons: readonly DistillLesson[];
-  annotated: AnnotatedDistillEvidence;
+  lessons: readonly ExportLesson[];
+  annotated: AnnotatedSessionEvidence;
   catalog: readonly GateCatalogEntry[];
   agents: readonly EnforcementAgent[];
 };
@@ -77,7 +77,7 @@ function boundedQuote(text: string, maxChars = 180): string {
   return flattened.length > maxChars ? `${flattened.slice(0, maxChars - 3)}...` : flattened;
 }
 
-function lessonEvidenceLines(lesson: DistillLesson, annotated: AnnotatedDistillEvidence): string[] {
+function lessonEvidenceLines(lesson: ExportLesson, annotated: AnnotatedSessionEvidence): string[] {
   const lines: string[] = [];
   for (const index of lesson.steerIndexes.slice(0, 2)) {
     const steer = annotated.steers[index];
@@ -93,7 +93,7 @@ function lessonEvidenceLines(lesson: DistillLesson, annotated: AnnotatedDistillE
   return lines;
 }
 
-function evidenceDateSpan(annotated: AnnotatedDistillEvidence): string | undefined {
+function evidenceDateSpan(annotated: AnnotatedSessionEvidence): string | undefined {
   const dates = [
     ...annotated.steers.flatMap((steer) => (steer.date ? [steer.date] : [])),
     ...annotated.failureClusters.flatMap((cluster) => cluster.dates)
@@ -104,12 +104,12 @@ function evidenceDateSpan(annotated: AnnotatedDistillEvidence): string | undefin
   return first === last ? first : `${first} to ${last}`;
 }
 
-type SelectedGate = { entry: GateCatalogEntry; lesson: DistillLesson };
+type SelectedGate = { entry: GateCatalogEntry; lesson: ExportLesson };
 
-function selectGates(input: PlaybookProposalInput): { selected: SelectedGate[]; proposed: DistillLesson[] } {
+function selectGates(input: PlaybookProposalInput): { selected: SelectedGate[]; proposed: ExportLesson[] } {
   const byId = new Map(input.catalog.map((entry) => [entry.id, entry]));
   const selected: SelectedGate[] = [];
-  const proposed: DistillLesson[] = [];
+  const proposed: ExportLesson[] = [];
   for (const lesson of input.lessons) {
     if (lesson.classification !== "portable") continue;
     if (lesson.proposedGate) {
@@ -123,7 +123,7 @@ function selectGates(input: PlaybookProposalInput): { selected: SelectedGate[]; 
   return { selected, proposed };
 }
 
-function gatesReference(input: PlaybookProposalInput, selected: SelectedGate[], proposed: DistillLesson[]): string {
+function gatesReference(input: PlaybookProposalInput, selected: SelectedGate[], proposed: ExportLesson[]): string {
   const sections = selected.map(({ entry, lesson }) => {
     const evidence = lessonEvidenceLines(lesson, input.annotated);
     return [
@@ -150,7 +150,7 @@ function gatesReference(input: PlaybookProposalInput, selected: SelectedGate[], 
   });
 
   return [
-    "# Gate catalog (distilled)",
+    "# Gate catalog (exported)",
     "",
     `Each gate carries a portable statement, a stack binding, the transcript symptom it was matched on, its catalog origin, and the evidence from ${basename(input.projectDir)} that selected it. Evidence stays inline so a gate can be challenged later instead of ossifying.`,
     "",
@@ -211,7 +211,7 @@ function orchestratorSkill(input: PlaybookProposalInput, selected: SelectedGate[
   const body = [
     `# ${input.playbookName}`,
     "",
-    `Distilled from the agent sessions that built ${project}${span ? ` (${span})` : ""}. Every gate below exists because skipping it cost real time on that build; per-gate rationale and evidence live in \`references/gates.md\` so a gate can be challenged instead of ossifying.`,
+    `Exported from the agent sessions that built ${project}${span ? ` (${span})` : ""}. Every gate below exists because skipping it cost real time on that build; per-gate rationale and evidence live in \`references/gates.md\` so a gate can be challenged instead of ossifying.`,
     "",
     ...styleSection,
     "## Phases and gates",
@@ -231,7 +231,7 @@ function orchestratorSkill(input: PlaybookProposalInput, selected: SelectedGate[
   const gateIds = gates.slice(0, 3).map(({ entry }) => entry.id).join(", ");
   return {
     name: input.playbookName,
-    description: `Process playbook distilled from the ${project} build: ${gates.length} phased gate(s)${gateIds ? ` (${gateIds}, ...)` : ""} with exit evidence per gate. Use when implementing or resuming a project on this stack.`,
+    description: `Process playbook exported from the ${project} build: ${gates.length} phased gate(s)${gateIds ? ` (${gateIds}, ...)` : ""} with exit evidence per gate. Use when implementing or resuming a project on this stack.`,
     body,
     references: [{ name: "gates.md", content: gatesReference(input, selected, input.lessons.filter((lesson) => lesson.proposedGate && lesson.classification === "portable")) }]
   };
@@ -240,7 +240,7 @@ function orchestratorSkill(input: PlaybookProposalInput, selected: SelectedGate[
 function filePurpose(path: string): string {
   if (path.endsWith("gates/gates.json")) return "Declarative exit-evidence rules per gate, authored from this project's evidence and reviewed here.";
   if (path.endsWith("gates/check.py")) return "Engine-owned gate checker; evaluates gates.json, never model-authored code.";
-  if (path.endsWith("SKILL.md")) return "The distilled playbook orchestrator: phased gates with exit evidence.";
+  if (path.endsWith("SKILL.md")) return "The exported playbook orchestrator: phased gates with exit evidence.";
   if (path.includes("/references/")) return "Gate catalog with this project's evidence per gate.";
   return "Review subagent the playbook's visual gate dispatches.";
 }
@@ -267,7 +267,7 @@ export async function buildPlaybookProposal(input: PlaybookProposalInput): Promi
 
   const gateCount = checkedGates.length;
   const checkedCount = gateChecks.filter((check) => check.rules.length > 0).length;
-  const summary = `Installs the ${input.playbookName} playbook: ${gateCount} gate(s) (${checkedCount} with deterministic exit checks), ${subagents.length} review subagent(s), for ${input.agents.join(", ")}. Distilled evidence stays cited inline; nothing enforces automatically.`;
+  const summary = `Installs the ${input.playbookName} playbook: ${gateCount} gate(s) (${checkedCount} with deterministic exit checks), ${subagents.length} review subagent(s), for ${input.agents.join(", ")}. Session evidence stays cited inline; nothing enforces automatically.`;
 
   return {
     playbook,

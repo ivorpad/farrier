@@ -1,14 +1,14 @@
 import type { FailureSignal } from "./learn-signals";
-import type { DistillEvidence, DistillSteer } from "./distill-evidence";
+import type { SessionEvidence, SteerSignal } from "./session-evidence";
 
 /**
- * The gate catalog: the vocabulary distill matches lessons against.
+ * The gate catalog: the vocabulary export matches lessons against.
  *
- * Seeded from the hand-authored WalkLedger distillation (ios-prd-playbook
+ * Seeded from the hand-authored WalkLedger playbook (ios-prd-playbook
  * references/gates.md, ShipatonStudio workspace, 2026-07-23). Each entry
  * carries a portable statement (what would transfer to a web or Android
  * playbook), a stack binding (how it ran on iOS), the transcript symptom a
- * distiller should look for, and origin evidence so a gate can be challenged
+ * classifier should look for, and origin evidence so a gate can be challenged
  * later instead of ossifying.
  *
  * The signature patterns are routing hints and cheap pre-annotations, not
@@ -226,10 +226,10 @@ export type GateHint = {
   signature: string;
 };
 
-export type AnnotatedSteer = DistillSteer & { hints: GateHint[] };
+export type AnnotatedSteer = SteerSignal & { hints: GateHint[] };
 export type AnnotatedFailureCluster = FailureSignal & { hints: GateHint[] };
 
-export type AnnotatedDistillEvidence = {
+export type AnnotatedSessionEvidence = {
   steers: AnnotatedSteer[];
   failureClusters: AnnotatedFailureCluster[];
 };
@@ -258,10 +258,10 @@ function hintsForText(text: string, catalog: readonly GateCatalogEntry[]): GateH
  * cluster stays in the output whether or not anything matched (annotation
  * routes attention; it never filters evidence).
  */
-export function annotateDistillEvidence(
-  evidence: DistillEvidence,
+export function annotateSessionEvidence(
+  evidence: SessionEvidence,
   catalog: readonly GateCatalogEntry[] = seedGateCatalog
-): AnnotatedDistillEvidence {
+): AnnotatedSessionEvidence {
   return {
     steers: evidence.steers.map((steer) => ({ ...steer, hints: hintsForText(steer.text, catalog) })),
     failureClusters: evidence.failureClusters.map((cluster) => ({

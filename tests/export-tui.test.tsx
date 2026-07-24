@@ -3,13 +3,13 @@ import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { act } from "react";
 import type { AdviceCreationPlan } from "../src/engine/advice-apply";
-import type { DistillReport } from "../src/engine/distill";
-import type { DistillLesson } from "../src/engine/distill-playbook";
-import { DistillApp, lessonRowLabel } from "../src/tui/distill-app";
+import type { ExportReport } from "../src/engine/export-harness";
+import type { ExportLesson } from "../src/engine/export-playbook";
+import { ExportApp, lessonRowLabel } from "../src/tui/export-app";
 
 const renderOptions = { width: 120, height: 44, kittyKeyboard: true };
 
-function lesson(overrides: Partial<DistillLesson> = {}): DistillLesson {
+function lesson(overrides: Partial<ExportLesson> = {}): ExportLesson {
   return {
     gateId: "visual-review-multi",
     classification: "portable",
@@ -21,7 +21,7 @@ function lesson(overrides: Partial<DistillLesson> = {}): DistillLesson {
   };
 }
 
-function report(lessons: DistillLesson[]): DistillReport {
+function report(lessons: ExportLesson[]): ExportReport {
   return {
     projectDir: "/tmp/walkledger",
     playbookName: "walkledger-playbook",
@@ -61,7 +61,7 @@ function planned() {
   };
 }
 
-function distillProps(overrides: Partial<Parameters<typeof DistillApp>[0]> = {}): Parameters<typeof DistillApp>[0] {
+function exportProps(overrides: Partial<Parameters<typeof ExportApp>[0]> = {}): Parameters<typeof ExportApp>[0] {
   return {
     onMine: async () => report([lesson(), lesson({ gateId: "name-preflight", classification: "app-specific" })]),
     onClassify: async () => ({ lessons: [lesson({ source: "llm" })], dropped: [] }),
@@ -80,24 +80,24 @@ async function interact(view: TestRendererSetup, action: () => void | Promise<vo
   });
 }
 
-async function renderDistill(
-  overrides: Partial<Parameters<typeof DistillApp>[0]> = {}
+async function renderExport(
+  overrides: Partial<Parameters<typeof ExportApp>[0]> = {}
 ): Promise<TestRendererSetup> {
-  const props = distillProps(overrides);
+  const props = exportProps(overrides);
   const mine = props.onMine;
   let release: (() => void) | undefined;
   props.onMine = () => new Promise((resolve, reject) => {
     release = () => mine().then(resolve, reject);
   });
-  const view = await testRender(<DistillApp {...props} />, renderOptions);
+  const view = await testRender(<ExportApp {...props} />, renderOptions);
   await view.waitFor(() => release !== undefined);
   await interact(view, () => release?.());
   return view;
 }
 
-describe("distill consent screen", () => {
+describe("export consent screen", () => {
   test("shows scannable consent with sent/never-sent/limit lines before anything leaves", async () => {
-    const view = await renderDistill();
+    const view = await renderExport();
     try {
       const frame = await view.waitForFrame((value) => value.includes("Classify lessons with claude (sonnet)?"));
       expect(frame).toContain("Mined locally: 1 steer(s) and 0 failure cluster(s) from 2 session(s).");
@@ -112,7 +112,7 @@ describe("distill consent screen", () => {
 
   test("declining stays local and labels the lesson source", async () => {
     let classifyCalls = 0;
-    const view = await renderDistill({
+    const view = await renderExport({
       onClassify: async () => {
         classifyCalls += 1;
         return { lessons: [], dropped: [] };
@@ -132,7 +132,7 @@ describe("distill consent screen", () => {
 
   test("consenting classifies with the backend and marks the source", async () => {
     let classifyCalls = 0;
-    const view = await renderDistill({
+    const view = await renderExport({
       onClassify: async () => {
         classifyCalls += 1;
         return { lessons: [lesson({ source: "llm" })], dropped: [] };
@@ -150,10 +150,10 @@ describe("distill consent screen", () => {
   });
 });
 
-describe("distill lesson review", () => {
+describe("export lesson review", () => {
   test("app-specific lessons are evidence-only and portable ones apply exactly once after file review", async () => {
     const applies: Array<{ plan: AdviceCreationPlan; force: boolean }> = [];
-    const view = await renderDistill({
+    const view = await renderExport({
       onApply: async (plan, force) => {
         applies.push({ plan, force });
         return { written: [], unchanged: [], writtenFiles: [plan.files[0]!.path], unchangedFiles: [], backupDir: null };
@@ -180,8 +180,8 @@ describe("distill lesson review", () => {
   });
 
   test("space excludes a portable lesson from the proposal", async () => {
-    const planCalls: DistillLesson[][] = [];
-    const view = await renderDistill({
+    const planCalls: ExportLesson[][] = [];
+    const view = await renderExport({
       onMine: async () => report([lesson(), lesson({ gateId: "device-verification" })]),
       onPlan: async (_report, lessons) => {
         planCalls.push(lessons);

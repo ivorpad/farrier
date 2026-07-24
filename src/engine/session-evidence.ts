@@ -5,7 +5,7 @@ import { SignalCollector, scanClaudeTranscripts, type FailureSignal } from "./le
 import { scanCodexSessions } from "./learn-signals-codex";
 
 /**
- * Distill evidence preparation: local, complete, no vetoes.
+ * Session evidence preparation: local, complete, no vetoes.
  *
  * Deterministic mining alone cannot produce a playbook — on the WalkLedger
  * fixture (45 sessions) the threshold-gated miner finds zero repeated
@@ -18,7 +18,7 @@ import { scanCodexSessions } from "./learn-signals-codex";
  * that judges this evidence is consented and review-gated separately.
  */
 
-export type DistillSteer = {
+export type SteerSignal = {
   /** Redacted, ambient-stripped, bounded steer text. */
   text: string;
   sessionRef: string;
@@ -26,9 +26,9 @@ export type DistillSteer = {
   truncated: boolean;
 };
 
-export type DistillEvidence = {
+export type SessionEvidence = {
   projectDir: string;
-  steers: DistillSteer[];
+  steers: SteerSignal[];
   /** Full clustered failure record: work-loop failures included, no thresholds. */
   failureClusters: FailureSignal[];
   codexSessionsMatched: number;
@@ -36,7 +36,7 @@ export type DistillEvidence = {
   notes: string[];
 };
 
-export type DistillEvidenceOptions = {
+export type SessionEvidenceOptions = {
   projectDir: string;
   /** Override for tests; defaults to ~/.codex/sessions. */
   codexSessionsDir?: string;
@@ -87,10 +87,10 @@ export function steerFromUserMessage(raw: string): { text: string; truncated: bo
   return bounded;
 }
 
-export async function prepareDistillEvidence(options: DistillEvidenceOptions): Promise<DistillEvidence> {
+export async function prepareSessionEvidence(options: SessionEvidenceOptions): Promise<SessionEvidence> {
   const projectDir = resolve(options.projectDir);
   const collector = new SignalCollector({ keepAllFailures: true });
-  const steers: DistillSteer[] = [];
+  const steers: SteerSignal[] = [];
   let omittedSteers = 0;
 
   const collectSteer = (event: { text: string; sessionRef: string; date: string | undefined }): void => {

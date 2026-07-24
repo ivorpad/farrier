@@ -50,7 +50,7 @@ export const harnessVerbs: HarnessVerb[] = [
   { gerund: "Building", past: "built" },
   { gerund: "Rendering", past: "rendered" },
   { gerund: "Summoning", past: "summoned" },
-  { gerund: "Distilling", past: "distilled" },
+  { gerund: "Refining", past: "refined" },
   { gerund: "Percolating", past: "percolated" },
   { gerund: "Simmering", past: "simmered" },
   { gerund: "Fabricating", past: "fabricated" },

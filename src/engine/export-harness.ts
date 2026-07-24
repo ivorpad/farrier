@@ -10,32 +10,32 @@ import {
   type BackendCommandRunner
 } from "./backend";
 import {
-  annotateDistillEvidence,
+  annotateSessionEvidence,
   seedGateCatalog,
-  type AnnotatedDistillEvidence,
+  type AnnotatedSessionEvidence,
   type GateCatalogEntry
-} from "./distill-catalog";
-import { prepareDistillEvidence, type DistillEvidence } from "./distill-evidence";
-import { buildPlaybookProposal, type DistillLesson, type PlaybookProposal } from "./distill-playbook";
+} from "./gate-catalog";
+import { prepareSessionEvidence, type SessionEvidence } from "./session-evidence";
+import { buildPlaybookProposal, type ExportLesson, type PlaybookProposal } from "./export-playbook";
 import type { PlaybookGateCheckRule } from "../packs/types";
 import type { EnforcementAgent } from "./agent-selection";
 import { isolatedAuthoringTimeoutMs, withIsolatedExecution } from "./execution-isolation";
 
 /**
- * farrier distill: finished project sessions to a portable playbook.
+ * farrier export: finished project sessions to a portable playbook.
  *
- * Layering (plan doc docs/plans/distill-playbook-plan-2026-07-23.md): the
+ * Layering (the 2026-07-23 playbook plan in docs/plans/): the
  * deterministic layer prepares, clusters, routes, and redacts evidence — it
  * never vetoes it. All judgment (which steers are portable lessons, which
  * catalog gate a symptom matches) is LLM work, consented and review-gated.
  * Sending session prose to a provider requires the caller's explicit
- * portable-artifact consent (sendSessionEvidence); without it, distill stays
+ * portable-artifact consent (sendSessionEvidence); without it, export stays
  * fully local and falls back to catalog signature hints, clearly labeled.
  */
 
-export type DistillBackend = AgentBackend;
+export type ExportBackend = AgentBackend;
 
-export type DistillOptions = {
+export type ExportOptions = {
   targetDir: string;
   /** Override for tests; defaults to ~/.codex/sessions. */
   codexSessionsDir?: string;
@@ -51,7 +51,7 @@ export type DistillOptions = {
    */
   sendSessionEvidence?: boolean;
   noLlm?: boolean;
-  backend?: DistillBackend;
+  backend?: ExportBackend;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   runner?: BackendCommandRunner;
@@ -62,12 +62,12 @@ export type DroppedLesson = {
   reason: string;
 };
 
-export type DistillReport = {
+export type ExportReport = {
   projectDir: string;
   playbookName: string;
-  evidence: DistillEvidence;
-  annotated: AnnotatedDistillEvidence;
-  lessons: DistillLesson[];
+  evidence: SessionEvidence;
+  annotated: AnnotatedSessionEvidence;
+  lessons: ExportLesson[];
   droppedLessons: DroppedLesson[];
   /** True when lessons came from the consented LLM classification. */
   llmClassified: boolean;
@@ -101,9 +101,9 @@ export function defaultPlaybookName(projectDir: string): string {
  * lesson list is a starting point for review, never a classified result.
  */
 export function hintLessons(
-  annotated: AnnotatedDistillEvidence,
+  annotated: AnnotatedSessionEvidence,
   catalog: readonly GateCatalogEntry[] = seedGateCatalog
-): DistillLesson[] {
+): ExportLesson[] {
   const byGate = new Map<string, { steerIndexes: number[]; clusterIndexes: number[] }>();
   annotated.steers.forEach((steer, index) => {
     for (const hint of steer.hints) {
@@ -142,7 +142,7 @@ export type LessonValidationContext = {
 };
 
 export type LessonValidationResult =
-  | { ok: true; lesson: DistillLesson; checkDrops: string[] }
+  | { ok: true; lesson: ExportLesson; checkDrops: string[] }
   | { ok: false; reason: string; gateId?: string };
 
 function validIndexes(value: unknown, max: number): number[] | undefined {
@@ -217,7 +217,7 @@ export function validExitCheckRules(value: unknown): { rules: PlaybookGateCheckR
   return { rules, dropped };
 }
 
-export function validateDistillLesson(value: unknown, context: LessonValidationContext): LessonValidationResult {
+export function validateExportLesson(value: unknown, context: LessonValidationContext): LessonValidationResult {
   if (!isRecord(value)) return { ok: false, reason: "lesson must be an object" };
 
   const gateId = typeof value.gateId === "string" ? value.gateId : undefined;
@@ -295,9 +295,9 @@ export function validateDistillLesson(value: unknown, context: LessonValidationC
   };
 }
 
-export function buildDistillPrompt(input: {
+export function buildExportPrompt(input: {
   catalog: readonly GateCatalogEntry[];
-  annotated: AnnotatedDistillEvidence;
+  annotated: AnnotatedSessionEvidence;
 }): string {
   const catalog = input.catalog.map((entry) => ({
     id: entry.id,
@@ -322,7 +322,7 @@ export function buildDistillPrompt(input: {
     hints: cluster.hints.map((hint) => hint.gateId)
   }));
 
-  return `You are Farrier's distill classifier: you turn the evidence of a finished project's agent sessions into playbook lessons.
+  return `You are Farrier's export classifier: you turn the evidence of a finished project's agent sessions into playbook lessons.
 
 Return JSON only with this exact shape:
 
@@ -383,17 +383,17 @@ function lessonsFromBackendOutput(stdout: string): unknown[] {
   return parsed.lessons;
 }
 
-export async function classifyDistillLessons(input: {
+export async function classifyExportLessons(input: {
   targetDir: string;
-  annotated: AnnotatedDistillEvidence;
+  annotated: AnnotatedSessionEvidence;
   catalog: readonly GateCatalogEntry[];
-  backend: DistillBackend;
+  backend: ExportBackend;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   runner: BackendCommandRunner;
-}): Promise<{ lessons: DistillLesson[]; dropped: DroppedLesson[] }> {
+}): Promise<{ lessons: ExportLesson[]; dropped: DroppedLesson[] }> {
   const model = input.model ?? (input.backend === "claude" ? "sonnet" : "gpt-5.5");
-  const prompt = buildDistillPrompt({ catalog: input.catalog, annotated: input.annotated });
+  const prompt = buildExportPrompt({ catalog: input.catalog, annotated: input.annotated });
 
   const command =
     input.backend === "claude"
@@ -424,7 +424,7 @@ export async function classifyDistillLessons(input: {
     // Classifying a whole project's evidence is a full reasoning pass.
     timeoutMs: isolatedAuthoringTimeoutMs,
     readOnlyWorkspace: true,
-    // Distill targets projects whose agent sessions may still be open; live
+    // Export targets projects whose agent sessions may still be open; live
     // rollout writes would otherwise fail the target fence on every run. The
     // classification reads nothing from and stages nothing into the target.
     concurrentTargetWrites: "tolerate",
@@ -457,10 +457,10 @@ export async function classifyDistillLessons(input: {
     clusterCount: Math.min(input.annotated.failureClusters.length, maxPromptClusters),
     seenGateIds: new Set()
   };
-  const lessons: DistillLesson[] = [];
+  const lessons: ExportLesson[] = [];
   const dropped: DroppedLesson[] = [];
   for (const raw of lessonsFromBackendOutput(output.stdout)) {
-    const result = validateDistillLesson(raw, context);
+    const result = validateExportLesson(raw, context);
     if (result.ok) {
       context.seenGateIds.add(result.lesson.gateId);
       lessons.push(result.lesson);
@@ -474,7 +474,7 @@ export async function classifyDistillLessons(input: {
   return { lessons, dropped };
 }
 
-export async function createDistillReport(options: DistillOptions): Promise<DistillReport> {
+export async function createExportReport(options: ExportOptions): Promise<ExportReport> {
   const projectDir = resolve(options.targetDir);
   const playbookName = options.playbookName ?? defaultPlaybookName(projectDir);
   if (!kebabCasePattern.test(playbookName)) {
@@ -483,18 +483,18 @@ export async function createDistillReport(options: DistillOptions): Promise<Dist
   const notes: string[] = [];
   const errors: string[] = [];
 
-  const evidence = await prepareDistillEvidence({
+  const evidence = await prepareSessionEvidence({
     projectDir,
     codexSessionsDir: options.codexSessionsDir,
     claudeTranscriptsDir: options.transcriptsDir,
-    // The 200-file default was tuned for learn's counting; distill reads one
+    // The 200-file default was tuned for learn's counting; export reads one
     // project's history and should not silently drop its oldest sessions.
     maxFiles: 1_000
   });
   notes.push(...evidence.notes);
-  const annotated = annotateDistillEvidence(evidence);
+  const annotated = annotateSessionEvidence(evidence);
 
-  let lessons: DistillLesson[];
+  let lessons: ExportLesson[];
   let droppedLessons: DroppedLesson[] = [];
   let llmClassified = false;
 
@@ -508,7 +508,7 @@ export async function createDistillReport(options: DistillOptions): Promise<Dist
   } else {
     const backend = options.backend ?? "claude";
     try {
-      const classified = await classifyDistillLessons({
+      const classified = await classifyExportLessons({
         targetDir: projectDir,
         annotated,
         catalog: seedGateCatalog,
@@ -535,9 +535,9 @@ export async function createDistillReport(options: DistillOptions): Promise<Dist
 }
 
 /** Deterministic assembly of the reviewed report into an installable file plan. */
-export function buildDistillProposal(
-  report: DistillReport,
-  input: { agents: readonly EnforcementAgent[]; lessons?: readonly DistillLesson[] }
+export function buildExportProposal(
+  report: ExportReport,
+  input: { agents: readonly EnforcementAgent[]; lessons?: readonly ExportLesson[] }
 ): Promise<PlaybookProposal> {
   return buildPlaybookProposal({
     projectDir: report.projectDir,
@@ -553,9 +553,9 @@ function renderList(values: string[], empty: string): string[] {
   return values.length === 0 ? [`  ${empty}`] : values.map((value) => `  - ${value}`);
 }
 
-export function formatDistillReport(report: DistillReport): string {
+export function formatExportReport(report: ExportReport): string {
   const lines: string[] = [
-    `Farrier distill report for ${report.projectDir}`,
+    `Farrier export report for ${report.projectDir}`,
     "",
     `Playbook name: ${report.playbookName}`,
     `Codex sessions: ${report.evidence.codexSessionsMatched} matched (of ${report.evidence.codexSessionsScanned} scanned)`,
@@ -607,7 +607,7 @@ export function formatDistillReport(report: DistillReport): string {
     lines.push("", "Notes:", ...renderList(report.notes, "none"));
   }
 
-  lines.push("", "No files were changed. Review in the TUI (farrier → Distill playbook) or re-run with --yes --install-dir <target> to install the playbook after review.");
+  lines.push("", "No files were changed. Review in the TUI (farrier → Export harness) or re-run with --yes --install-dir <target> to install the playbook after review.");
 
   return `${lines.join("\n")}\n`;
 }

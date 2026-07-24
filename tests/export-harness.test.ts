@@ -3,23 +3,23 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  buildDistillProposal,
-  createDistillReport,
+  buildExportProposal,
+  createExportReport,
   defaultPlaybookName,
   hintLessons,
-  validateDistillLesson,
+  validateExportLesson,
   type LessonValidationContext
-} from "../src/engine/distill";
-import { annotateDistillEvidence, seedGateCatalog } from "../src/engine/distill-catalog";
-import { buildPlaybookProposal, type DistillLesson } from "../src/engine/distill-playbook";
-import type { DistillEvidence } from "../src/engine/distill-evidence";
+} from "../src/engine/export-harness";
+import { annotateSessionEvidence, seedGateCatalog } from "../src/engine/gate-catalog";
+import { buildPlaybookProposal, type ExportLesson } from "../src/engine/export-playbook";
+import type { SessionEvidence } from "../src/engine/session-evidence";
 import type { BackendCommandRunner } from "../src/engine/backend";
 
-async function tempDir(prefix = "farrier-distill-"): Promise<string> {
+async function tempDir(prefix = "farrier-export-"): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
 }
 
-function evidence(overrides: Partial<DistillEvidence> = {}): DistillEvidence {
+function evidence(overrides: Partial<SessionEvidence> = {}): SessionEvidence {
   return {
     projectDir: "/tmp/walkledger",
     steers: [
@@ -55,22 +55,22 @@ function context(overrides: Partial<LessonValidationContext> = {}): LessonValida
   };
 }
 
-describe("validateDistillLesson", () => {
+describe("validateExportLesson", () => {
   test("accepts a catalog match and rejects unknown gates, bad indexes, and evidence-free lessons", () => {
-    const good = validateDistillLesson(
+    const good = validateExportLesson(
       { gateId: "visual-review-multi", classification: "portable", steerIndexes: [1], clusterIndexes: [], rationale: "user demanded screenshot review" },
       context()
     );
     expect(good.ok).toBe(true);
 
-    expect(validateDistillLesson({ gateId: "invented-gate", classification: "portable", steerIndexes: [0] }, context()).ok).toBe(false);
-    expect(validateDistillLesson({ gateId: "visual-review-multi", classification: "portable", steerIndexes: [99] }, context()).ok).toBe(false);
-    expect(validateDistillLesson({ gateId: "visual-review-multi", classification: "portable", steerIndexes: [], clusterIndexes: [] }, context()).ok).toBe(false);
-    expect(validateDistillLesson({ gateId: "visual-review-multi", classification: "sometimes", steerIndexes: [0] }, context()).ok).toBe(false);
+    expect(validateExportLesson({ gateId: "invented-gate", classification: "portable", steerIndexes: [0] }, context()).ok).toBe(false);
+    expect(validateExportLesson({ gateId: "visual-review-multi", classification: "portable", steerIndexes: [99] }, context()).ok).toBe(false);
+    expect(validateExportLesson({ gateId: "visual-review-multi", classification: "portable", steerIndexes: [], clusterIndexes: [] }, context()).ok).toBe(false);
+    expect(validateExportLesson({ gateId: "visual-review-multi", classification: "sometimes", steerIndexes: [0] }, context()).ok).toBe(false);
   });
 
   test("proposedGate entries must be kebab-case, complete, and non-colliding", () => {
-    const proposed = validateDistillLesson(
+    const proposed = validateExportLesson(
       {
         proposedGate: { id: "migrations-reviewed", portable: "p", binding: "b", symptom: "s" },
         classification: "portable",
@@ -82,13 +82,13 @@ describe("validateDistillLesson", () => {
     expect(proposed.ok).toBe(true);
     if (proposed.ok) expect(proposed.lesson.proposedGate?.id).toBe("migrations-reviewed");
 
-    const colliding = validateDistillLesson(
+    const colliding = validateExportLesson(
       { proposedGate: { id: "name-preflight", portable: "p", binding: "b", symptom: "s" }, classification: "portable", steerIndexes: [0] },
       context()
     );
     expect(colliding.ok).toBe(false);
 
-    const incomplete = validateDistillLesson(
+    const incomplete = validateExportLesson(
       { proposedGate: { id: "new-gate", portable: "p", binding: "b" }, classification: "portable", steerIndexes: [0] },
       context()
     );
@@ -97,17 +97,17 @@ describe("validateDistillLesson", () => {
 
   test("duplicate lessons for the same gate are dropped", () => {
     const shared = context();
-    const first = validateDistillLesson({ gateId: "device-verification", classification: "portable", steerIndexes: [0] }, shared);
+    const first = validateExportLesson({ gateId: "device-verification", classification: "portable", steerIndexes: [0] }, shared);
     expect(first.ok).toBe(true);
     shared.seenGateIds.add("device-verification");
-    const second = validateDistillLesson({ gateId: "device-verification", classification: "portable", steerIndexes: [1] }, shared);
+    const second = validateExportLesson({ gateId: "device-verification", classification: "portable", steerIndexes: [1] }, shared);
     expect(second.ok).toBe(false);
   });
 });
 
 describe("hintLessons", () => {
   test("builds catalog-ordered lessons from signature hints, labeled as hints", () => {
-    const annotated = annotateDistillEvidence(evidence());
+    const annotated = annotateSessionEvidence(evidence());
     const lessons = hintLessons(annotated);
     const ids = lessons.map((lesson) => lesson.gateId);
 
@@ -127,7 +127,7 @@ describe("hintLessons", () => {
 
 describe("buildPlaybookProposal", () => {
   test("assembles orchestrator, gates.md with evidence, and the visual-review subagent", async () => {
-    const annotated = annotateDistillEvidence(evidence());
+    const annotated = annotateSessionEvidence(evidence());
     const lessons = hintLessons(annotated);
     const proposal = await buildPlaybookProposal({
       projectDir: "/tmp/walkledger",
@@ -160,8 +160,8 @@ describe("buildPlaybookProposal", () => {
   });
 
   test("app-specific lessons and excluded gates stay out; proposed gates ship marked", async () => {
-    const annotated = annotateDistillEvidence(evidence());
-    const lessons: DistillLesson[] = [
+    const annotated = annotateSessionEvidence(evidence());
+    const lessons: ExportLesson[] = [
       { gateId: "visual-review-multi", classification: "portable", steerIndexes: [1], clusterIndexes: [], rationale: "r", source: "llm" },
       { gateId: "name-preflight", classification: "app-specific", steerIndexes: [0], clusterIndexes: [], rationale: "tied to this app", source: "llm" },
       {
@@ -193,8 +193,8 @@ describe("buildPlaybookProposal", () => {
 
 describe("model-authored exit checks", () => {
   test("valid rules ride the lesson into gates.json and the SKILL.md exit-check line", async () => {
-    const annotated = annotateDistillEvidence(evidence());
-    const lessons: DistillLesson[] = [
+    const annotated = annotateSessionEvidence(evidence());
+    const lessons: ExportLesson[] = [
       {
         gateId: "evidence-before-complete",
         classification: "portable",
@@ -233,7 +233,7 @@ describe("model-authored exit checks", () => {
 
   test("unsafe or malformed rules are dropped individually and the lesson survives", () => {
     const shared = context();
-    const result = validateDistillLesson(
+    const result = validateExportLesson(
       {
         gateId: "evidence-before-complete",
         classification: "portable",
@@ -257,7 +257,7 @@ describe("model-authored exit checks", () => {
 
   test("the rendered checker script passes and fails against real files", async () => {
     const repo = await tempDir("farrier-gates-repo-");
-    const annotated = annotateDistillEvidence(evidence());
+    const annotated = annotateSessionEvidence(evidence());
     const proposal = await buildPlaybookProposal({
       projectDir: repo,
       playbookName: "walkledger-playbook",
@@ -307,10 +307,10 @@ describe("model-authored exit checks", () => {
   });
 });
 
-describe("createDistillReport", () => {
+describe("createExportReport", () => {
   test("without consent it stays local with hint lessons and says why", async () => {
-    const project = await tempDir("farrier-distill-project-");
-    const report = await createDistillReport({
+    const project = await tempDir("farrier-export-project-");
+    const report = await createExportReport({
       targetDir: project,
       codexSessionsDir: join(project, "no-sessions"),
       transcriptsDir: join(project, "no-transcripts")
@@ -322,8 +322,8 @@ describe("createDistillReport", () => {
   });
 
   test("with consent a stub backend classifies lessons and invalid ones are dropped with reasons", async () => {
-    const project = await tempDir("farrier-distill-project-");
-    const sessions = await tempDir("farrier-distill-sessions-");
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
     const day = join(sessions, "2026", "07", "22");
     await mkdir(day, { recursive: true });
     await writeFile(
@@ -346,7 +346,7 @@ describe("createDistillReport", () => {
       stderr: ""
     });
 
-    const report = await createDistillReport({
+    const report = await createExportReport({
       targetDir: project,
       codexSessionsDir: sessions,
       transcriptsDir: join(project, "no-transcripts"),
@@ -365,10 +365,10 @@ describe("createDistillReport", () => {
   });
 
   test("a failing backend falls back to hints and records the error", async () => {
-    const project = await tempDir("farrier-distill-project-");
+    const project = await tempDir("farrier-export-project-");
     const runner: BackendCommandRunner = async () => ({ exitCode: 1, stdout: "", stderr: "boom" });
 
-    const report = await createDistillReport({
+    const report = await createExportReport({
       targetDir: project,
       codexSessionsDir: join(project, "no-sessions"),
       transcriptsDir: join(project, "no-transcripts"),
@@ -381,9 +381,9 @@ describe("createDistillReport", () => {
     expect(report.errors.some((error) => error.includes("fell back to signature hints"))).toBe(true);
   });
 
-  test("buildDistillProposal renders only for the requested agents", async () => {
-    const project = await tempDir("farrier-distill-project-");
-    const report = await createDistillReport({
+  test("buildExportProposal renders only for the requested agents", async () => {
+    const project = await tempDir("farrier-export-project-");
+    const report = await createExportReport({
       targetDir: project,
       codexSessionsDir: join(project, "no-sessions"),
       transcriptsDir: join(project, "no-transcripts")
@@ -396,7 +396,7 @@ describe("createDistillReport", () => {
     };
     // A lesson with no evidence indexes cannot come from validation, but the
     // builder still renders it; evidence lines are simply absent.
-    const proposal = await buildDistillProposal(withLessons, { agents: ["codex"] });
+    const proposal = await buildExportProposal(withLessons, { agents: ["codex"] });
     expect(proposal.files.every((file) => file.path.startsWith(".agents/"))).toBe(true);
   });
 });

@@ -46,7 +46,7 @@ export type ProposalMiningResult = {
   /**
    * Agent files found when no manifest exists (e.g. "AGENTS.md", "71 installed
    * skill(s)"). A repo can be thoroughly harnessed by hand — or by farrier's
-   * own skills/distill installs — without farrier managing it; the TUI must
+   * own skills/export installs — without farrier managing it; the TUI must
    * not tell such a user they have "no harness".
    */
   existingAgentFiles: string[];

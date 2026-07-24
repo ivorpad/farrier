@@ -1,14 +1,14 @@
 import { resolve } from "node:path";
-import type { DistillBackend } from "../engine/distill";
+import type { ExportBackend } from "../engine/export-harness";
 
 /**
- * Headless `farrier distill`: report-only by default (like advise). The LLM
+ * Headless `farrier export`: report-only by default (like advise). The LLM
  * classification runs only with explicit --send-session-evidence consent;
  * installing the playbook requires --yes plus --install-dir after reviewing
- * the report. The TUI (farrier → Distill playbook) is the review surface.
+ * the report. The TUI (farrier → Export harness) is the review surface.
  */
 
-type DistillCliOptions = {
+type ExportCliOptions = {
   dir: string;
   codexSessions?: string;
   transcripts?: string;
@@ -20,12 +20,12 @@ type DistillCliOptions = {
   yes: boolean;
   force: boolean;
   json: boolean;
-  backend?: DistillBackend;
+  backend?: ExportBackend;
   model?: string;
   help: boolean;
 };
 
-function parseBackend(value: string): DistillBackend {
+function parseBackend(value: string): ExportBackend {
   if (value === "claude" || value === "codex") return value;
   throw new Error("--backend must be claude or codex");
 }
@@ -44,8 +44,8 @@ function valueArg(args: string[], index: number, name: string): string {
   return value;
 }
 
-export function parseDistillArgs(args: string[]): DistillCliOptions {
-  const options: DistillCliOptions = {
+export function parseExportArgs(args: string[]): ExportCliOptions {
+  const options: ExportCliOptions = {
     dir: process.cwd(),
     agents: ["claude", "codex"],
     sendSessionEvidence: false,
@@ -80,14 +80,14 @@ export function parseDistillArgs(args: string[]): DistillCliOptions {
     else if (arg.startsWith("--backend=")) options.backend = parseBackend(arg.slice("--backend=".length));
     else if (arg === "--model") { options.model = valueArg(args, index, arg); index += 1; }
     else if (arg.startsWith("--model=")) options.model = arg.slice("--model=".length);
-    else throw new Error(`Unknown distill argument: ${arg}`);
+    else throw new Error(`Unknown export argument: ${arg}`);
   }
 
   return options;
 }
 
-export async function runDistill(args: string[], usage: () => string): Promise<number> {
-  const options = parseDistillArgs(args);
+export async function runExport(args: string[], usage: () => string): Promise<number> {
+  const options = parseExportArgs(args);
   if (options.help) {
     console.log(usage());
     return 0;
@@ -95,7 +95,7 @@ export async function runDistill(args: string[], usage: () => string): Promise<n
 
   const targetDir = resolve(options.dir);
   const { loadFarrierConfig, resolveModelSettings } = await import("../config/farrier-config");
-  const { buildDistillProposal, createDistillReport, formatDistillReport } = await import("../engine/distill");
+  const { buildExportProposal, createExportReport, formatExportReport } = await import("../engine/export-harness");
 
   const backend = options.backend ?? "claude";
   const models = await loadFarrierConfig({ projectDir: targetDir })
@@ -103,7 +103,7 @@ export async function runDistill(args: string[], usage: () => string): Promise<n
     .catch(() => ({}));
   const settings = resolveModelSettings({ models, backend, role: "advise", explicitModel: options.model });
 
-  const report = await createDistillReport({
+  const report = await createExportReport({
     targetDir,
     codexSessionsDir: options.codexSessions ? resolve(options.codexSessions) : undefined,
     transcriptsDir: options.transcripts ? resolve(options.transcripts) : undefined,
@@ -119,17 +119,17 @@ export async function runDistill(args: string[], usage: () => string): Promise<n
     if (options.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {
-      console.log(formatDistillReport(report).trimEnd());
+      console.log(formatExportReport(report).trimEnd());
     }
     return report.errors.length > 0 ? 1 : 0;
   }
 
   if (!options.installDir) {
-    throw new Error("--yes requires --install-dir <target>: distill installs a portable artifact into a workspace you name.");
+    throw new Error("--yes requires --install-dir <target>: export installs a portable artifact into a workspace you name.");
   }
 
   const installDir = resolve(options.installDir);
-  const proposal = await buildDistillProposal(report, { agents: options.agents });
+  const proposal = await buildExportProposal(report, { agents: options.agents });
   if (proposal.files.length === 0) {
     console.error("farrier: no portable lessons selected; nothing to install.");
     return 1;
@@ -152,7 +152,7 @@ export async function runDistill(args: string[], usage: () => string): Promise<n
     return 0;
   }
 
-  console.log(formatDistillReport(report).trimEnd());
+  console.log(formatExportReport(report).trimEnd());
   console.log("");
   console.log(proposal.summary);
   console.log(`Installed into ${installDir}:`);

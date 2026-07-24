@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
-  annotateDistillEvidence,
+  annotateSessionEvidence,
   seedGateCatalog,
   type GateCatalogEntry
-} from "../src/engine/distill-catalog";
-import type { DistillEvidence } from "../src/engine/distill-evidence";
+} from "../src/engine/gate-catalog";
+import type { SessionEvidence } from "../src/engine/session-evidence";
 import type { FailureSignal } from "../src/engine/learn-signals";
 
-function evidence(overrides: Partial<DistillEvidence> = {}): DistillEvidence {
+function evidence(overrides: Partial<SessionEvidence> = {}): SessionEvidence {
   return {
     projectDir: "/tmp/project",
     steers: [],
@@ -50,9 +50,9 @@ describe("seed gate catalog", () => {
   });
 });
 
-describe("annotateDistillEvidence", () => {
+describe("annotateSessionEvidence", () => {
   test("verbatim WalkLedger steers hit their gates", () => {
-    const annotated = annotateDistillEvidence(evidence({
+    const annotated = annotateSessionEvidence(evidence({
       steers: [
         { text: "the UI is stupidly shitty as you haven't used any of the skills", sessionRef: "codex:a", truncated: false },
         { text: "Open up the simulator and take screenshots of every single page you find in this app", sessionRef: "codex:b", truncated: false },
@@ -73,7 +73,7 @@ describe("annotateDistillEvidence", () => {
   });
 
   test("failure-cluster samples hit pitfall signatures, and unmatched evidence is kept", () => {
-    const annotated = annotateDistillEvidence(evidence({
+    const annotated = annotateSessionEvidence(evidence({
       steers: [{ text: "please add a settings page", sessionRef: "codex:g", truncated: false }],
       failureClusters: [
         cluster({
@@ -102,7 +102,7 @@ describe("annotateDistillEvidence", () => {
       origin: "test",
       signatures: ["rollback the migration"]
     };
-    const annotated = annotateDistillEvidence(
+    const annotated = annotateSessionEvidence(
       evidence({ steers: [{ text: "we had to rollback the migration again", sessionRef: "codex:h", truncated: false }] }),
       [custom]
     );

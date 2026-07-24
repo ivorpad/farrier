@@ -4,7 +4,7 @@ import { useState } from "react";
 import { KeyHints, palette } from "./chrome";
 import { binding, bindingsHint, defineBindings, resolveIntent } from "./keymap";
 
-export type LaunchChoice = "harness" | "skills" | "improve" | "distill" | "doctor" | "cancel";
+export type LaunchChoice = "harness" | "skills" | "improve" | "export" | "doctor" | "cancel";
 export type LauncherState = { index: number };
 export type LauncherEvent = { type: "up" | "down" | "choose" | "cancel" };
 
@@ -17,7 +17,7 @@ export const launcherRows: ReadonlyArray<{ choice: Exclude<LaunchChoice, "cancel
   { choice: "harness", label: "Create harness", detail: "detect the stack or start from a PRD; generate AGENTS.md, hooks, and skills" },
   { choice: "skills", label: "Find/Create skills", detail: "search the registry with a query or a PRD; install or author what's missing" },
   { choice: "improve", label: "Improve harness", detail: "count session failures locally, then LLM analysis; hooks, rules, skills" },
-  { choice: "distill", label: "Distill playbook", detail: "export finished sessions as a portable playbook: gates, evidence, subagents" },
+  { choice: "export", label: "Export harness", detail: "export finished sessions as a portable playbook: gates, evidence, subagents" },
   { choice: "doctor", label: "Doctor & update", detail: "check harness health; repair drift after upgrades" }
 ];
 

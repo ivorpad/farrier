@@ -279,7 +279,7 @@ export async function scanCodexSessions(input: {
   sessionsDir?: string;
   maxFiles?: number;
   /**
-   * Tap for user steers (distill evidence). Called with the raw message text;
+   * Tap for user steers (session evidence). Called with the raw message text;
    * the caller owns noise filtering, redaction, and bounding. Stays local.
    */
   onUserMessage?: (event: CodexUserMessageEvent) => void;
