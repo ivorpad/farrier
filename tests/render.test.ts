@@ -4,7 +4,7 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createRenderPlan, writeRenderPlan } from "../src/engine/render";
+import { createRenderPlan, getFarrierVersion, writeRenderPlan } from "../src/engine/render";
 import { resolvePack } from "../src/packs/index";
 import type { ResolvedPack } from "../src/packs/types";
 
@@ -553,7 +553,7 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(manifestFile!.content);
 
-    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.farrierVersion).toBe(await getFarrierVersion());
     expect(manifest.agents).toEqual(["claude"]);
     expect(manifest.packIds).toEqual(["python-uv", "python-fastapi"]);
     expect(manifest.hookIds).toEqual([...defaultHooks]);
@@ -705,7 +705,7 @@ describe("render engine", () => {
 
     const manifest = JSON.parse(manifestFile!.content);
 
-    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.farrierVersion).toBe(await getFarrierVersion());
     expect(manifest.packIds).toEqual(["python-uv", "python-fastapi"]);
     expect(manifest.hookIds).toEqual(["secret-shield"]);
     expect(manifest.skills).toEqual(selectedSkills);
@@ -759,7 +759,7 @@ describe("render engine", () => {
     expect(manifest.quality).toEqual({
       maxFileLines: 250
     });
-    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.farrierVersion).toBe(await getFarrierVersion());
   });
 
   test("renders real konpy v1 grammar with templated package name", async () => {
@@ -837,7 +837,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["ts-base", "ts-react-vite"]);
     expect(manifest.hookIds).toEqual([...defaultHooks]);
-    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.farrierVersion).toBe(await getFarrierVersion());
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
@@ -879,7 +879,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["rails"]);
     expect(manifest.hookIds).toEqual([...defaultHooks]);
-    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.farrierVersion).toBe(await getFarrierVersion());
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
@@ -919,7 +919,7 @@ describe("render engine", () => {
     const manifest = JSON.parse(plan.files.find((file) => file.path === ".farrier.json")!.content);
     expect(manifest.packIds).toEqual(["generic"]);
     expect(manifest.hookIds).toEqual(["secret-shield", "tool-policy", "write-guard"]);
-    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.farrierVersion).toBe(await getFarrierVersion());
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 

@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { getFarrierVersion } from "../src/engine/render";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-create-cli-"));
@@ -94,7 +95,7 @@ describe("creation CLI e2e", () => {
     }
 
     const manifest = JSON.parse(await readFile(join(dir, ".farrier.json"), "utf8"));
-    expect(manifest.farrierVersion).toBe("0.3.0");
+    expect(manifest.farrierVersion).toBe(await getFarrierVersion());
     expect(manifest.agents).toEqual(["claude"]);
     expect(manifest.secondaryAcknowledged).toEqual([]);
     expect(existsSync(join(dir, "skills-lock.json"))).toBe(true);

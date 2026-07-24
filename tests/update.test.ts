@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, stat, unlink, writeFile } from "node:fs/promi
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { applyUpdate, createUpdateReport, notFarrierProjectMessage } from "../src/engine/update";
-import { advisorSkillFiles, createRenderPlan, writeRenderPlan } from "../src/engine/render";
+import { advisorSkillFiles, createRenderPlan, getFarrierVersion, writeRenderPlan } from "../src/engine/render";
 import { rename, rm } from "node:fs/promises";
 import { resolvePack } from "../src/packs/index";
 import { loadPackCatalog, type RegistryCatalogClient } from "../src/registry/catalog";
@@ -249,7 +249,7 @@ dependencies = ["fastapi>=0.110"]
     const repairedManifest = await readJson(manifestPath);
     const repairedVersions = repairedManifest.versions as { hooks: Record<string, number> };
     expect(repairedVersions.hooks["secret-shield"]).toBe(7);
-    expect(repairedManifest.farrierVersion).toBe("0.3.0");
+    expect(repairedManifest.farrierVersion).toBe(await getFarrierVersion());
 
     const after = await createUpdateReport({ targetDir: dir });
 
