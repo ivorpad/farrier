@@ -25,6 +25,16 @@ describe("provider advice policies", () => {
     expect(advicePolicyFor("codex")).toBe(codexAdvicePolicy);
   });
 
+  test("both providers carry the shared decision rules, including the guidance checklist", () => {
+    const shared = ["skip-one-off", "judgment-over-rules", "no-obvious-guidance", "tighten-before-append"];
+    for (const policy of [claudeAdvicePolicy, codexAdvicePolicy]) {
+      const ids = policy.decisionRules.map((rule) => rule.id);
+      expect(ids).toEqual(expect.arrayContaining(shared));
+    }
+    const judgment = claudeAdvicePolicy.decisionRules.find((rule) => rule.id === "judgment-over-rules");
+    expect(judgment?.rule).toContain("teaches the wrong convention");
+  });
+
   test("matches the provider-parity fixture without cross-provider paths", async () => {
     const path = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "advice", "provider-parity.json");
     const fixture = JSON.parse(await readFile(path, "utf8")) as { jobs: Array<{ category: string; claude: string; codex: string }> };

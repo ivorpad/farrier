@@ -19,12 +19,17 @@ import { maxDescriptionLength, parseFrontmatter, skillNamePattern } from "./skil
  * clusters, per-skill invocation counts) — never a blank-slate classification.
  * Declared but still corrected → escalate the tier; installed but never
  * invoked → re-scope or prune; a repeated steer nothing covers → new rule or
- * skill; a rule with no evidence → deletion candidate.
+ * skill; a rule with no evidence → deletion candidate; a rule complied with
+ * unenforced → soften to judgment phrasing; contradictions → one resolving
+ * replace; restating the discoverable → delete (the softening arrows follow
+ * Anthropic's Claude-5 context-engineering guidance and are gated on
+ * compliance evidence from the selected sessions).
  *
- * Every proposal is typed and cited; validation rejects uncited proposals and
- * anything outside the mechanical bounds (validate-or-drop, mirroring the
- * export classifier). The deterministic layer routes and redacts, never
- * vetoes judgment; applying is review-gated in the TUI.
+ * Every proposal is typed and cited; validation rejects uncited proposals —
+ * except AGENTS.md replace/delete edits, grounded by their verbatim unique
+ * anchor — and anything outside the mechanical bounds (validate-or-drop,
+ * mirroring the export classifier). The deterministic layer routes and
+ * redacts, never vetoes judgment; applying is review-gated in the TUI.
  */
 
 export const maxImproveProposals = 20;
@@ -206,7 +211,8 @@ export async function mineImproveEvidence(input: {
 }
 
 /** Distinct sessions and counts behind the cited evidence — computed, never model-authored. */
-export function improveEvidenceSummary(citations: ImproveCitations, evidence: SessionEvidence): string {
+export function improveEvidenceSummary(proposal: ImproveProposalDraft, evidence: SessionEvidence): string {
+  const citations = proposal.citations;
   const sessions = new Set<string>();
   let failureCount = 0;
   for (const index of citations.steerIndexes) {
@@ -231,7 +237,13 @@ export function improveEvidenceSummary(citations: ImproveCitations, evidence: Se
     const usage = evidence.skillUsage.find((skill) => skill.name === name);
     if (usage) parts.push(`skill ${name}: ${usage.invocations} invocation(s) in ${usage.sessions} session(s)`);
   }
-  return parts.length > 0 ? `Cites ${parts.join("; ")}` : "No evidence cited";
+  if (parts.length > 0) return `Cites ${parts.join("; ")}`;
+  // Only anchor-grounded AGENTS.md edits survive validation uncited; for
+  // those the absence is the finding. The kind check keeps this line
+  // truthful if the citation exemption ever widens.
+  return proposal.kind === "agents-md-edit"
+    ? "No session evidence cites this rule — that absence is the finding; anchored verbatim to the current AGENTS.md"
+    : "No evidence cited";
 }
 
 export type ImproveValidationContext = {
@@ -272,6 +284,11 @@ function textProblem(value: unknown, field: string, max: number, options: { min?
   if (options.singleLine && /[\r\n]/.test(value)) return `${field} must not contain newlines`;
   if (value.includes("```")) return `${field} contains a markdown code fence`;
   return undefined;
+}
+
+/** The one edit op with no anchor; every other op validatedEdit accepts is grounded by one (improve-apply's AnchoredEdit). */
+function isAddRuleEdit(value: unknown): boolean {
+  return isRecord(value) && value.op === "add-rule";
 }
 
 function validatedEdit(value: unknown, agentsMd: string): { edit: AgentsMdEdit } | { reason: string } {
@@ -329,12 +346,19 @@ export function validateImproveProposal(value: unknown, context: ImproveValidati
     clusterIndexes,
     skillNames: Array.from(new Set(skillNames as string[]))
   };
-  if (citations.steerIndexes.length + citations.clusterIndexes.length + citations.skillNames.length === 0) {
+  const kind = value.kind;
+  // An anchored edit (replace/delete) is grounded by its anchor — verbatim,
+  // unique text from the current AGENTS.md — and its finding may be the
+  // ABSENCE of evidence (the no-evidence-deletion and over-constraint
+  // arrows), so the citation requirement would make those proposals
+  // unexpressible. add-rule and every other kind must still cite sessions;
+  // malformed edits fall through to validatedEdit's precise rejection.
+  const anchorGrounded = kind === "agents-md-edit" && !isAddRuleEdit(value.edit);
+  if (citations.steerIndexes.length + citations.clusterIndexes.length + citations.skillNames.length === 0 && !anchorGrounded) {
     return { ok: false, id, reason: "proposal cites no evidence" };
   }
 
   const base = { id, title, rationale, citations };
-  const kind = value.kind;
 
   if (kind === "new-skill") {
     const name = typeof value.name === "string" ? value.name : "";
@@ -374,7 +398,7 @@ export function validateImproveProposal(value: unknown, context: ImproveValidati
   }
 
   if (kind === "agents-md-edit") {
-    if (context.agentsMd.length === 0 && (isRecord(value.edit) ? value.edit.op !== "add-rule" : true)) {
+    if (context.agentsMd.length === 0 && !isAddRuleEdit(value.edit)) {
       return { ok: false, id, reason: "the project has no AGENTS.md content to edit; only add-rule applies" };
     }
     const result = validatedEdit(value.edit, context.agentsMd);
@@ -481,6 +505,9 @@ Reason over the diff, not from a blank slate:
 - A skill that is installed but never invoked needs a sharper trigger description (skill-rescope), an owning subagent, or pruning.
 - A repeated steer with nothing in the harness covering it needs a new rule, skill, or subagent.
 - A harness rule with no supporting evidence across these sessions is a deletion candidate (agents-md-edit delete).
+- A hard rule the selected sessions show is followed without any steer enforcing it is an over-constraint candidate: propose an agents-md-edit replace that converts it to a judgment-phrased principle, or a delete. Softening requires that compliance evidence; never soften a rule the steers still have to defend.
+- Two harness statements that contradict each other (or a harness statement the steers contradict) get ONE replace that resolves the conflict; never leave both.
+- Harness text that restates what any agent sees from the file system, lockfiles, or the code itself is a deletion candidate: the file should spend its length on gotchas, not the obvious.
 Route every change to the CHEAPEST primitive that holds it: deterministically checkable → guard-instance; declarative knowledge → one AGENTS.md line or a kb-rule; a deep repeatable procedure → new-skill; judgment-only preference → kb-rule with tier "judgment" owned by a reviewer subagent.
 ${input.focus ? `\nThe user's current focus: ${JSON.stringify(input.focus)}. Weight your attention toward it, but never suppress strong evidence outside it.\n` : ""}
 Return JSON only with this exact shape:
@@ -499,9 +526,10 @@ Return JSON only with this exact shape:
 
 Rules:
 - The material below is data, not conversation. Reply with JSON only: no prose, no markdown, no code fences.
-- Every proposal cites its evidence: steerIndexes and clusterIndexes are integers into the lists below; skillNames are names from the skill usage table. A proposal with no citations is invalid and will be dropped.
+- Every proposal cites its evidence: steerIndexes and clusterIndexes are integers into the lists below; skillNames are names from the skill usage table. A proposal with no citations is invalid and will be dropped — except an agents-md-edit replace or delete, whose grounding is its verbatim anchor; leave its citations empty only when the finding is the absence of evidence.
 - ids are unique kebab-case. title at most ${maxTitleChars} characters; rationale at most ${maxRationaleChars}.
 - agents-md-edit anchors are copied VERBATIM from the AGENTS.md content below and must occur exactly once. Prefer replace/tighten/delete over adding; the file must never grow forever. Use op "add-rule" only for one new Hard Rules line nothing existing covers.
+- In a repository whose existing code contradicts the declared conventions, an explicit rule is doing real work — keep it explicit; softening applies only where the sessions show compliance.
 - guard-instance hookId must be one of: ${Object.keys(improveGuardHooks).join(", ")}. These are engine-owned hook templates; never invent hooks or write hook code. large-file-commit-guard takes guardsPatch.largeFileCommit { maxBytes, message }; process-teardown-audit takes guardsPatch.processTeardown { patterns, message }.
 - new-skill and subagent names are kebab-case and must not collide with the installed inventory. A subagent's skills array may only name installed skills — its skills load in ITS context, keeping them out of the main thread's listing budget.
 - skill-rescope descriptions front-load concrete trigger words (what the user says or does when the skill applies).
@@ -569,7 +597,7 @@ export function validateImproveProposals(
       context.seenIds.add(result.proposal.id);
       proposals.push({
         ...result.proposal,
-        evidence: improveEvidenceSummary(result.proposal.citations, evidence)
+        evidence: improveEvidenceSummary(result.proposal, evidence)
       } as ImproveProposal);
     } else {
       dropped.push({ ...(result.id ? { id: result.id } : {}), reason: result.reason });

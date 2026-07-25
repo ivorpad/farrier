@@ -6,7 +6,6 @@ import type { BackendCommandRunner } from "../src/engine/backend";
 import {
   authorImproveProposals,
   buildImprovePrompt,
-  improveEvidenceSummary,
   snapshotHarness,
   validateImproveProposals,
   type HarnessSnapshot
@@ -107,6 +106,14 @@ describe("buildImprovePrompt", () => {
     expect(prompt).toContain('"proposals": [');
   });
 
+  test("carries the softening arrows and the legacy exception", () => {
+    const prompt = buildImprovePrompt({ evidence: evidence(), snapshot: snapshot() });
+    expect(prompt).toContain("over-constraint");
+    expect(prompt).toContain("resolves the conflict");
+    expect(prompt).toContain("spend its length on gotchas");
+    expect(prompt).toContain("softening applies only where the sessions show compliance");
+  });
+
   test("omits the focus line when none is given", () => {
     expect(buildImprovePrompt({ evidence: evidence(), snapshot: snapshot() })).not.toContain("current focus");
   });
@@ -164,6 +171,22 @@ describe("validateImproveProposals", () => {
     expect(dropped[1]!.reason).toContain("not installed");
     expect(dropped[2]!.reason).toContain("verbatim");
     expect(dropped[3]!.reason).toContain("hookId must be one of");
+  });
+
+  test("anchor-grounded replace/delete edits validate uncited; add-rule and other kinds still need citations", () => {
+    const { proposals, dropped } = validateImproveProposals(
+      [
+        { ...base, kind: "agents-md-edit", id: "edit-uncited-delete", edit: { op: "delete", anchor: "- Use bun for scripts." } },
+        { ...base, kind: "agents-md-edit", id: "edit-uncited-soften", edit: { op: "replace", anchor: "- Never style buttons inline.", text: "- Style buttons the way the neighboring screens do." } },
+        { ...base, kind: "agents-md-edit", id: "edit-uncited-add", edit: { op: "add-rule", text: "- A brand new rule." } },
+        { ...base, kind: "kb-rule", id: "kb-uncited", ruleId: "pref-x", rule: "One declarative sentence.", tier: "declarative" }
+      ],
+      evidence(),
+      snapshot()
+    );
+    expect(proposals.map((proposal) => proposal.id)).toEqual(["edit-uncited-delete", "edit-uncited-soften"]);
+    expect(proposals[0]!.evidence).toContain("No session evidence");
+    expect(dropped.map((drop) => drop.reason)).toEqual(["proposal cites no evidence", "proposal cites no evidence"]);
   });
 
   test("rejects duplicate ids, ambiguous anchors, and out-of-range indexes", () => {

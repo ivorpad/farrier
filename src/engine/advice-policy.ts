@@ -69,7 +69,10 @@ const sharedRules: AdviceDecisionRule[] = [
   { id: "single-useful-episode", rule: "A single useful task may justify a reusable automation. Occurrence counts strengthen evidence but are not a gate." },
   { id: "skip-one-off", rule: "Skip one-off tasks unless they expose a reusable project procedure or durable correction." },
   { id: "report-only", rule: "Recommend only. Do not create, install, or modify an automation during advice." },
-  { id: "presentation", rule: "Return the top one or two applicable recommendations per category, or up to five for one focused category. Skip irrelevant categories and never add filler." }
+  { id: "presentation", rule: "Return the top one or two applicable recommendations per category, or up to five for one focused category. Skip irrelevant categories and never add filler." },
+  { id: "judgment-over-rules", rule: "Guidance recommendations prefer judgment-phrased principles (match the surrounding idiom) over absolute prohibitions, unless the evidence shows the repository's existing code teaches the wrong convention — then an explicit rule is the point." },
+  { id: "no-obvious-guidance", rule: "Never recommend guidance that restates what an agent can see from the file system, lockfiles, or profile; guidance spends its length on gotchas and non-discoverable decisions." },
+  { id: "tighten-before-append", rule: "When existing guidance already covers a topic, recommend tightening or replacing it rather than adding a parallel instruction; conflicting instructions are a defect worth their own recommendation." }
 ];
 
 export const claudeAdvicePolicy: AdviceProviderPolicy = {
