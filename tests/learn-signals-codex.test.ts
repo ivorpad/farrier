@@ -147,6 +147,22 @@ describe("codex session mining", () => {
     expect(scan.filesScanned).toBe(1);
   });
 
+  test("reports truncation and a cap note when the scan cap is hit, and not otherwise", async () => {
+    const project = await tempDir("farrier-codex-project-");
+    const sessions = await tempDir("farrier-codex-sessions-");
+    await writeRollout(sessions, "rollout-2026-07-20T08-00-00-aaaa", [sessionMeta(project), execCall("call_1", "bun test a", project)]);
+    await writeRollout(sessions, "rollout-2026-07-20T09-00-00-bbbb", [sessionMeta(project), execCall("call_2", "bun test b", project)]);
+
+    const capped = await scanCodexSessions({ projectDir: project, collector: new SignalCollector(), sessionsDir: sessions, maxFiles: 1 });
+    expect(capped.truncated).toBe(true);
+    expect(capped.filesScanned).toBe(1);
+    expect(capped.notes.some((note) => /Codex scan cap reached at 1 file\(s\)/.test(note))).toBe(true);
+
+    const full = await scanCodexSessions({ projectDir: project, collector: new SignalCollector(), sessionsDir: sessions, maxFiles: 10 });
+    expect(full.truncated).toBe(false);
+    expect(full.filesMatched).toBe(2);
+  });
+
   test("cwd from turn_context gates evidence and handles realpath variants", async () => {
     const project = await tempDir("farrier-codex-project-");
     const alias = `${project}-alias`;

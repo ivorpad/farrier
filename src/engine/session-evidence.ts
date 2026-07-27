@@ -4,7 +4,8 @@ import { boundSessionText, stripSessionAmbient } from "./advice-patterns";
 import { projectSkillRoots } from "./skill-paths";
 import { defaultTranscriptDir } from "./learn";
 import { SignalCollector, scanClaudeTranscripts, type FailureSignal, type SkillInvocationEvent } from "./learn-signals";
-import { scanCodexSessions } from "./learn-signals-codex";
+import { codexScanCapNote, scanCodexSessions } from "./learn-signals-codex";
+import { scopeDir, steerContextSummary, type SessionActivityEvent } from "./session-activity";
 
 /**
  * Session evidence preparation: local, complete, no vetoes.
@@ -26,6 +27,27 @@ export type SteerSignal = {
   sessionRef: string;
   date?: string;
   truncated: boolean;
+  /**
+   * Redacted, bounded (≤ 160 chars) one-line summary of the assistant action
+   * this steer immediately followed — what provoked the correction. Absent
+   * when no action preceded the steer.
+   */
+  context?: string;
+};
+
+/**
+ * Deterministic per-session activity counts. A session with real edits and
+ * commands but zero steers is the compliance evidence the over-constraint
+ * softening arrow requires before a rule may be relaxed.
+ */
+export type SessionActivity = {
+  /** The session's backend-prefixed ref (e.g. "codex:rollout-…", "claude:stem"). */
+  ref: string;
+  steerCount: number;
+  editCount: number;
+  commandCount: number;
+  /** Up to 3 most-touched directories, most-frequent first. */
+  topDirs: string[];
 };
 
 /**
@@ -52,6 +74,8 @@ export type SessionEvidence = {
   failureClusters: FailureSignal[];
   /** Installed ∪ invoked skills, most-invoked first. */
   skillUsage: SkillUsage[];
+  /** Per-session activity counts (busiest first, capped). Absent from older fixtures. */
+  sessionActivity?: SessionActivity[];
   codexSessionsMatched: number;
   codexSessionsScanned: number;
   notes: string[];
@@ -81,6 +105,7 @@ export type SessionEvidenceOptions = {
 
 const maxSteerBytes = 1_500;
 const maxSteers = 500;
+const maxSessionActivity = 30;
 
 /**
  * Machine-generated user_message shapes observed in Codex Desktop 0.145
@@ -161,14 +186,49 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
   const steers: SteerSignal[] = [];
   let omittedSteers = 0;
 
-  const collectSteer = (event: { text: string; sessionRef: string; date: string | undefined }): void => {
+  // Per-session activity, keyed by backend-prefixed ref. Directory counts feed
+  // topDirs. A session appears here if it has any steer or classified action.
+  const activityByRef = new Map<
+    string,
+    { steerCount: number; editCount: number; commandCount: number; dirs: Map<string, number> }
+  >();
+  const activityFor = (ref: string) => {
+    let entry = activityByRef.get(ref);
+    if (!entry) {
+      entry = { steerCount: 0, editCount: 0, commandCount: 0, dirs: new Map() };
+      activityByRef.set(ref, entry);
+    }
+    return entry;
+  };
+
+  const collectSteer = (event: { text: string; sessionRef: string; date: string | undefined; context?: string }): void => {
     const steer = steerFromUserMessage(event.text);
     if (!steer) return;
+    // Count the real steer against its session even when the list is capped.
+    activityFor(event.sessionRef).steerCount += 1;
     if (steers.length >= maxSteers) {
       omittedSteers += 1;
       return;
     }
-    steers.push({ ...steer, sessionRef: event.sessionRef, ...(event.date ? { date: event.date } : {}) });
+    const context = event.context ? steerContextSummary(event.context) : undefined;
+    steers.push({
+      ...steer,
+      sessionRef: event.sessionRef,
+      ...(event.date ? { date: event.date } : {}),
+      ...(context ? { context } : {})
+    });
+  };
+
+  const collectActivity = (event: SessionActivityEvent): void => {
+    const entry = activityFor(event.sessionRef);
+    if (event.kind === "edit") entry.editCount += 1;
+    else entry.commandCount += 1;
+    // Scope directories to the project before they can reach the prompt: a
+    // path outside projectDir (another client's tree) must never be sent.
+    for (const dir of event.dirs) {
+      const scoped = scopeDir(dir, projectDir);
+      if (scoped) entry.dirs.set(scoped, (entry.dirs.get(scoped) ?? 0) + 1);
+    }
   };
 
   const invoked = new Map<string, { invocations: number; sessions: Set<string> }>();
@@ -186,6 +246,7 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
     collector,
     onUserMessage: collectSteer,
     onSkillInvocation: collectSkill,
+    onActivity: collectActivity,
     ...(options.selection?.codexThreadIds ? { includeThreadIds: options.selection.codexThreadIds } : {})
   });
 
@@ -195,8 +256,10 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
     {
       // The Claude scanner's sessionRefs are bare transcript stems; prefix the
       // source so mixed-backend evidence stays attributable.
-      onUserMessage: ({ text, sessionRef, date }) => collectSteer({ text, sessionRef: `claude:${sessionRef}`, date }),
+      onUserMessage: ({ text, sessionRef, date, context }) =>
+        collectSteer({ text, sessionRef: `claude:${sessionRef}`, date, ...(context ? { context } : {}) }),
       onSkillInvocation: ({ skill, sessionRef, date }) => collectSkill({ skill, sessionRef: `claude:${sessionRef}`, date }),
+      onActivity: ({ sessionRef, kind, dirs }) => collectActivity({ sessionRef: `claude:${sessionRef}`, kind, dirs }),
       ...(options.selection?.claudeStems ? { includeStems: options.selection.claudeStems } : {}),
       ...(options.maxFiles !== undefined ? { maxFiles: options.maxFiles } : {})
     }
@@ -227,6 +290,28 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
   if (omittedSteers > 0) {
     notes.push(`Steer extraction kept the newest ${maxSteers} steer(s); ${omittedSteers} older one(s) were omitted.`);
   }
+
+  // Busiest sessions first, capped; a session with real activity and zero
+  // steers is the compliance evidence a softening proposal must point to.
+  const sessionActivity = Array.from(activityByRef.entries())
+    .map(([ref, entry]) => ({
+      ref,
+      steerCount: entry.steerCount,
+      editCount: entry.editCount,
+      commandCount: entry.commandCount,
+      topDirs: Array.from(entry.dirs.entries())
+        .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+        .slice(0, 3)
+        .map(([dir]) => dir)
+    }))
+    .sort(
+      (left, right) =>
+        right.steerCount + right.editCount + right.commandCount - (left.steerCount + left.editCount + left.commandCount) ||
+        left.ref.localeCompare(right.ref)
+    );
+  if (sessionActivity.length > maxSessionActivity) {
+    notes.push(`Session activity table kept the ${maxSessionActivity} busiest of ${sessionActivity.length} session(s).`);
+  }
   if (options.selection) {
     const selected = (options.selection.claudeStems?.size ?? 0) + (options.selection.codexThreadIds?.size ?? 0);
     notes.push(`Mining was restricted to the ${selected} selected session(s).`);
@@ -237,13 +322,21 @@ export async function prepareSessionEvidence(options: SessionEvidenceOptions): P
       "Every failure cluster is kept (verification and build failures included) with no thresholds. Nothing left this machine."
   );
 
+  // Keep exactly one codex cap note and move it to the end: the scanner
+  // already emitted it into codex.notes, but the TUI shows only the final
+  // notes, so the honest disclosure must be last (and not duplicated).
+  const finalNotes = codex.truncated
+    ? [...notes.filter((note) => note !== codexScanCapNote(codex.filesScanned)), codexScanCapNote(codex.filesScanned)]
+    : notes;
+
   return {
     projectDir,
     steers,
     failureClusters: collector.signals(),
     skillUsage,
+    sessionActivity: sessionActivity.slice(0, maxSessionActivity),
     codexSessionsMatched: codex.filesMatched,
     codexSessionsScanned: codex.filesScanned,
-    notes
+    notes: finalNotes
   };
 }

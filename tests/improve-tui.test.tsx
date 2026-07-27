@@ -6,6 +6,7 @@ import type { AdviceCreationPlan } from "../src/engine/advice-apply";
 import type { SessionIndexEntry } from "../src/engine/advice-sessions";
 import type { HarnessSnapshot, ImproveProposal } from "../src/engine/improve-authoring";
 import type { ImproveSessionList } from "../src/engine/improve-sessions";
+import type { ReviewDecision } from "../src/engine/review-ledger";
 import type { SessionEvidence, SessionSelection } from "../src/engine/session-evidence";
 import { presetSelectionIds, sessionPickerPresets } from "../src/tui/AdviceSessionPicker";
 import { ImproveAnalysisFlow, improveKindNoun } from "../src/tui/ImproveAnalysisFlow";
@@ -106,6 +107,15 @@ async function interact(view: TestRendererSetup, action: () => void | Promise<vo
   });
 }
 
+/**
+ * Strips the box-drawing frame (borders, scrollbar) and collapses whitespace,
+ * so a phrase the renderer wrapped across lines reads as one contiguous string.
+ * Lets consent assertions check semantic content, not layout width.
+ */
+function flattenFrame(frame: string): string {
+  return frame.replace(/[│┌┐└┘─█]/g, " ").replace(/\s+/g, " ").trim();
+}
+
 describe("presetSelectionIds", () => {
   test("selects the newest N (or all up to the cap)", () => {
     const entries = Array.from({ length: 40 }, (_, index) => entry(`s${index}`, "claude"));
@@ -153,10 +163,20 @@ describe("improve analysis flow", () => {
       await interact(view, () => view.mockInput.pressEnter());
 
       const consent = await view.waitForFrame((value) => value.includes("Analyze with claude (sonnet)?"));
-      expect(consent).toContain("Mined locally from 2 selected session(s): 1 steer(s), 0 failure cluster(s), 1 installed skill(s) tracked.");
-      expect(consent).toContain("AGENTS.md/CLAUDE.md, skill and subagent descriptions");
-      expect(consent).toContain("NOT caught");
-      expect(consent).toContain("Focus: design consistency");
+      // Flatten first: the disclosure is several lines and may wrap at any
+      // width, so each category is asserted as a semantic piece, not one
+      // contiguous substring tied to the 120-col layout.
+      const consentText = flattenFrame(consent);
+      expect(consentText).toContain("Mined locally from 2 selected session(s): 1 steer(s), 0 failure cluster(s), 1 installed skill(s) tracked.");
+      // Both new evidence categories are named honestly.
+      expect(consentText).toContain("the assistant action each steering message followed");
+      expect(consentText).toContain("per-session counts of your steers, edits, and commands, plus the top folders you worked in");
+      // The pre-existing categories still stand.
+      expect(consentText).toContain("redacted quotes of your steering messages");
+      expect(consentText).toContain("AGENTS.md, CLAUDE.md, and skill and subagent descriptions");
+      expect(consentText).toContain("Never sent: session ids");
+      expect(consentText).toContain("NOT caught");
+      expect(consentText).toContain("Focus: design consistency");
       expect(mines).toEqual([{ claudeStems: new Set(["aaaa-session"]), codexThreadIds: new Set(["019f-thread"]) }]);
       expect(authored).toEqual([]);
 
@@ -207,6 +227,48 @@ describe("improve analysis flow", () => {
       await interact(view, () => view.mockInput.typeText("n"));
       await view.waitFor(() => backCalls === 1);
       expect(authorCalls).toBe(0);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("records a rejection from the list and an acceptance after apply", async () => {
+    const decisions: ReviewDecision[] = [];
+    const view = await testRender(
+      <ImproveAnalysisFlow
+        {...flowProps({
+          onAuthor: async () => ({
+            proposals: [proposal(), { ...proposal(), id: "kb-spacing", title: "Spacing scale" }],
+            dropped: []
+          }),
+          onRecordDecision: async (decision) => {
+            decisions.push(decision);
+          }
+        })}
+      />,
+      renderOptions
+    );
+    try {
+      await view.waitForFrame((value) => value.includes("Choose the sessions"));
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitForFrame((value) => value.includes("What matters to you now?"));
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitForFrame((value) => value.includes("Analyze with"));
+      await interact(view, () => view.mockInput.typeText("y"));
+      await view.waitForFrame((value) => value.includes("2 proposal(s)"));
+
+      // n rejects the focused proposal from the list and records it.
+      await interact(view, () => view.mockInput.typeText("n"));
+      await view.waitFor(() => decisions.length === 1);
+      expect(decisions[0]).toMatchObject({ proposalId: "kb-buttons", decision: "rejected", kind: "kb-rule" });
+
+      // The second proposal reviews and applies; the apply records an acceptance.
+      await interact(view, () => view.mockInput.pressArrow("down"));
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitForFrame((value) => value.includes("Review recommendation creation"));
+      await interact(view, () => view.mockInput.pressEnter());
+      await view.waitFor(() => decisions.length === 2);
+      expect(decisions[1]).toMatchObject({ proposalId: "kb-spacing", decision: "accepted" });
     } finally {
       await interact(view, () => view.renderer.destroy());
     }

@@ -8,7 +8,6 @@ import {
   normalizeCommand,
   scanClaudeTranscripts,
   scanToolEvents,
-  signalScanMaxFiles,
   skillNamesFromCommand,
   type FailureSignalScan,
   type SessionScanState,
@@ -16,6 +15,7 @@ import {
   type ToolResult,
   type ToolUse
 } from "./learn-signals";
+import { classifyCommandActivity, type SessionActivityEvent } from "./session-activity";
 
 /**
  * Codex session source for deterministic failure-signal mining.
@@ -54,6 +54,25 @@ import {
  * for the consented episode reader).
  */
 
+/**
+ * Codex sessions live in one flat global tree (~/.codex/sessions), so the
+ * byte pre-filter's superset can be dominated by OTHER projects' rollouts that
+ * merely mention this project's path (this repo: 527 byte-matches, only 131
+ * true cwd matches). A 200-file cap then starves the real sessions. Default to
+ * Improve's existing bound (mineImproveEvidence already passes 1000) so the
+ * learn and doctor paths count with the same completeness — not a new number.
+ */
+const codexScanMaxFiles = 1_000;
+
+/**
+ * The single canonical note for a truncated codex scan. Exported so the
+ * evidence layer can de-duplicate it (filter, then re-push once at the end for
+ * TUI visibility) rather than emitting a near-identical second note.
+ */
+export function codexScanCapNote(files: number): string {
+  return `Codex scan cap reached at ${files} file(s); older codex sessions may be uncounted, so this backend's evidence may be incomplete.`;
+}
+
 const rolloutFilePattern = /^rollout-.*\.jsonl$/;
 const shellToolNames = new Set(["exec_command", "shell", "local_shell", "container.exec"]);
 const customExecToolNames = new Set(["exec"]);
@@ -69,6 +88,8 @@ type CodexSourceScan = {
   filesScanned: number;
   /** Files whose recorded cwd actually resolved to the project root. */
   filesMatched: number;
+  /** True when the scan stopped at maxFiles: older sessions were not read. */
+  truncated: boolean;
   sessionsDirFound: boolean;
 };
 
@@ -273,6 +294,12 @@ export type CodexUserMessageEvent = {
   text: string;
   sessionRef: string;
   date: string | undefined;
+  /**
+   * Raw one-line summary (the shell command) of the action this steer
+   * immediately followed; undefined when no action preceded it. The caller
+   * redacts and bounds it.
+   */
+  context?: string;
 };
 
 export async function scanCodexSessions(input: {
@@ -287,6 +314,8 @@ export async function scanCodexSessions(input: {
   onUserMessage?: (event: CodexUserMessageEvent) => void;
   /** Tap for skill invocations (shell reads into a skill's directory). */
   onSkillInvocation?: (event: SkillInvocationEvent) => void;
+  /** Tap for classified per-session activity (edits and commands). */
+  onActivity?: (event: SessionActivityEvent) => void;
   /**
    * Restrict the scan to rollout files whose name carries one of these thread
    * ids (rollout file names embed the thread uuid): the user-selected
@@ -295,7 +324,7 @@ export async function scanCodexSessions(input: {
   includeThreadIds?: ReadonlySet<string>;
 }): Promise<CodexSourceScan> {
   const notes: string[] = [];
-  const maxFiles = input.maxFiles ?? signalScanMaxFiles;
+  const maxFiles = input.maxFiles ?? codexScanMaxFiles;
   const sessionsDir = input.sessionsDir ?? defaultCodexSessionsDir();
   const listed = await listRolloutFiles(sessionsDir);
   const found = listed.found;
@@ -306,7 +335,7 @@ export async function scanCodexSessions(input: {
         const name = basename(file);
         return threadIds.some((threadId) => name.includes(threadId));
       });
-  if (!found || files.length === 0) return { notes, filesScanned: 0, filesMatched: 0, sessionsDirFound: found };
+  if (!found || files.length === 0) return { notes, filesScanned: 0, filesMatched: 0, truncated: false, sessionsDirFound: found };
 
   const resolveCache = new Map<string, string>();
   const projectRoot = await resolveForMatch(input.projectDir, resolveCache);
@@ -334,6 +363,8 @@ export async function scanCodexSessions(input: {
 
     const sessionRef = `codex:${basename(file).replace(/\.jsonl$/, "")}`;
     const state: SessionScanState = { commandByToolUseId: new Map(), lastCommand: undefined };
+    // The last shell command seen in this session, paired with the next steer.
+    let lastAction: string | undefined;
     let cwdMatchesProject = false;
     let cwdEverMatched = false;
     for (const line of bytes.toString("utf8").split(/\r?\n/)) {
@@ -365,7 +396,7 @@ export async function scanCodexSessions(input: {
         typeof payload.message === "string" &&
         input.onUserMessage
       ) {
-        input.onUserMessage({ text: payload.message, sessionRef, date: recordDate(parsed) });
+        input.onUserMessage({ text: payload.message, sessionRef, date: recordDate(parsed), ...(lastAction ? { context: lastAction } : {}) });
         continue;
       }
       if (parsed.type !== "response_item") continue;
@@ -374,6 +405,17 @@ export async function scanCodexSessions(input: {
       if (input.onSkillInvocation) {
         const names = new Set(uses.flatMap((use) => skillNamesFromCommand(use.command)));
         for (const skill of names) input.onSkillInvocation({ skill, sessionRef, date: recordDate(parsed) });
+      }
+      // Track the preceding action for the next steer and count classified
+      // activity; a Codex "exec" script can carry several commands.
+      if (uses.length > 0) {
+        lastAction = uses[uses.length - 1]!.command;
+        if (input.onActivity) {
+          for (const use of uses) {
+            const activity = classifyCommandActivity(use.command);
+            input.onActivity({ sessionRef, kind: activity.kind, dirs: activity.dirs });
+          }
+        }
       }
       let result = toolResultFromPayload(payload);
       // Codex sessions carry outputs for many tools (MCP, apply_patch, ...);
@@ -391,7 +433,7 @@ export async function scanCodexSessions(input: {
   }
 
   if (truncated) {
-    notes.push(`Scanned the newest ${maxFiles} codex session files mentioning the project path; older codex sessions were skipped.`);
+    notes.push(codexScanCapNote(maxFiles));
   }
   if (malformedLines > 0) {
     notes.push(`Skipped ${malformedLines} malformed codex session line(s).`);
@@ -407,7 +449,7 @@ export async function scanCodexSessions(input: {
     );
   }
 
-  return { notes, filesScanned, filesMatched, sessionsDirFound: true };
+  return { notes, filesScanned, filesMatched, truncated, sessionsDirFound: true };
 }
 
 export type FailureSignalSources = {

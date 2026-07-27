@@ -7,6 +7,7 @@ import type { ApplyHarnessChangePlanResult } from "../engine/create-plan";
 import type { PlannedImprove } from "../engine/improve-apply";
 import type { DroppedImproveProposal, HarnessSnapshot, ImproveProposal } from "../engine/improve-authoring";
 import { improveSessionSelection, type ImproveSessionList } from "../engine/improve-sessions";
+import type { ReviewDecision } from "../engine/review-ledger";
 import type { SessionEvidence, SessionSelection } from "../engine/session-evidence";
 import { AdviceApplyFlow, advicePlanPreviewLines } from "./AdviceApplyFlow";
 import { AdviceSessionPicker } from "./AdviceSessionPicker";
@@ -32,6 +33,12 @@ export type ImproveAnalysisDeps = {
   onAuthor: (input: { evidence: SessionEvidence; snapshot: HarnessSnapshot; focus?: string }) => Promise<Authored>;
   onPlan: (proposal: ImproveProposal) => Promise<PlannedImprove>;
   onApply: (plan: AdviceCreationPlan, force: boolean) => Promise<ApplyHarnessChangePlanResult>;
+  /**
+   * Records an accept/reject into the local review ledger. Optional: absent in
+   * tests or when the runner does not persist. Failures must never block the
+   * action being recorded — the caller surfaces a warning instead.
+   */
+  onRecordDecision?: (decision: ReviewDecision) => Promise<void>;
 };
 
 type Phase =
@@ -99,6 +106,7 @@ export function ImproveAnalysisFlow(props: ImproveAnalysisDeps & {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [reviewing, setReviewing] = useState<{ proposal: ImproveProposal; planned: Extract<PlannedImprove, { kind: "files" }> }>();
   const [appliedIds, setAppliedIds] = useState<ReadonlySet<string>>(new Set());
+  const [rejectedIds, setRejectedIds] = useState<ReadonlySet<string>>(new Set());
   const [actionMessage, setActionMessage] = useState<string>();
   const bodyScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const busy = phase.kind === "listing" || phase.kind === "mining" || phase.kind === "authoring";
@@ -135,6 +143,15 @@ export function ImproveAnalysisFlow(props: ImproveAnalysisDeps & {
       .catch((error) => setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error) }));
   };
 
+  // Records an accept/reject locally; a ledger write failure only warns — it
+  // must never undo or block the action it is recording.
+  const recordDecision = (proposal: ImproveProposal, decision: ReviewDecision["decision"]) => {
+    if (!props.onRecordDecision) return;
+    props
+      .onRecordDecision({ proposalId: proposal.id, kind: proposal.kind, title: proposal.title, decision, at: new Date().toISOString() })
+      .catch((error) => setActionMessage(`Couldn't record the review decision: ${error instanceof Error ? error.message : String(error)}`));
+  };
+
   const consentBindings = defineBindings(
     binding("y", "consent", "analyze"),
     binding("n", "decline", "cancel"),
@@ -144,6 +161,7 @@ export function ImproveAnalysisFlow(props: ImproveAnalysisDeps & {
   const proposalsBindings = defineBindings(
     binding(["up", "down"], "move", "proposals"),
     binding("enter", "activate", "review"),
+    binding("n", "reject", "not now"),
     binding(["pageup", "pagedown"], "scroll", "scroll"),
     binding(["escape", "b"], "back", "improve"),
     binding(["q", "ctrl+c"], "quit", "quit")
@@ -178,6 +196,12 @@ export function ImproveAnalysisFlow(props: ImproveAnalysisDeps & {
     else if (intent === "move") {
       setActionMessage(undefined);
       setSelectedIndex((current) => Math.min(Math.max(0, current + (key.name === "down" ? 1 : -1)), proposals.length - 1));
+    } else if (intent === "reject") {
+      const proposal = proposals[selectedIndex];
+      if (!proposal || appliedIds.has(proposal.id) || rejectedIds.has(proposal.id)) return;
+      setRejectedIds((current) => new Set(current).add(proposal.id));
+      setActionMessage(`Marked "${proposal.title}" as not now — recorded so it is not proposed again unchanged.`);
+      recordDecision(proposal, "rejected");
     } else if (intent === "activate") {
       const proposal = proposals[selectedIndex];
       if (!proposal) return;
@@ -244,6 +268,7 @@ export function ImproveAnalysisFlow(props: ImproveAnalysisDeps & {
         onApply={async (plan, force) => {
           const result = await props.onApply(plan, force);
           setAppliedIds((current) => new Set(current).add(proposal.id));
+          recordDecision(proposal, "accepted");
           return result;
         }}
         onBack={() => setReviewing(undefined)}
@@ -291,8 +316,26 @@ export function ImproveAnalysisFlow(props: ImproveAnalysisDeps & {
               {`Mined locally from ${phase.sessionCount > 0 ? `${phase.sessionCount} selected` : "all"} session(s): ${phase.mined.evidence.steers.length} steer(s), ${phase.mined.evidence.failureClusters.length} failure cluster(s), ${phase.mined.evidence.skillUsage.filter((skill) => skill.installed).length} installed skill(s) tracked.`}
             </text>
             <text style={{ flexShrink: 0 }} fg={palette.text}>{`Analyze with ${props.backendLabel}?`}</text>
+            {/*
+              One category per line so the full disclosure stays honest and
+              readable on any width (consent accuracy is a repo P0). Each line
+              is its own item, so wrapping never hides a category.
+            */}
+            <text style={{ flexShrink: 0 }} fg={palette.text}>{"Sends to the model, only after you say yes:"}</text>
             <text style={{ flexShrink: 0 }} fg={palette.muted}>
-              {"Sends: redacted quotes of your steering messages, failure counts, per-skill invocation counts, and your harness text (AGENTS.md/CLAUDE.md, skill and subagent descriptions)."}
+              {"• redacted quotes of your steering messages"}
+            </text>
+            <text style={{ flexShrink: 0 }} fg={palette.muted}>
+              {"• the assistant action each steering message followed (redacted and shortened)"}
+            </text>
+            <text style={{ flexShrink: 0 }} fg={palette.muted}>
+              {"• per-session counts of your steers, edits, and commands, plus the top folders you worked in"}
+            </text>
+            <text style={{ flexShrink: 0 }} fg={palette.muted}>
+              {"• how often commands failed, and how often each installed skill was used"}
+            </text>
+            <text style={{ flexShrink: 0 }} fg={palette.muted}>
+              {"• your harness text: AGENTS.md, CLAUDE.md, and skill and subagent descriptions"}
             </text>
             <text style={{ flexShrink: 0 }} fg={palette.muted}>
               {"Never sent: session ids, file contents outside the harness, other projects."}
@@ -325,10 +368,12 @@ export function ImproveAnalysisFlow(props: ImproveAnalysisDeps & {
             {proposals.map((proposal, index) => {
               const focused = index === selectedIndex;
               const applied = appliedIds.has(proposal.id);
+              const rejected = rejectedIds.has(proposal.id);
+              const marker = applied ? "✓ " : rejected ? "✗ " : "";
               return (
                 <text key={proposal.id} style={{ flexShrink: 0 }} bg={focused ? palette.selBg : undefined}>
                   <span fg={palette.accent}>{focused ? "▸ " : "  "}</span>
-                  <span fg={applied ? palette.success : palette.gold}>{`${(applied ? "✓ " : "") + improveKindNoun(proposal.kind)}`.padEnd(nounColumn)}</span>
+                  <span fg={applied ? palette.success : rejected ? palette.muted : palette.gold}>{`${marker + improveKindNoun(proposal.kind)}`.padEnd(nounColumn)}</span>
                   <span fg={palette.text}>{proposal.title}</span>
                 </text>
               );

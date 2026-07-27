@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { claudeToolActionsFromRecord, type SessionActivityEvent } from "./session-activity";
 
 /**
  * Deterministic failure-signal mining over agent session transcripts.
@@ -588,6 +589,12 @@ export type ClaudeUserMessageEvent = {
   text: string;
   sessionRef: string;
   date: string | undefined;
+  /**
+   * Raw one-line summary of the assistant action this steer immediately
+   * followed (e.g. "Edit src/foo.ts" or a shell command); undefined when no
+   * action preceded it. The caller redacts and bounds it.
+   */
+  context?: string;
 };
 
 export type ClaudeTranscriptScanOptions = {
@@ -598,6 +605,8 @@ export type ClaudeTranscriptScanOptions = {
   onUserMessage?: (event: ClaudeUserMessageEvent) => void;
   /** Tap for skill invocations (Skill tool, slash commands, skill-tree reads). */
   onSkillInvocation?: (event: SkillInvocationEvent) => void;
+  /** Tap for classified per-session activity (edits and commands). */
+  onActivity?: (event: SessionActivityEvent) => void;
   /**
    * Restrict the scan to these transcript stems (file name without .jsonl):
    * the user-selected sessions. Absent = every transcript in the directory.
@@ -644,6 +653,8 @@ export async function scanClaudeTranscripts(
     filesScanned += 1;
 
     const state: SessionScanState = { commandByToolUseId: new Map(), lastCommand: undefined };
+    // The last assistant action seen in this session, paired with the next steer.
+    let lastAction: string | undefined;
     for (const line of text.split(/\r?\n/)) {
       if (!line.trim()) continue;
       let parsed: unknown;
@@ -657,7 +668,7 @@ export async function scanClaudeTranscripts(
       const context = { sessionRef, date: recordDate(parsed) };
       if (options.onUserMessage) {
         const text = userTextFromRecord(parsed);
-        if (text) options.onUserMessage({ text, sessionRef, date: context.date });
+        if (text) options.onUserMessage({ text, sessionRef, date: context.date, ...(lastAction ? { context: lastAction } : {}) });
       }
       const uses = toolUseFromRecord(parsed);
       if (options.onSkillInvocation) {
@@ -666,6 +677,17 @@ export async function scanClaudeTranscripts(
           ...uses.flatMap((use) => skillNamesFromCommand(use.command))
         ]);
         for (const skill of names) options.onSkillInvocation({ skill, sessionRef, date: context.date });
+      }
+      // Track the preceding action for the next steer and count classified
+      // activity; both are local and only computed when a tap wants them.
+      if (options.onUserMessage || options.onActivity) {
+        const actions = claudeToolActionsFromRecord(parsed);
+        if (actions.summary) lastAction = actions.summary;
+        if (options.onActivity) {
+          for (const activity of actions.activities) {
+            options.onActivity({ sessionRef, kind: activity.kind, dirs: activity.dirs });
+          }
+        }
       }
       scanToolEvents(uses, toolResultsFromRecord(parsed), context, collector, state);
     }

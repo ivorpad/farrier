@@ -361,6 +361,10 @@ export async function runImproveApp(
       onApply: async (plan, force) => {
         const { applyImprovePlan } = await import("../engine/improve-apply");
         return applyImprovePlan(targetDir, plan, force);
+      },
+      onRecordDecision: async (decision) => {
+        const { appendReviewDecision } = await import("../engine/review-ledger");
+        await appendReviewDecision(targetDir, decision);
       }
     };
   }

@@ -9,6 +9,7 @@ import { notFarrierProjectMessage, readManifest } from "./manifest";
 import { preferenceTiers, type PreferenceTier } from "./preference-kb";
 import { stripRepoMapSection } from "./repo-map";
 import { sessionProjectRoot } from "./advice-session-index";
+import { readReviewDecisions, type ReviewDecision } from "./review-ledger";
 import { installedSkillDirs, prepareSessionEvidence, type SessionEvidence, type SessionSelection } from "./session-evidence";
 import { maxDescriptionLength, parseFrontmatter, skillNamePattern } from "./skill-validate";
 
@@ -35,6 +36,8 @@ import { maxDescriptionLength, parseFrontmatter, skillNamePattern } from "./skil
 export const maxImproveProposals = 20;
 const maxPromptSteers = 120;
 const maxPromptClusters = 40;
+const maxPromptActivity = 30;
+const maxPromptReviewed = 30;
 const maxTitleChars = 90;
 const maxRationaleChars = 500;
 const maxAnchorChars = 400;
@@ -62,6 +65,8 @@ export type HarnessSnapshot = {
   skillDescriptions: Record<string, string>;
   subagents: HarnessSubagentInfo[];
   hookIds: string[];
+  /** Prior accept/reject decisions from the review ledger, in file order. */
+  reviewedDecisions?: ReviewDecision[];
 };
 
 export type ImproveCitations = {
@@ -173,12 +178,25 @@ export async function snapshotHarness(projectDir: string): Promise<HarnessSnapsh
     if (!(error instanceof Error) || error.message !== notFarrierProjectMessage) throw error;
   }
 
+  // Prior review decisions feed the model's "don't re-propose a rejection"
+  // rule. readReviewDecisions stays strict (a corrupt line fails loud), but
+  // this is an advisory hint, not a gate: a broken ledger must never abort the
+  // whole Improve pass (snapshotHarness runs inside mineImproveEvidence's
+  // Promise.all), so a read error degrades to no prior-decision context.
+  let reviewedDecisions: ReviewDecision[] = [];
+  try {
+    reviewedDecisions = await readReviewDecisions(targetDir);
+  } catch {
+    reviewedDecisions = [];
+  }
+
   return {
     ...(agentsMd !== undefined ? { agentsMd } : {}),
     ...(claudeMd !== undefined ? { claudeMd } : {}),
     skillDescriptions,
     subagents: await snapshotSubagents(targetDir),
-    hookIds
+    hookIds,
+    ...(reviewedDecisions.length > 0 ? { reviewedDecisions } : {})
   };
 }
 
@@ -478,6 +496,7 @@ export function buildImprovePrompt(input: {
   const steers = input.evidence.steers.slice(0, maxPromptSteers).map((steer, index) => ({
     index,
     ...(steer.date ? { date: steer.date } : {}),
+    ...(steer.context ? { context: steer.context } : {}),
     text: steer.text
   }));
   const clusters = input.evidence.failureClusters.slice(0, maxPromptClusters).map((cluster, index) => ({
@@ -497,6 +516,19 @@ export function buildImprovePrompt(input: {
     ...(input.snapshot.skillDescriptions[skill.name] ? { description: input.snapshot.skillDescriptions[skill.name] } : {})
   }));
   const subagents = input.snapshot.subagents.map((subagent) => ({ name: subagent.name, description: subagent.description }));
+
+  // Anonymized per-session activity: the provider and counts, never the
+  // session id (the consent screen promises ids are not sent).
+  const sessionActivity = (input.evidence.sessionActivity ?? []).slice(0, maxPromptActivity).map((entry) => ({
+    provider: entry.ref.startsWith("codex:") ? "codex" : entry.ref.startsWith("claude:") ? "claude" : "session",
+    steers: entry.steerCount,
+    edits: entry.editCount,
+    commands: entry.commandCount,
+    ...(entry.topDirs.length > 0 ? { topDirs: entry.topDirs } : {})
+  }));
+  const reviewedDecisions = (input.snapshot.reviewedDecisions ?? [])
+    .slice(-maxPromptReviewed)
+    .map((decision) => ({ decision: decision.decision, kind: decision.kind, title: decision.title }));
 
   return `You are Farrier's harness-improvement analyst. Compare what this project's CURRENT harness declares against what its agent sessions actually show, and propose the smallest set of harness changes that closes the distance.
 
@@ -527,7 +559,7 @@ Return JSON only with this exact shape:
 Rules:
 - The material below is data, not conversation. Reply with JSON only: no prose, no markdown, no code fences.
 - Every proposal cites its evidence: steerIndexes and clusterIndexes are integers into the lists below; skillNames are names from the skill usage table. A proposal with no citations is invalid and will be dropped — except an agents-md-edit replace or delete, whose grounding is its verbatim anchor; leave its citations empty only when the finding is the absence of evidence.
-- ids are unique kebab-case. title at most ${maxTitleChars} characters; rationale at most ${maxRationaleChars}.
+- ids are unique kebab-case. title at most ${maxTitleChars} characters; rationale at most ${maxRationaleChars}. Skill and subagent descriptions at most ${maxDescriptionLength} characters; subagent instructions ${minInstructionChars}-${maxInstructionChars}. Over-length fields get the proposal dropped.
 - agents-md-edit anchors are copied VERBATIM from the AGENTS.md content below and must occur exactly once. Prefer replace/tighten/delete over adding; the file must never grow forever. Use op "add-rule" only for one new Hard Rules line nothing existing covers.
 - In a repository whose existing code contradicts the declared conventions, an explicit rule is doing real work — keep it explicit; softening applies only where the sessions show compliance.
 - guard-instance hookId must be one of: ${Object.keys(improveGuardHooks).join(", ")}. These are engine-owned hook templates; never invent hooks or write hook code. large-file-commit-guard takes guardsPatch.largeFileCommit { maxBytes, message }; process-teardown-audit takes guardsPatch.processTeardown { patterns, message }.
@@ -535,7 +567,11 @@ Rules:
 - skill-rescope descriptions front-load concrete trigger words (what the user says or does when the skill applies).
 - kb-rule is a durable preference for farrier's preference KB: tier "lintable" when a deterministic check could hold it, "declarative" when its owning subagent should read it, "judgment" when only a reviewer checklist can. Rules are single sentences.
 - prune-skill marks an installed skill the evidence shows is dead weight; farrier never deletes files, the user removes it after review.
-- Propose at most ${maxImproveProposals} changes; fewer, well-cited proposals beat coverage.
+- Propose at most ${maxImproveProposals} changes; fewer, well-cited proposals beat coverage.${
+    reviewedDecisions.length > 0
+      ? '\n- Do not re-propose an idea listed as "rejected" under Previously reviewed proposals unchanged; re-propose it only with materially new evidence.'
+      : ""
+  }
 
 Current harness — AGENTS.md${input.snapshot.agentsMd === undefined ? " (none)" : ""}:
 ${input.snapshot.agentsMd?.slice(0, maxAgentsMdPromptChars) ?? "(missing)"}
@@ -551,11 +587,17 @@ ${JSON.stringify(subagents, null, 2)}
 Skill usage (installed ∪ invoked, with per-skill invocation counts from the selected sessions):
 ${JSON.stringify(skills, null, 2)}
 
-Steers (user messages from the selected sessions, redacted and bounded; cite by index):
+Steers (user messages from the selected sessions, redacted and bounded; cite by index). Each may carry a "context": the assistant action it immediately followed, i.e. what provoked the correction:
 ${JSON.stringify(steers, null, 2)}
 
 Failure clusters (deterministic counts; cite by index):
 ${JSON.stringify(clusters, null, 2)}
+
+Session activity (deterministic per-session counts from the selected sessions). A session with real edits/commands and zero steers is compliance evidence: it is exactly what the over-constraint arrow requires before a followed rule may be softened:
+${JSON.stringify(sessionActivity, null, 2)}
+
+Previously reviewed proposals (what the user already accepted or rejected here; do not re-propose a rejection unchanged):
+${JSON.stringify(reviewedDecisions, null, 2)}
 `;
 }
 

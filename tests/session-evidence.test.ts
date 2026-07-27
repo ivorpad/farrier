@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { prepareSessionEvidence, steerFromUserMessage } from "../src/engine/session-evidence";
 import { SignalCollector, workLoopClusterKey } from "../src/engine/learn-signals";
 import { scanCodexSessions } from "../src/engine/learn-signals-codex";
+import { scopeDir } from "../src/engine/session-activity";
 
 async function tempDir(prefix = "farrier-session-evidence-"): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
@@ -314,6 +315,125 @@ describe("prepareSessionEvidence", () => {
       selection: { claudeStems: new Set(["chosen-session"]), codexThreadIds: new Set() }
     });
     expect(claudeOnly.steers.map((steer) => steer.text)).toEqual(["selected claude steer"]);
+  });
+
+  test("pairs each steer with the assistant action it immediately followed", async () => {
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
+    const transcripts = await tempDir("farrier-export-claude-");
+
+    // Codex: a failing command, then the correction it provoked.
+    await writeRollout(sessions, "rollout-2026-07-22T08-00-00-ctx", [
+      sessionMeta(project),
+      execCall("call_1", "bun test tests/login.test.ts", project),
+      execOutput("call_1", "bun test tests/login.test.ts", 1, "1 fail"),
+      userMessage("no, fix the real bug not the test")
+    ]);
+    // Claude: an Edit, then the correction.
+    const claudeRecords = [
+      { type: "assistant", timestamp: "2026-07-23T10:00:00.000Z", message: { content: [{ type: "tool_use", id: "e1", name: "Edit", input: { file_path: "src/login.ts" } }] } },
+      { type: "user", timestamp: "2026-07-23T10:01:00.000Z", message: { role: "user", content: "no, put it in the shared module" } }
+    ];
+    await writeFile(
+      join(transcripts, "ctx-session.jsonl"),
+      `${claudeRecords.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      "utf8"
+    );
+
+    const evidence = await prepareSessionEvidence({ projectDir: project, codexSessionsDir: sessions, claudeTranscriptsDir: transcripts });
+    const byText = new Map(evidence.steers.map((steer) => [steer.text, steer]));
+    expect(byText.get("no, fix the real bug not the test")?.context).toBe("bun test tests/login.test.ts");
+    expect(byText.get("no, put it in the shared module")?.context).toBe("Edit src/login.ts");
+  });
+
+  test("summarizes per-session activity from both backends with top directories", async () => {
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
+    const transcripts = await tempDir("farrier-export-claude-");
+
+    // Codex: a read command and an apply_patch edit in one session, then a steer.
+    await writeRollout(sessions, "rollout-2026-07-22T08-00-00-act", [
+      sessionMeta(project),
+      execCall("c1", "cat src/engine/foo.ts", project),
+      execCall("c2", "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/engine/foo.ts\n*** End Patch\nEOF", project),
+      userMessage("actually revert that")
+    ]);
+    // Claude: real work (a Write and a Bash) with zero steers — the compliance case.
+    const claudeRecords = [
+      { type: "assistant", timestamp: "2026-07-23T10:00:00.000Z", message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command: "bun run typecheck" } }] } },
+      { type: "assistant", timestamp: "2026-07-23T10:01:00.000Z", message: { content: [{ type: "tool_use", id: "w1", name: "Write", input: { file_path: "src/tui/panel.tsx" } }] } }
+    ];
+    await writeFile(
+      join(transcripts, "act-session.jsonl"),
+      `${claudeRecords.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      "utf8"
+    );
+
+    const evidence = await prepareSessionEvidence({ projectDir: project, codexSessionsDir: sessions, claudeTranscriptsDir: transcripts });
+    const byRef = new Map((evidence.sessionActivity ?? []).map((entry) => [entry.ref, entry]));
+
+    expect(byRef.get("codex:rollout-2026-07-22T08-00-00-act")).toEqual({
+      ref: "codex:rollout-2026-07-22T08-00-00-act",
+      steerCount: 1,
+      editCount: 1,
+      commandCount: 1,
+      topDirs: ["src/engine"]
+    });
+    expect(byRef.get("claude:act-session")).toEqual({
+      ref: "claude:act-session",
+      steerCount: 0,
+      editCount: 1,
+      commandCount: 1,
+      topDirs: ["src/tui"]
+    });
+  });
+
+  test("surfaces a codex scan-cap note (last, for the TUI) when the scan truncates", async () => {
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
+    await writeRollout(sessions, "rollout-2026-07-22T08-00-00-aa", [sessionMeta(project), userMessage("first")]);
+    await writeRollout(sessions, "rollout-2026-07-22T09-00-00-bb", [sessionMeta(project), userMessage("second")]);
+
+    const evidence = await prepareSessionEvidence({
+      projectDir: project,
+      codexSessionsDir: sessions,
+      claudeTranscriptsDir: join(project, "no-claude-transcripts"),
+      maxFiles: 1
+    });
+    const joined = evidence.notes.join("\n");
+    expect(joined).toContain("Codex scan cap reached at 1 file(s)");
+    expect(joined).toContain("may be incomplete");
+    // Exactly one copy (de-duplicated), and it is the final note so the TUI
+    // (which shows only the last notes) surfaces it.
+    expect(evidence.notes.filter((note) => note.includes("Codex scan cap reached"))).toHaveLength(1);
+    expect(evidence.notes[evidence.notes.length - 1]).toContain("Codex scan cap reached");
+  });
+
+  test("scopeDir keeps project-relative dirs, relativizes inside-absolute, drops outside", () => {
+    const project = "/Users/dev/proj";
+    expect(scopeDir("/Users/dev/other-client/x", project)).toBeUndefined();
+    expect(scopeDir("~/secrets", project)).toBeUndefined();
+    expect(scopeDir("/Users/dev/proj", project)).toBe(".");
+    expect(scopeDir("/Users/dev/proj/src/engine", project)).toBe("src/engine");
+    expect(scopeDir("src/tui", project)).toBe("src/tui");
+  });
+
+  test("scopes activity directories to the project before they reach the evidence", async () => {
+    const project = await tempDir("farrier-export-project-");
+    const sessions = await tempDir("farrier-export-sessions-");
+    // One command touches an outside-absolute path, an inside-absolute path,
+    // and a plain relative path.
+    const command = `cat /Users/x/other-client/foo.ts ${project}/src/tui/panel.ts src/engine/bar.ts`;
+    await writeRollout(sessions, "rollout-2026-07-22T08-00-00-scope", [sessionMeta(project), execCall("c1", command, project)]);
+
+    const evidence = await prepareSessionEvidence({
+      projectDir: project,
+      codexSessionsDir: sessions,
+      claudeTranscriptsDir: join(project, "no-claude-transcripts")
+    });
+    const activity = (evidence.sessionActivity ?? []).find((entry) => entry.ref.includes("scope"));
+    expect(activity?.topDirs).toEqual(["src/engine", "src/tui"]);
+    expect(activity?.topDirs.some((dir) => dir.includes("other-client"))).toBe(false);
   });
 
   test("learn's default collector still excludes work-loop failures and applies thresholds", async () => {

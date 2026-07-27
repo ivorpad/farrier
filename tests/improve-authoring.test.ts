@@ -11,6 +11,7 @@ import {
   type HarnessSnapshot
 } from "../src/engine/improve-authoring";
 import { mergePreferenceRule, parsePreferenceKb } from "../src/engine/preference-kb";
+import { appendReviewDecision } from "../src/engine/review-ledger";
 import type { SessionEvidence } from "../src/engine/session-evidence";
 
 async function tempDir(prefix = "farrier-improve-"): Promise<string> {
@@ -92,6 +93,29 @@ describe("snapshotHarness", () => {
     // No manifest: still improvable, just no engine-installed hooks to diff against.
     expect(snapshotResult.hookIds).toEqual([]);
   });
+
+  test("reads prior review decisions from the ledger", async () => {
+    const project = await tempDir();
+    await writeFile(join(project, "AGENTS.md"), "# Rules\n\n- keep it small\n", "utf8");
+    // No ledger yet: absent, not empty-array noise.
+    expect((await snapshotHarness(project)).reviewedDecisions).toBeUndefined();
+
+    await appendReviewDecision(project, { proposalId: "kb-x", kind: "kb-rule", title: "A rejected idea", decision: "rejected", at: "2026-07-25T00:00:00.000Z" });
+    const snapshotResult = await snapshotHarness(project);
+    expect(snapshotResult.reviewedDecisions).toHaveLength(1);
+    expect(snapshotResult.reviewedDecisions?.[0]!.title).toBe("A rejected idea");
+  });
+
+  test("a corrupt review ledger degrades to no decisions, never aborting the snapshot", async () => {
+    const project = await tempDir();
+    await writeFile(join(project, "AGENTS.md"), "# Rules\n\n- keep it small\n", "utf8");
+    await mkdir(join(project, ".farrier"), { recursive: true });
+    await writeFile(join(project, ".farrier", "review-decisions.jsonl"), "this is not valid json\n", "utf8");
+    // The reader stays strict, but the advisory hint must not disable Improve.
+    const snapshotResult = await snapshotHarness(project);
+    expect(snapshotResult.reviewedDecisions).toBeUndefined();
+    expect(snapshotResult.agentsMd).toContain("keep it small");
+  });
 });
 
 describe("buildImprovePrompt", () => {
@@ -116,6 +140,41 @@ describe("buildImprovePrompt", () => {
 
   test("omits the focus line when none is given", () => {
     expect(buildImprovePrompt({ evidence: evidence(), snapshot: snapshot() })).not.toContain("current focus");
+  });
+
+  test("states every mechanical bound the validator enforces on descriptions", () => {
+    // Probe finding 2026-07-27: two fieldbrief proposals died to the 500-char
+    // description limit the prompt never disclosed.
+    const prompt = buildImprovePrompt({ evidence: evidence(), snapshot: snapshot() });
+    expect(prompt).toContain("descriptions at most 500 characters");
+    expect(prompt).toContain("Over-length fields get the proposal dropped");
+  });
+
+  test("renders steer context, anonymized session activity, and previously reviewed proposals", () => {
+    const prompt = buildImprovePrompt({
+      evidence: evidence({
+        steers: [{ text: "no, use the design system", sessionRef: "claude:aaaa", date: "2026-07-20", truncated: false, context: "Edit src/Button.tsx" }],
+        sessionActivity: [{ ref: "codex:rollout-bbbb", steerCount: 0, editCount: 4, commandCount: 7, topDirs: ["src/engine", "tests"] }]
+      }),
+      snapshot: snapshot({
+        reviewedDecisions: [{ proposalId: "kb-old", kind: "kb-rule", title: "Ban inline styles", decision: "rejected", at: "2026-07-25T00:00:00.000Z" }]
+      })
+    });
+    expect(prompt).toContain('"context": "Edit src/Button.tsx"');
+    expect(prompt).toContain("Session activity");
+    expect(prompt).toContain("compliance evidence");
+    expect(prompt).toContain('"provider": "codex"');
+    expect(prompt).toContain('"commands": 7');
+    expect(prompt).toContain("Previously reviewed proposals");
+    expect(prompt).toContain("Ban inline styles");
+    expect(prompt).toContain("re-propose it only with materially new evidence");
+    // The consent screen promises session ids are never sent.
+    expect(prompt).not.toContain("rollout-bbbb");
+  });
+
+  test("omits the reviewed-proposals rule line when there are no prior decisions", () => {
+    const prompt = buildImprovePrompt({ evidence: evidence(), snapshot: snapshot() });
+    expect(prompt).not.toContain("re-propose it only with materially new evidence");
   });
 });
 
