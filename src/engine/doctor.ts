@@ -22,6 +22,7 @@ export type DoctorGroup =
   | "guards"
   | "quality"
   | "skills"
+  | "sessions"
   | "runtime";
 
 export type DoctorSeverity = "error" | "warning";
@@ -58,6 +59,7 @@ const allGroups: DoctorGroup[] = [
   "guards",
   "quality",
   "skills",
+  "sessions",
   "runtime"
 ];
 

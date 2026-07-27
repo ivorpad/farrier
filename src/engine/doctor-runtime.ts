@@ -5,6 +5,7 @@ import type { DoctorProblem } from "./doctor";
 import { readManifest } from "./manifest";
 import { hooksDirectory } from "./render";
 import { resolveToolchain } from "./toolchain";
+import { sxrSessionCrosscheck } from "./sxr-crosscheck";
 import { builtinCatalog, type PackCatalog } from "../registry/catalog";
 
 /**
@@ -440,6 +441,19 @@ export async function createRuntimeReport(input: {
     } else {
       notes.push("Generated hook self-tests passed.");
     }
+  }
+
+  // Optional independent drift check: sxr reads the same session files with its
+  // own parsers, so a disagreement flags a silent farrier reader blindness.
+  // Absent sxr is a silent skip; every failure mode is fail-open (a note).
+  try {
+    const crosscheck = await sxrSessionCrosscheck({ targetDir });
+    problems.push(...crosscheck.problems);
+    notes.push(...crosscheck.notes);
+  } catch (error) {
+    notes.push(
+      `sxr session cross-check skipped after an unexpected error: ${error instanceof Error ? error.message : String(error)}.`
+    );
   }
 
   return {
