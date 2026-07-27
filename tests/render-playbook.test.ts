@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { playbookFiles, renderClaudeSubagentMd, renderSubagentToml } from "../src/engine/render-playbook";
+import { escapeTomlMultiline, playbookFiles, renderClaudeSubagentMd, renderSubagentToml, unescapeTomlMultiline } from "../src/engine/render-playbook";
 import { validateRegistryItem } from "../src/registry/schema";
 import type { PackPlaybook, PackSubagent } from "../src/packs/types";
 
@@ -124,5 +124,27 @@ describe("registry pack payload with playbook and subagents", () => {
     const badRef = structuredClone(base);
     badRef.pack.playbook.orchestrator.references![0]!.name = "../escape.md";
     expect(() => validateRegistryItem(badRef, { name: "ios-playbook", type: "pack" })).toThrow("must be relative");
+  });
+});
+
+describe("TOML multiline escaping", () => {
+  test("escape then unescape is identity across backslashes and triple quotes", () => {
+    const samples = [
+      'Escape \\ and """ carefully.',
+      "plain text with no specials",
+      'a\\b"""c\\\\d',
+      '"""',
+      "\\",
+      'trailing backslash \\',
+      'nested """" quads and \\\\ pairs',
+      "line one\nline two with \\ and \"\"\" markers"
+    ];
+    for (const sample of samples) {
+      expect(unescapeTomlMultiline(escapeTomlMultiline(sample))).toBe(sample);
+    }
+  });
+
+  test("the escaped form cannot prematurely close a multiline block", () => {
+    expect(escapeTomlMultiline('x"""y')).not.toContain('"""');
   });
 });

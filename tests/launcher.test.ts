@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { launcherReducer, launcherRows } from "../src/tui/launcher";
 
 describe("primary launcher", () => {
-  test("exposes exactly the five primary workflows with the required labels", () => {
+  test("exposes the primary workflows with the required labels", () => {
     expect(launcherRows.map((row) => row.label)).toEqual([
       "Create harness",
       "Find/Create skills",
       "Improve harness",
+      "Compile preferences",
       "Export harness",
       "Doctor & update"
     ]);
@@ -19,13 +20,15 @@ describe("primary launcher", () => {
     }
   });
 
-  test("routes all five choices through the visible list", () => {
+  test("routes every choice through the visible list", () => {
     expect(launcherReducer({ index: 0 }, { type: "choose" }).choice).toBe("harness");
     const skills = launcherReducer({ index: 0 }, { type: "down" }).state;
     expect(launcherReducer(skills, { type: "choose" }).choice).toBe("skills");
     const improve = launcherReducer(skills, { type: "down" }).state;
     expect(launcherReducer(improve, { type: "choose" }).choice).toBe("improve");
-    const exportRow = launcherReducer(improve, { type: "down" }).state;
+    const compile = launcherReducer(improve, { type: "down" }).state;
+    expect(launcherReducer(compile, { type: "choose" }).choice).toBe("compile");
+    const exportRow = launcherReducer(compile, { type: "down" }).state;
     expect(launcherReducer(exportRow, { type: "choose" }).choice).toBe("export");
     const doctor = launcherReducer(exportRow, { type: "down" }).state;
     expect(launcherReducer(doctor, { type: "choose" }).choice).toBe("doctor");

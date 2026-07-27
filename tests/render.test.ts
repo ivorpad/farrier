@@ -4,7 +4,7 @@ import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createRenderPlan, getFarrierVersion, writeRenderPlan } from "../src/engine/render";
+import { codexHookEvent, createRenderPlan, getFarrierVersion, writeRenderPlan } from "../src/engine/render";
 import { resolvePack } from "../src/packs/index";
 import type { ResolvedPack } from "../src/packs/types";
 
@@ -985,5 +985,15 @@ describe("render engine", () => {
     await writeRenderPlan(plan);
     const written = await readFile(join(dir, ".gitignore"), "utf8");
     expect(written).toBe(gitignore);
+  });
+});
+
+describe("codexHookEvent", () => {
+  test("maps the three supported events and fails loud on anything else", () => {
+    expect(codexHookEvent("PreToolUse", "taste-guard")).toBe("PreToolUse");
+    expect(codexHookEvent("PostToolUse", "quality-judge")).toBe("PostToolUse");
+    expect(codexHookEvent("Stop", "stop-judge")).toBe("Stop");
+    expect(() => codexHookEvent("UserPromptSubmit", "taste-context")).toThrow('unsupported event "UserPromptSubmit"');
+    expect(() => codexHookEvent("UserPromptSubmit", "taste-context")).toThrow("taste-context");
   });
 });

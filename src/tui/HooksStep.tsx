@@ -49,7 +49,9 @@ const hookDescriptions: Record<HookId, string> = {
   "quality-judge": "experimental AI review of each edit (ships off)",
   "stop-judge": "experimental AI review of the full diff (ships off)",
   "large-file-commit-guard": "denies git add/commit of files over a size limit you set",
-  "process-teardown-audit": "flags leftover test/automation processes before the agent finishes"
+  "process-teardown-audit": "flags leftover test/automation processes before the agent finishes",
+  "taste-guard": "denies edits whose content matches a reviewed team convention",
+  "taste-context": "injects your reviewed preferences as context on every prompt"
 };
 
 /**

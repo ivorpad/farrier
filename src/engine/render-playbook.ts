@@ -38,9 +38,23 @@ function tomlBasicString(value: string): string {
   return JSON.stringify(value.replace(/\s+/g, " ").trim());
 }
 
+/**
+ * Escape a value for the body of a TOML multiline basic string: double every
+ * backslash, then escape any triple-quote so it cannot close the block. This is
+ * the single source of truth for the escaping — kb-compile.ts reads the same
+ * blocks back with unescapeTomlMultiline, so the two must invert each other.
+ */
+export function escapeTomlMultiline(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll('"""', '""\\"');
+}
+
+/** Inverse of escapeTomlMultiline: undo the triple-quote escape, then the backslash doubling. */
+export function unescapeTomlMultiline(value: string): string {
+  return value.replaceAll('""\\"', '"""').replaceAll("\\\\", "\\");
+}
+
 function tomlMultilineString(value: string): string {
-  const escaped = value.replaceAll("\\", "\\\\").replaceAll('"""', '""\\"');
-  return `"""\n${escaped.trim()}\n"""`;
+  return `"""\n${escapeTomlMultiline(value).trim()}\n"""`;
 }
 
 export function renderSubagentToml(subagent: PackSubagent): string {

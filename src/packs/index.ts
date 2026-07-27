@@ -82,6 +82,21 @@ export const hookCapabilities: Record<HookId, HookCapability> = {
       claude: [{ event: "Stop", fileName: "process-teardown-audit.py" }],
       codex: [{ event: "Stop", fileName: "process-teardown-audit.py" }]
     }
+  },
+  // Claude-side only: codex hook dispatch is unreliable, so taste rules reach
+  // codex through their mirrored AGENTS.md declarative line (the KB compiler
+  // renders that words layer alongside this enforcement half).
+  "taste-guard": {
+    agents: {
+      claude: [{ event: "PreToolUse", matcher: "Edit|Write", fileName: "taste-guard.py" }]
+    }
+  },
+  // Claude-side only: injects the reviewed preference KB as prompt context. The
+  // compiler's declarative AGENTS.md rendering is the codex-side counterpart.
+  "taste-context": {
+    agents: {
+      claude: [{ event: "UserPromptSubmit", fileName: "taste-context.py" }]
+    }
   }
 };
 

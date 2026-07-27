@@ -455,6 +455,15 @@ export async function main(args: string[] = Bun.argv.slice(2)): Promise<number> 
             continue;
           }
 
+          if (choice === "compile") {
+            // Route the reviewed preference KB to its runtime primitives. The
+            // pattern-authoring pass runs only behind its own consent screen,
+            // on the startup-picked backend.
+            const { runCompilePreferencesApp } = await import("./tui/compile-app");
+            await runCompilePreferencesApp(targetDir, { session, llmAnalysisAvailable: !noInstalledBackend });
+            continue;
+          }
+
           if (choice === "export") {
             // Mining is local; the LLM classification inside the app runs
             // only after its own consent screen, on the startup-picked backend.

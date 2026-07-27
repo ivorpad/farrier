@@ -6,12 +6,14 @@ export type HookId =
   | "quality-judge"
   | "stop-judge"
   | "large-file-commit-guard"
-  | "process-teardown-audit";
+  | "process-teardown-audit"
+  | "taste-guard"
+  | "taste-context";
 
 export type PackHookRef = HookId | `@${string}`;
 
 export type CapabilityAgent = "claude" | "codex";
-export type CapabilityHookEvent = "PreToolUse" | "PostToolUse" | "Stop";
+export type CapabilityHookEvent = "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "Stop";
 
 export type HookCapabilityBinding = {
   event: CapabilityHookEvent;

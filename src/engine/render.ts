@@ -1,7 +1,7 @@
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import type { HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef, ToolPolicyRule } from "../packs/types";
+import type { CapabilityHookEvent, HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef, ToolPolicyRule } from "../packs/types";
 import { hookCapabilities, packCapabilityProjection } from "../packs/index";
 import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
 import type { RegistryPin } from "../registry/catalog";
@@ -124,7 +124,7 @@ export type FarrierManifestInput = Partial<Omit<FarrierManifest, "judge" | "guar
   versions?: unknown;
 };
 
-type ClaudeHookEvent = "PreToolUse" | "PostToolUse" | "Stop";
+type ClaudeHookEvent = "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "Stop";
 
 type ClaudeCommandHook = {
   type: "command";
@@ -148,7 +148,9 @@ export const hookCatalogVersions: Record<HookId, number> = {
     "quality-judge": 7,
     "stop-judge": 6,
     "large-file-commit-guard": 3,
-    "process-teardown-audit": 2
+    "process-teardown-audit": 2,
+    "taste-guard": 1,
+    "taste-context": 1
 };
 
 export const hookTemplateFiles: Record<HookId, string[]> = {
@@ -159,11 +161,13 @@ export const hookTemplateFiles: Record<HookId, string[]> = {
   "quality-judge": ["quality-judge.py", "test_quality_judge.py"],
   "stop-judge": ["stop-judge.py", "test_stop_judge.py"],
   "large-file-commit-guard": ["large-file-commit-guard.py", "test_large_file_commit_guard.py"],
-  "process-teardown-audit": ["process-teardown-audit.py", "test_process_teardown_audit.py"]
+  "process-teardown-audit": ["process-teardown-audit.py", "test_process_teardown_audit.py"],
+  "taste-guard": ["taste-guard.py", "test_taste_guard.py"],
+  "taste-context": ["taste-context.py", "test_taste_context.py"]
 };
 
 /** Hooks parameterized by the user-owned `guards` record in .farrier.json. */
-export const guardHookIds: readonly HookId[] = ["large-file-commit-guard", "process-teardown-audit"];
+export const guardHookIds: readonly HookId[] = ["large-file-commit-guard", "process-teardown-audit", "taste-guard"];
 
 export function hasGuardHooks(hookIds: readonly PackHookRef[]): boolean {
   return guardHookIds.some((hookId) => hookIds.includes(hookId));
@@ -362,12 +366,14 @@ function hookEntry(input: { matcher?: string; command: string }): ClaudeHookEntr
 export function renderClaudeSettingsJson(pack: ResolvedPack): string {
   const preToolUse: ClaudeHookEntry[] = [];
   const postToolUse: ClaudeHookEntry[] = [];
+  const userPromptSubmit: ClaudeHookEntry[] = [];
   const stop: ClaudeHookEntry[] = [];
+  const eventTarget = (event: CapabilityHookEvent): ClaudeHookEntry[] =>
+    event === "PreToolUse" ? preToolUse : event === "PostToolUse" ? postToolUse : event === "UserPromptSubmit" ? userPromptSubmit : stop;
 
   for (const hookId of pack.hooks.filter(isBuiltinHookId)) {
     for (const binding of hookCapabilities[hookId].agents.claude ?? []) {
-      const target = binding.event === "PreToolUse" ? preToolUse : binding.event === "PostToolUse" ? postToolUse : stop;
-      target.push(hookEntry({
+      eventTarget(binding.event).push(hookEntry({
         matcher: binding.matcher,
         command: `python3 "$CLAUDE_PROJECT_DIR/${hooksDirectory}/${binding.fileName}"`
       }));
@@ -399,6 +405,10 @@ export function renderClaudeSettingsJson(pack: ResolvedPack): string {
     hooks.PostToolUse = postToolUse;
   }
 
+  if (userPromptSubmit.length > 0) {
+    hooks.UserPromptSubmit = userPromptSubmit;
+  }
+
   if (stop.length > 0) {
     hooks.Stop = stop;
   }
@@ -412,6 +422,17 @@ function codexCommand(fileName: string): string {
   return `python3 "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/${hooksDirectory}/${fileName}"`;
 }
 
+/**
+ * Narrow a builtin hook binding's event to the three Codex supports, failing
+ * loud on anything else (e.g. UserPromptSubmit, which is Claude-only today).
+ * Greenfield: a future Codex binding on an unsupported event must throw here,
+ * not silently file under Stop.
+ */
+export function codexHookEvent(event: CapabilityHookEvent, hookId: string): "PreToolUse" | "PostToolUse" | "Stop" {
+  if (event === "PreToolUse" || event === "PostToolUse" || event === "Stop") return event;
+  throw new Error(`Codex hook binding for "${hookId}" uses unsupported event "${event}"; Codex hooks support PreToolUse, PostToolUse, and Stop only.`);
+}
+
 export function renderCodexHooksJson(pack: ResolvedPack): string {
   const preToolUse: ClaudeHookEntry[] = [];
   const postToolUse: ClaudeHookEntry[] = [];
@@ -423,7 +444,8 @@ export function renderCodexHooksJson(pack: ResolvedPack): string {
 
   for (const hookId of pack.hooks.filter(isBuiltinHookId)) {
     for (const binding of hookCapabilities[hookId].agents.codex ?? []) {
-      const target = binding.event === "PreToolUse" ? preToolUse : binding.event === "PostToolUse" ? postToolUse : stop;
+      const event = codexHookEvent(binding.event, hookId);
+      const target = event === "PreToolUse" ? preToolUse : event === "PostToolUse" ? postToolUse : stop;
       add(target, binding.matcher, binding.fileName);
     }
   }
@@ -497,6 +519,9 @@ function defaultGuardsConfig(hookIds: readonly PackHookRef[]): Record<string, un
       : {}),
     ...(hookIds.includes("process-teardown-audit")
       ? { processTeardown: { patterns: [] } }
+      : {}),
+    ...(hookIds.includes("taste-guard")
+      ? { tasteGuard: { rules: [] } }
       : {})
   };
 }
