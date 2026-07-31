@@ -33,5 +33,13 @@ docs/PLAN.md
 docs/harness-model.md
 prompt-exports/
 
+# This repository's own harness context. AGENTS.md is farrier's generated
+# output here, and CLAUDE.md carries working project notes; both are local.
+# This rule is for farrier's own repository only: the harness farrier writes
+# into a user's project deliberately does NOT ignore these files, since they
+# are the point of the harness there.
+AGENTS.md
+CLAUDE.md
+
 # Claude Code local session state
 .claude/scheduled_tasks.lock
