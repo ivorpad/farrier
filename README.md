@@ -1,21 +1,38 @@
 # 🐴 farrier
 
-**The craftsman who equips your coding agents.**
+farrier generates the agent harness for a repository: the hooks, rules, verification verbs, and context files that Claude Code and Codex read. You pick a stack or farrier detects one, and it writes 15 to 18 files depending on what your repository proves it needs.
 
-farrier generates an *agents-first harness* for any project: the hooks, rules, skills, verification verbs, and context files that let Claude Code and Codex work in your repo safely and productively — without you hand-assembling the same setup for the hundredth time.
+## What it does, and what that is worth
 
-You pick a stack (or farrier detects it), and farrier writes a complete, tested harness:
+This section separates the two. Everything under "measured" comes from paired A/B rounds in `docs/evaluations/`; everything under "unmeasured" may still be useful, but no round has shown it.
 
-- **Hooks that protect** — no reading `.env`, no writing lockfiles, no `pip install` in a uv project (the deny message tells the agent the *right* command instead).
-- **Hooks that verify** — a fast, task-scoped `just check-fast` after every edit, one full `just check-full` plus structure linting (konpy for Python, konsistent for TypeScript) before the agent yields, and a baseline-failure gate so a pre-existing environmental failure is reported once instead of retried in a loop.
-- **Skills that teach** — stack-appropriate skills from [skills.sh](https://skills.sh), pinned in a lockfile.
-- **Context that steers** — one `AGENTS.md` source of truth (when Claude is selected, `CLAUDE.md` imports it via Claude Code's `@AGENTS.md` syntax); `--agents codex` emits a Codex-only bundle with no `.claude/**` at all.
-- **Rules backed by evidence** — conditional rule blocks only render when the repository proves them (Bun rules require `bun.lock`, uv rules require `uv.lock`); the creation preview shows the rule → evidence mapping and what was omitted.
-- **Proof, not vibes** — every hook decision lands in `.farrier/runtime/events.jsonl`, and `farrier doctor` fires fixture payloads through the installed binding commands to prove each guard actually blocks (opt-in `--live` runs one real Codex session that must get blocked).
-- **A harness that evolves** — it detects stack drift, repairs itself, and *learns new rules from your session transcripts*.
-- **Enterprise registries** — teams publish private packs, hook payloads, and skill bundles behind namespaced refs (`@acme/demo`); farrier fetches, schema-validates, caches, and pins them exactly like a built-in pack.
+**It writes a harness that runs.** AGENTS.md, CLAUDE.md, the native hook bindings, four deterministic Python hooks each with its own pytest suite, a justfile, the manifest, gitignore entries.
 
-Everything is declarative data + tested templates. The LLM never writes hook code; it only proposes data that farrier's tested engine renders.
+**The guards fire, and you can check.** `farrier doctor` pushes fixture payloads through the installed binding commands and reports which blocked: reading `.env`, `pip install` in a uv project, editing `.farrier.json`. Every hook decision also lands in `.farrier/runtime/events.jsonl`. This is behavioral verification rather than config validation, and it is the part of farrier most worth trusting.
+
+**Nothing is written without repository evidence.** Rules render only when the repo proves them (uv rules need `uv.lock`). Verbs work the same way: a project with no linter and no test suite gets no gate and no verb-runner binding rather than a `just check-full` that can never pass. The creation preview names every omitted rule and verb and why.
+
+**The generated harness is portable.** No pack may name an absolute path or an unpublished tool. A render test asserts it across all nine packs.
+
+### Measured
+
+- The repository map cuts navigation tokens on large repos: decisive at 761 files, about -45% on navigation-heavy tasks at 682. It costs tokens on small repos and is negative at 144 files, so it turns on past the size where it pays.
+- The check gate is cheap insurance. Its cost sits within noise of an unharnessed control.
+- Pack skills were negative: +32% input tokens for zero outcome change.
+
+### Unmeasured, and honestly so
+
+Across six completed A/B rounds, **no arm has ever changed a measured outcome.** The deny hooks prevented nothing observable, because the control agents never violated the standards in the first place; one advise-recommended enforcement hook fired zero times, since the agents complied by imitating neighboring code. The sixth round was the first outcome eval and its pre-registered kill criterion fired.
+
+That is not evidence the harness fails. It means the question is still open: you cannot measure prevention when the control never fails. Every round so far is codex-only, so nothing generalizes to Claude yet either. Answering it needs a task a bare agent fails at a known nonzero rate, which is the calibration no round has run.
+
+`farrier advise` has never been A/B evaluated at all.
+
+### What does not work yet
+
+`farrier learn` mines sessions for repeated failures and proposes primitives. On real data it currently proposes nothing: 35 codex sessions of one project produced zero proposals, 12 of another produced zero. That is not a parsing failure, it is the eligibility filter, which drops exploration commands, drops anything containing a verification verb, and requires the same failure across two distinct sessions. Treat the learning loop as unfinished.
+
+Everything farrier generates is declarative data plus tested templates. The LLM never writes hook code; it only proposes data the tested engine renders.
 
 ---
 
@@ -63,7 +80,7 @@ Step by step:
 - *Stack*: your detected stack is preselected and annotated; Enter continues with it.
 - *Skills*: Farrier derives up to four registry queries from installed libraries and project capabilities, then searches skills.sh without an LLM. Pack defaults remain pre-ticked. Optional **Research with Claude/Codex** is explicit, says that it makes two LLM calls, and can be cancelled.
 - *Hooks*: choose Claude, Codex, or both enforcement targets, then toggle any of the six pre-ticked protections. At least one target remains selected. CLI availability is informational and never removes an option or changes the saved selection.
-- *Learn*: opt this project into the self-learning loop (records intent in `.farrier.json`; see the learn walkthrough below).
+- *Learn*: record intent to mine sessions in `.farrier.json`. See the learn section below for its current status, which is that it proposes nothing on real data yet.
 - *Review*: the same creation plan used by headless mode, including per-file create/merge/unchanged/replace/blocked actions and why each file exists. Enter writes only an accepted plan, then installs skills into `.claude/skills/` and `.agents/skills/` for Claude Code and Codex.
 
 ### B. New project, headless (for scripts, CI, or agents driving farrier)
@@ -106,7 +123,7 @@ Open a selected agent in the generated project and try to misbehave:
 ⛔ Lockfiles are owned by their package manager. Use `uv`.
 ```
 
-Meanwhile every edit triggers `just check-fast` (typecheck-level, plus the tests related to the edited files when they exist). When the agent tries to end its turn, `just check-full` runs once and the structure linter (`just konpy` on Python, `just konsistent` on TypeScript) verifies the project structure — failures block the stop with actionable feedback. A check-full failure whose normalized fingerprint matches an already-reported baseline failure does not re-block: the agent is told to report it once and stop retrying.
+Meanwhile every edit triggers `just check-fast` (typecheck-level, plus the tests related to the edited files when they exist). When the agent tries to end its turn, `just check-full` runs once — a failure blocks the stop with actionable feedback. A check-full failure whose normalized fingerprint matches an already-reported baseline failure does not re-block: the agent is told to report it once and stop retrying.
 
 For Codex, trust the project and review the exact project hook commands in `/hooks`; command definitions are approved separately by content hash. Matching Codex hooks can run concurrently, so every Farrier hook is independent and the binding does not rely on handler order. See [Codex enforcement coverage](#codex-enforcement-coverage) for the released interception limits.
 
@@ -126,18 +143,17 @@ For `python-fastapi` with the default Claude-only binding, 18 rendered harness f
 
 | File | Job |
 |---|---|
-| `AGENTS.md` | Source of truth: commands, hard rules, accepted risks. Read by every agent. |
+| `AGENTS.md` | Source of truth: commands and hard rules. Read by every agent. |
 | `CLAUDE.md` | Claude-only: imports AGENTS.md via Claude Code's `@AGENTS.md` syntax, so its content actually loads into every session (not just an advisory pointer). |
 | `.claude/settings.json` | Claude-only: wires the hooks to Claude Code events. |
 | `.codex/hooks.json` | Codex-only: wires the same shared policy scripts to released Codex hook events. |
 | `.farrier/hooks/*.py` + `test_*.py` | The provider-neutral deterministic hooks, each with its pytest suite alongside (the self-tests run under `farrier doctor`, not inside the project gate). |
 | `.farrier/hooks/tool-policy-rules.json` | **Declarative** wrong-tool rules with probe fixtures (this is where `farrier learn` appends). |
-| `justfile` | The stable verbs: `just check-fast [tests…]` / `check-full` / `test` / `fmt` / `konpy` (Python) or `konsistent` (TypeScript); `check` stays as a `check-full` alias. |
-| `konpy.json` / `konsistent.json` | Structure conventions (v1 grammar) enforced at Stop — `konpy.json` on Python, `konsistent.json` on TypeScript. |
+| `justfile` | The stable verbs: `just check-fast [tests…]` / `check-full` / `test` / `fmt`; `check` stays as a `check-full` alias. |
 | `.farrier.json` | Manifest: selected enforcement agents, packs, hooks, skills, advisors flag. **Never edit by hand.** |
 | `.gitignore` | Gains `.env`, `.env.*`, `!.env.example`, `.farrier-staging/`, `.farrier/runtime/`. |
 
-With the default Claude-only binding, Rails renders 17 (no structure linter because konpy/konsistent are TS/Python-only) and `generic` renders 15. Everything else is opt-in and produces zero files when disabled:
+With the default Claude-only binding, `rails` renders 18 and `generic` renders 16. Everything else is opt-in and produces zero files when disabled:
 
 - `--with-advisors` adds the agent-scoped advisor skill trees (`.claude/skills/harness-advisor/`, `.claude/skills/claude-automation-recommender/` with its pinned attributed Anthropic snapshot, `.agents/skills/codex-automation-recommender/`, `.agents/skills/farrier-project-advisor/`).
 - The LLM judge hooks (`quality-judge`, `stop-judge`) and their prompts are no longer in any default pack; opt in by adding the hook ids to `.farrier.json` and running `farrier update --yes`.
@@ -207,11 +223,13 @@ farrier update --dir . --yes    # repair
 
 Reports: stack drift (e.g. hotwire files appeared in your Rails repo → suggests JS skills), hook version drift, missing/outdated harness files, unacknowledged secondary findings.
 
-Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Selected binding files (`.claude/settings.json` and/or `.codex/hooks.json`) and other files you customize — `AGENTS.md`, `justfile`, `tool-policy-rules.json`, `konpy.json`/`konsistent.json` — are *reported* for manual review when modified, never clobbered; a missing selected binding is restored. Unselected vendor bindings are ignored and preserved. Manifests created before the `agents` field are treated as Claude-only. Update never switches packs and never installs skills without you.
+Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Selected binding files (`.claude/settings.json` and/or `.codex/hooks.json`) and other files you customize — `AGENTS.md`, `justfile`, `tool-policy-rules.json` — are *reported* for manual review when modified, never clobbered; a missing selected binding is restored. Unselected vendor bindings are ignored and preserved. Manifests created before the `agents` field are treated as Claude-only. Update never switches packs and never installs skills without you.
 
-### `farrier learn` — the harness improves itself
+### `farrier learn` — mine sessions for repeated failures
 
-The self-learning loop turns *things that went wrong in your sessions* into *rules that prevent them next time* — as declarative data, never generated code.
+Intended to turn *things that went wrong in your sessions* into *rules that prevent them next time*, as declarative data, never generated code.
+
+**Status: it proposes nothing on real data.** Measured against 35 codex sessions from one project and 12 from another, both returned zero proposals. The pipeline reads the transcripts correctly; the eligibility filter is what empties it. It drops any command over 120 characters or containing a pipe, drops around 50 exploration heads (`git`, `python3`, `rg`, `curl`), drops anything containing a verification verb, and then requires the same failure in two distinct sessions. On the sessions measured, 25 distinct failing commands produced exactly one cross-session repeat, and that one was excluded by the vocabulary. The walkthrough below is accurate about the mechanics; do not expect output from it yet.
 
 **How to use it, start to finish:**
 
@@ -390,10 +408,10 @@ Generated projects also carry provider-specific automation recommenders. Both us
 
 | `--stack` | Detected from | Notes |
 |---|---|---|
-| `python-uv` | `pyproject.toml` | Base Python: uv + ruff + pytest + konpy |
+| `python-uv` | `pyproject.toml` | Base Python: uv + ruff + pytest |
 | `python-fastapi` | + `fastapi` dep | Adds layering convention (core ⊬ api) |
 | `python-lambda-powertools` | + `aws-lambda-powertools` dep | "No live AWS calls in tests" rules |
-| `ts-base` | `package.json` + `tsconfig.json` | bun + tsc + upstream konsistent |
+| `ts-base` | `package.json` + `tsconfig.json` | bun + tsc |
 | `ts-react-vite` | + `react` & `vite` deps | |
 | `ts-nextjs` | + `next` dep | |
 | `ts-lambda` | `aws-cdk-lib` dep or `template.yaml`/`samconfig.toml` | |
@@ -470,6 +488,6 @@ Grid evals (A/B arms, seeds, verdicts) live in `docs/evaluations/` — see its R
 
 Architecture in one breath: **packs are declarative data** (`src/packs/`), the **engine** renders/detects/updates/learns/doctors (`src/engine/`), **hook templates** are self-contained Python scripts with tests (`src/templates/hooks/`), and the **TUI** is a pure reducer (`src/tui/machine.ts`, zero opentui imports) with thin opentui-react components around it.
 
-## Known caveat
+## Portability rule
 
-Generated Python projects reference konpy as a **local path dependency** (`/Users/ivor/src/tries/2026-07-02-konsistent-python`) while it's being perfected — they only work on this machine for now. Upgrade path: git dependency, then PyPI.
+A generated harness must run for anyone who installs farrier, so no pack may name a machine-local path or an unpublished package. A render test asserts it across every pack: an absolute path or a private tool in a verb makes the Stop gate unpassable for every user but its author. Structure linting was removed for exactly this reason.
