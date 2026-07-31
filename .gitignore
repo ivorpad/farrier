@@ -8,12 +8,27 @@ tmp/
 __pycache__/
 *.py[cod]
 
+# Tool caches. Each of these writes its own self-ignoring .gitignore, so they
+# never showed up as untracked; naming them here keeps that from being the only
+# thing standing between a cache and the repository.
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+.fallow/
+
 # farrier: local secrets
 .env
 .env.*
 !.env.example
 .farrier-staging/
 eval-workspaces/
+
+# Eval artifacts and planning notes stay local. Evaluation output was only
+# incidentally ignored before, by the `*.log` rule above: a result.json in that
+# tree would have been committed.
+docs/evaluations/
+docs/plans/
 
 # Claude Code local session state
 .claude/scheduled_tasks.lock
