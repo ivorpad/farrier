@@ -48,14 +48,6 @@ const execPrefixes: Record<Exclude<JsPackageManager, "bun">, string> = {
   npm: "npx",
 };
 
-// Runner equivalents of `bunx pkg@version`: fetch-and-run a pinned package
-// that is not a project dependency.
-const pinnedRunPrefixes: Record<Exclude<JsPackageManager, "bun">, string> = {
-  pnpm: "pnpm dlx",
-  yarn: "yarn dlx",
-  npm: "npx --yes",
-};
-
 export function packUsesJsToolchain(pack: Pick<ResolvedPack, "packIds">): boolean {
   return pack.packIds.includes("ts-base");
 }
@@ -112,15 +104,6 @@ function detectTestRunner(dependencies: PackageJsonDependencies | undefined): { 
   return undefined;
 }
 
-/** `bunx pkg@version args` keeps its pinned spec; only the runner changes. */
-function derivedPinnedRun(verb: string, manager: Exclude<JsPackageManager, "bun">): string {
-  if (!verb.startsWith("bunx ")) {
-    return verb;
-  }
-
-  return `${pinnedRunPrefixes[manager]} ${verb.slice("bunx ".length)}`;
-}
-
 function derivedVerbs(
   packVerbs: PackVerbs,
   manager: Exclude<JsPackageManager, "bun">,
@@ -133,13 +116,12 @@ function derivedVerbs(
   const test = runner === undefined ? `${manager} test` : runner === "vitest" ? `${exec} vitest run` : `${exec} jest`;
 
   return {
-    check: `${checkFast} && ${test}`,
-    checkFast,
-    test,
-    fmt: `${exec} prettier --write .`,
-    ...(packVerbs.konsistent !== undefined
-      ? { konsistent: derivedPinnedRun(packVerbs.konsistent, manager) }
-      : {}),
+    // The lockfile is the evidence for the manager itself; each verb keeps
+    // the pack's own gate so a repo without a tsconfig or prettier still does
+    // not get a recipe naming them.
+    lint: packVerbs.lint && { ...packVerbs.lint, command: checkFast, evidence: `${packVerbs.lint.evidence ?? "declared"}, run through ${manager}` },
+    test: packVerbs.test && { ...packVerbs.test, command: test, evidence: `${manager} provides the test script` },
+    fmt: packVerbs.fmt && { ...packVerbs.fmt, command: `${exec} prettier --write .`, evidence: `${packVerbs.fmt.evidence ?? "declared"}, run through ${manager}` }
   };
 }
 

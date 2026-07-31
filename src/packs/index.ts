@@ -175,8 +175,6 @@ export function resolvePack(id: string): ResolvedPack {
     skills: dedupe([...parent.skills, ...pack.skills]),
     hooks: dedupe([...parent.hooks, ...pack.hooks]),
     toolPolicyRules: mergeToolPolicyRules(parent.toolPolicyRules, pack.toolPolicyRules ?? []),
-    konsistentTemplate: pack.konsistentTemplate ?? parent.konsistentTemplate,
-    konsistentTool: pack.konsistentTool ?? parent.konsistentTool,
     verbs: {
       ...parent.verbs,
       ...pack.verbs

@@ -6,10 +6,24 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { codexHookEvent, createRenderPlan, getFarrierVersion, writeRenderPlan } from "../src/engine/render";
 import { resolvePack } from "../src/packs/index";
+import { seedToolingEvidence } from "./fixtures/toolchain-evidence";
 import type { ResolvedPack } from "../src/packs/types";
 
-async function tempDir(): Promise<string> {
+async function bareTempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-render-"));
+}
+
+/**
+ * Verbs are evidence-gated, so a fixture that expects lint/test/format recipes
+ * has to look like a repository that adopted those tools. These render tests
+ * pass their pack explicitly and never exercise detection, so one directory
+ * safely carries the evidence for every family. Use `bareTempDir` for the
+ * no-evidence path.
+ */
+async function tempDir(): Promise<string> {
+  const dir = await bareTempDir();
+  await seedToolingEvidence(dir, "all");
+  return dir;
 }
 
 const defaultHooks = ["secret-shield", "tool-policy", "write-guard", "verb-runner"] as const;
@@ -62,18 +76,13 @@ const pythonFastapiInventory = [
   ".claude/settings.json",
   ...defaultHookFiles,
   "justfile",
-  "konpy.json",
   ".farrier.json",
   ".gitignore"
 ];
 
-// ts-react-vite renders the same inventory as python-fastapi except the
-// structure-check config is konsistent.json (npm konsistent) instead of konpy.json.
-const tsReactViteInventory = pythonFastapiInventory.map((path) =>
-  path === "konpy.json" ? "konsistent.json" : path
-);
+const tsReactViteInventory = pythonFastapiInventory;
 
-const railsInventory = pythonFastapiInventory.filter((path) => path !== "konpy.json");
+const railsInventory = pythonFastapiInventory;
 
 const genericInventory = [
   "AGENTS.md",
@@ -112,8 +121,33 @@ describe("render engine", () => {
       // Hook self-tests are farrier's own suite; they run under doctor, never
       // inside the project gate.
       expect(justfile).not.toContain("pytest .farrier/hooks");
-      if (pack.verbs.konsistent) {
-        expect(justfile).toMatch(new RegExp(`^${pack.konsistentTool ?? "konsistent"}:`, "m"));
+    }
+  });
+
+  // The generated harness must run for anyone who installs farrier, so a pack
+  // may only name commands the target repository resolves on its own. Two ways
+  // that broke before: an absolute path off the author's machine, and an extra
+  // gate recipe wired to a package the project never declares. The recipe set
+  // is asserted exactly, so adding either fails here rather than in a user's
+  // unpassable Stop gate.
+  test("no pack writes an author-machine path or an undeclared gate into a harness", async () => {
+    const packIds = [
+      "generic", "python-uv", "python-fastapi", "python-lambda-powertools",
+      "ts-base", "ts-react-vite", "ts-nextjs", "ts-lambda", "rails"
+    ];
+    for (const packId of packIds) {
+      const pack = resolvePack(packId);
+      const plan = await createRenderPlan({ targetDir: await tempDir(), pack });
+
+      const justfile = plan.files.find((file) => file.path === "justfile")!.content;
+      const recipes = Array.from(justfile.matchAll(/^([a-z][a-z0-9_-]*)(?:\s+[^:\n]*)?:/gm), (match) => match[1]);
+      expect(recipes).toEqual(["check-fast", "check-full", "check", "test", "fmt"]);
+
+      for (const file of plan.files) {
+        // Hook self-tests carry deliberate absolute fixture paths
+        // ("/home/me/.ssh/id_ed25519"); they are payloads, never commands.
+        if (file.path.includes("/test_")) continue;
+        expect(file.content).not.toMatch(/(?:^|[^\w])(?:\/Users\/|\/home\/|[A-Z]:\\Users\\)/m);
       }
     }
   });
@@ -125,7 +159,7 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(pythonFastapiInventory);
-    expect(plan.files).toHaveLength(19);
+    expect(plan.files).toHaveLength(18);
   });
 
   test("default plan emits no advisor skill trees, judge scripts, or judge prompts", async () => {
@@ -226,18 +260,18 @@ describe("render engine", () => {
     expect(agents).toContain("# Project Agent Instructions");
     expect(agents).toContain("## Commands");
     expect(agents).toContain("## Hard Rules");
-    expect(agents).toContain("- Konpy: `uv run --with /Users/ivor/src/tries/2026-07-02-konsistent-python konpy check`");
     expect(agents).toContain("tracked examples such as `.env.example` are allowed");
     expect(agents).toContain("Use `uv` for Python dependency and command execution");
     expect(agents).toContain("Do not use `pip install`, `pip3 install`, or `python -m pip`");
     expect(agents).toContain("Run Python scripts through `uv run python ...`");
     expect(agents).toContain("lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`");
-    expect(agents).toContain("`just check-full` and `just konpy` when you stop");
+    expect(agents).toContain("`just check-full` when you stop");
     expect(agents).toContain("quality.maxFileLines");
     expect(agents).not.toContain("LLM semantic judge hooks");
-    expect(agents).toContain("## Accepted Risks");
-    expect(agents).toContain("/Users/ivor/src/tries/2026-07-02-konsistent-python");
-    expect(agents).toContain("git dependency, then PyPI");
+    // No pack may write a machine-local path or an unpublished tool into a
+    // generated harness: it is unrunnable for every other user.
+    expect(agents).not.toContain("## Accepted Risks");
+    expect(agents).not.toContain("/Users/ivor/src/tries");
   });
 
   test("omits uv rules when the repository has no uv.lock evidence", async () => {
@@ -430,7 +464,6 @@ describe("render engine", () => {
       ".farrier/hooks/test_secret_shield.py",
       ".farrier/hooks/test_hook_contract.py",
       "justfile",
-      "konpy.json",
       ".farrier.json",
       ".gitignore"
     ]);
@@ -762,28 +795,6 @@ describe("render engine", () => {
     expect(manifest.farrierVersion).toBe(await getFarrierVersion());
   });
 
-  test("renders real konpy v1 grammar with templated package name", async () => {
-    const dir = join(await tempDir(), "My FastAPI App");
-    const pack = resolvePack("python-fastapi");
-    const plan = await createRenderPlan({ targetDir: dir, pack });
-
-    const file = plan.files.find((item) => item.path === "konpy.json");
-    expect(file).toBeDefined();
-
-    const konsistent = JSON.parse(file!.content);
-
-    expect(konsistent.version).toBe("v1");
-    expect(konsistent.conventions).toHaveLength(2);
-    expect(konsistent.conventions[0].paths).toEqual(["src/my_fastapi_app"]);
-    expect(konsistent.conventions[0].must).toEqual({
-      haveType: "directory",
-      haveFiles: ["__init__.py"]
-    });
-    expect(konsistent.conventions[1].mustNot).toEqual({
-      importFrom: "my_fastapi_app.api"
-    });
-  });
-
   test("renders ts-react-vite full inventory with evidence-gated TypeScript rules", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "bun.lock"), "", "utf8");
@@ -791,15 +802,13 @@ describe("render engine", () => {
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(tsReactViteInventory);
-    expect(plan.files).toHaveLength(19);
+    expect(plan.files).toHaveLength(18);
 
     const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";
     expect(agents).toContain("Use Bun for TypeScript package and script execution");
     expect(agents).toContain("Do not use `npx`; use `bunx` or `pnpm dlx` instead");
     expect(agents).toContain("Keep React components small and focused");
-    expect(agents).toContain("- Konsistent: `bunx konsistent@1.0.0-beta.1 check`");
-    expect(agents).not.toContain("Python konsistent currently uses a local path dependency");
-    expect(agents).not.toContain("/Users/ivor/src/tries/2026-07-02-konsistent-python");
+    expect(agents).not.toContain("/Users/ivor/src/tries");
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
     expect(justfile).toContain("check-fast *tests:\n  bunx tsc --noEmit\n  [ -z \"{{tests}}\" ] || bun test {{tests}}");
@@ -807,23 +816,7 @@ describe("render engine", () => {
     expect(justfile).toContain("check: check-full");
     expect(justfile).toContain("test:\n  bun test");
     expect(justfile).toContain("fmt:\n  bunx prettier --write .");
-    expect(justfile).toContain("konsistent:\n  bunx konsistent@1.0.0-beta.1 check");
     expect(justfile).not.toContain("Temporary local path dependency");
-
-    const konsistent = JSON.parse(plan.files.find((file) => file.path === "konsistent.json")!.content);
-    expect(konsistent).toEqual({
-      version: "v1",
-      conventions: [
-        {
-          name: "src-directory-exists",
-          description: "TypeScript application code lives under src.",
-          paths: "src",
-          must: {
-            haveType: "directory"
-          }
-        }
-      ]
-    });
 
     const rulesFile = plan.files.find((file) => file.path === ".farrier/hooks/tool-policy-rules.json");
     const rules = JSON.parse(rulesFile!.content);
@@ -841,29 +834,25 @@ describe("render engine", () => {
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
-  test("renders rails without konsistent artifacts while retaining deterministic hooks", async () => {
+  test("renders rails while retaining deterministic hooks", async () => {
     const dir = await tempDir();
     const pack = resolvePack("rails");
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(railsInventory);
     expect(plan.files).toHaveLength(18);
-    expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
     expect(justfile).toContain("check-fast *tests:\n  bundle exec rubocop\n  [ -z \"{{tests}}\" ] || bundle exec rails test {{tests}}");
-    expect(justfile).toContain("check-full:\n  bundle exec rails test && bundle exec rubocop");
+    expect(justfile).toContain("check-full:\n  bundle exec rubocop && bundle exec rails test");
     expect(justfile).toContain("test:\n  bundle exec rails test");
     expect(justfile).toContain("fmt:\n  bundle exec rubocop -A");
-    expect(justfile).not.toContain("konsistent:");
 
     const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";
     expect(agents).toContain("Use `bundle exec` for Rails and Ruby project commands");
     expect(agents).toContain("Prefer Rails generators and framework conventions");
     expect(agents).not.toContain("- Konsistent:");
-    expect(agents).not.toContain("Run `just konsistent` before stopping");
     expect(agents).not.toContain("## Accepted Risks");
-    expect(agents).not.toContain("Python konsistent currently uses a local path dependency");
 
     const settings = JSON.parse(plan.files.find((file) => file.path === ".claude/settings.json")!.content);
     expect(settings.hooks.Stop.map((entry: { hooks: { command: string }[] }) => entry.hooks[0].command)).toEqual([
@@ -883,23 +872,21 @@ describe("render engine", () => {
     expect(manifest.secondaryAcknowledged).toEqual([]);
   });
 
-  test("renders generic minimal inventory without konsistent or Stop hooks", async () => {
+  test("renders generic minimal inventory without Stop hooks", async () => {
     const dir = await tempDir();
     const pack = resolvePack("generic");
     const plan = await createRenderPlan({ targetDir: dir, pack });
 
     expect(plan.files.map((file) => file.path)).toEqual(genericInventory);
     expect(plan.files).toHaveLength(16);
-    expect(plan.files.some((file) => file.path === "konsistent.json")).toBe(false);
     expect(plan.files.some((file) => file.path.includes("verb-runner.py"))).toBe(false);
     expect(plan.files.some((file) => file.path.includes("stop-judge.py"))).toBe(false);
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
-    expect(justfile).toContain('check-full:\n  echo "farrier generic pack: configure check in justfile"');
+    expect(justfile).toContain('check-full:\n  echo "farrier generic pack: configure check-fast in justfile" && echo "farrier generic pack: configure test in justfile"');
     expect(justfile).toContain('check-fast *tests:\n  echo "farrier generic pack: configure check-fast in justfile"');
     expect(justfile).toContain('test:\n  echo "farrier generic pack: configure test in justfile"');
     expect(justfile).toContain('fmt:\n  echo "farrier generic pack: configure fmt in justfile"');
-    expect(justfile).not.toContain("konsistent:");
 
     const agents = plan.files.find((file) => file.path === "AGENTS.md")?.content ?? "";
     expect(agents).toContain("Replace placeholder justfile commands with real project commands");

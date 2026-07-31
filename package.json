@@ -40,8 +40,7 @@
     "test": "bun test --max-concurrency=1",
     "typecheck": "tsc --noEmit",
     "test:hooks": "uvx pytest src/templates/hooks",
-    "check": "bun test --max-concurrency=1 && tsc --noEmit && uvx pytest src/templates/hooks",
-    "konsistent": "konsistent check --error-on-warnings"
+    "check": "bun test --max-concurrency=1 && tsc --noEmit && uvx pytest src/templates/hooks"
   },
   "dependencies": {
     "@opentui/core": "0.4.2",
@@ -53,7 +52,6 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19",
-    "konsistent": "^1.0.0-beta.1",
     "typescript": "latest"
   }
 }

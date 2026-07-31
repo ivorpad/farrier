@@ -1,4 +1,27 @@
-import type { Pack } from "./types";
+import type { Pack, PackVerbs } from "./types";
+
+/**
+ * Shared by every ts pack. tsc is gated on a tsconfig and prettier on the
+ * devDependency that provides it; `bun test` needs no evidence because the
+ * runtime ships the runner. Without a tsconfig there is no typecheck gate
+ * rather than a `bunx tsc` that downloads a compiler and fails on no inputs.
+ */
+export const tsBaseVerbs: PackVerbs = {
+  lint: {
+    command: "bunx tsc --noEmit",
+    when: { anyFiles: ["tsconfig.json", "tsconfig.base.json"] },
+    evidence: "tsconfig.json exists"
+  },
+  test: {
+    command: "bun test",
+    evidence: "bun ships the test runner"
+  },
+  fmt: {
+    command: "bunx prettier --write .",
+    when: { packageJsonAnyDependencies: ["prettier"] },
+    evidence: "prettier is a package.json dependency"
+  }
+};
 
 export const tsBasePack: Pack = {
   id: "ts-base",
@@ -44,26 +67,7 @@ export const tsBasePack: Pack = {
       ]
     }
   ],
-  konsistentTemplate: {
-    version: "v1",
-    conventions: [
-      {
-        name: "src-directory-exists",
-        description: "TypeScript application code lives under src.",
-        paths: "src",
-        must: {
-          haveType: "directory"
-        }
-      }
-    ]
-  },
-  verbs: {
-    check: "bunx tsc --noEmit && bun test",
-    checkFast: "bunx tsc --noEmit",
-    test: "bun test",
-    fmt: "bunx prettier --write .",
-    konsistent: "bunx konsistent@1.0.0-beta.1 check"
-  },
+  verbs: tsBaseVerbs,
   agentsRules: [
     "Keep application code under `src/` unless the framework requires another location."
   ]

@@ -1,8 +1,8 @@
 import type {
-  KonsistentTemplate,
   PackDetect,
   PackPlaybook,
   PackSubagent,
+  PackVerb,
   PackVerbs,
   PlaybookGateCheck,
   PlaybookGateCheckRule,
@@ -39,8 +39,6 @@ export type RegistryPackPayload = {
   skills: string[];
   hooks: string[];
   toolPolicyRules?: ToolPolicyRule[];
-  konsistentTemplate?: KonsistentTemplate;
-  konsistentTool?: string;
   verbs?: PackVerbs;
   agentsRules?: string[];
   secondaryDetectors?: SecondaryDetector[];
@@ -244,14 +242,39 @@ function validateVerbs(value: unknown, path: string): PackVerbs | undefined {
     fail(path, "must be an object");
   }
 
+  // Two accepted shapes. The gated form ({lint,test,fmt} with per-verb
+  // evidence) is current; the flat string form is what packs published before
+  // verbs were gated, and it maps to unconditional verbs so those packs keep
+  // resolving. A remote pack cannot silently gain a gate it did not declare.
+  if (value.lint !== undefined || isRecord(value.test) || isRecord(value.fmt)) {
+    return {
+      lint: validateVerb(value.lint, `${path}.lint`),
+      test: validateVerb(value.test, `${path}.test`),
+      fmt: validateVerb(value.fmt, `${path}.fmt`)
+    };
+  }
+
+  const checkFast = optionalStringField(value.checkFast, `${path}.checkFast`) ?? stringField(value.check, `${path}.check`);
   return {
-    check: stringField(value.check, `${path}.check`),
-    // Remote packs may predate the fast gate; falling back to the full check
-    // keeps them correct (check-fast at worst runs the full suite).
-    checkFast: optionalStringField(value.checkFast, `${path}.checkFast`) ?? stringField(value.check, `${path}.check`),
-    test: stringField(value.test, `${path}.test`),
-    fmt: stringField(value.fmt, `${path}.fmt`),
-    konsistent: optionalStringField(value.konsistent, `${path}.konsistent`)
+    lint: { command: checkFast, evidence: "declared by a remote pack without evidence" },
+    test: { command: stringField(value.test, `${path}.test`), evidence: "declared by a remote pack without evidence" },
+    fmt: { command: stringField(value.fmt, `${path}.fmt`), evidence: "declared by a remote pack without evidence" }
+  };
+}
+
+function validateVerb(value: unknown, path: string): PackVerb | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    fail(path, "must be an object");
+  }
+
+  return {
+    command: stringField(value.command, `${path}.command`),
+    ...(value.when === undefined ? {} : { when: validateDetect(value.when, `${path}.when`) }),
+    ...(value.evidence === undefined ? {} : { evidence: stringField(value.evidence, `${path}.evidence`) })
   };
 }
 
@@ -413,58 +436,6 @@ function validatePlaybook(value: unknown, path: string): PackPlaybook | undefine
   };
 }
 
-function validateKonsistentTemplate(value: unknown, path: string): KonsistentTemplate | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (!isRecord(value)) {
-    fail(path, "must be an object");
-  }
-
-  if (value.version !== "v1") {
-    fail(`${path}.version`, 'must be "v1"');
-  }
-
-  if (!Array.isArray(value.conventions)) {
-    fail(`${path}.conventions`, "must be an array");
-  }
-
-  const conventions = value.conventions.map((convention, index) => {
-    const conventionPath = `${path}.conventions.${index}`;
-    if (!isRecord(convention)) {
-      fail(conventionPath, "must be an object");
-    }
-
-    const paths = convention.paths;
-    if (typeof paths !== "string" && !(Array.isArray(paths) && paths.every((item) => typeof item === "string"))) {
-      fail(`${conventionPath}.paths`, "must be a string or string array");
-    }
-
-    const hasMust = convention.must !== undefined;
-    const hasMustNot = convention.mustNot !== undefined;
-    if (hasMust === hasMustNot) {
-      fail(conventionPath, "must have exactly one of must or mustNot");
-    }
-    const predicate = hasMust ? convention.must : convention.mustNot;
-    if (!isRecord(predicate)) {
-      fail(`${conventionPath}.${hasMust ? "must" : "mustNot"}`, "must be an object");
-    }
-
-    return {
-      name: stringField(convention.name, `${conventionPath}.name`),
-      description: stringField(convention.description, `${conventionPath}.description`),
-      paths: typeof paths === "string" ? paths : [...paths],
-      ...(convention.excludeFiles === undefined
-        ? {}
-        : { excludeFiles: stringArray(convention.excludeFiles, `${conventionPath}.excludeFiles`) }),
-      ...(hasMust ? { must: predicate } : { mustNot: predicate })
-    };
-  });
-
-  return { version: "v1", conventions: conventions as KonsistentTemplate["conventions"] };
-}
-
 function validatePackItem(record: Record<string, unknown>, base: Omit<RegistryPackItem, "pack" | "type">): RegistryPackItem {
   if (!isRecord(record.pack)) {
     fail("pack", "must be an object");
@@ -490,8 +461,6 @@ function validatePackItem(record: Record<string, unknown>, base: Omit<RegistryPa
       skills: stringArray(record.pack.skills, "pack.skills"),
       hooks: stringArray(record.pack.hooks, "pack.hooks"),
       toolPolicyRules: validateToolPolicyRules(record.pack.toolPolicyRules, "pack.toolPolicyRules"),
-      konsistentTemplate: validateKonsistentTemplate(record.pack.konsistentTemplate, "pack.konsistentTemplate"),
-      konsistentTool: optionalStringField(record.pack.konsistentTool, "pack.konsistentTool"),
       verbs,
       agentsRules: stringArray(record.pack.agentsRules, "pack.agentsRules"),
       secondaryDetectors: validateSecondaryDetectors(record.pack.secondaryDetectors, "pack.secondaryDetectors"),

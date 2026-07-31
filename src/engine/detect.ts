@@ -14,7 +14,7 @@ type PackageJsonSignals = {
   devDependencies: Set<string>;
 };
 
-type ProjectSignals = {
+export type ProjectSignals = {
   existingFiles: Set<string>;
   allRelativeFiles: string[];
   pyprojectText?: string;
@@ -39,7 +39,7 @@ const ignoredWalkDirectories = new Set([".git", ".venv", "node_modules", "vendor
 const maxGlobEvidencePaths = 20;
 const maxDetectionReadBytes = 320_000;
 
-type RepositoryInput = string | ContainedRepository;
+export type RepositoryInput = string | ContainedRepository;
 
 async function repositoryFor(input: RepositoryInput): Promise<ContainedRepository> {
   return typeof input === "string" ? openContainedRepository(input) : input;
@@ -66,7 +66,7 @@ function addRequirements(requirements: DetectRequirements, detect: PackDetect): 
     requirements.globs.add(normalizeRelativePath(glob));
   }
 
-  if ((detect.pyprojectDependencies ?? []).length > 0) {
+  if ((detect.pyprojectDependencies ?? []).length > 0 || (detect.pyprojectTables ?? []).length > 0) {
     requirements.needsPyproject = true;
     requirements.files.add("pyproject.toml");
   }
@@ -154,7 +154,7 @@ async function walkProject(repository: ContainedRepository, prefix = ""): Promis
   return paths;
 }
 
-async function scanProject(input: RepositoryInput, detects: PackDetect[]): Promise<ProjectSignals> {
+export async function scanProject(input: RepositoryInput, detects: PackDetect[]): Promise<ProjectSignals> {
   const repository = await repositoryFor(input);
   const requirements = collectRequirements(detects);
   const reads = new Map<string, ContainedReadResult>();
@@ -188,6 +188,21 @@ function containsPyprojectDependency(pyprojectText: string | undefined, dependen
 
   const escaped = escapeRegExp(dependency);
   const pattern = new RegExp(`(^|["'\\s,\\[])(?:${escaped})(?:\\[[A-Za-z0-9_,.-]+\\])?(?=\\s*(?:[<>=!~]=|=|;)|["'\\s,\\]])`, "im");
+
+  return pattern.test(pyprojectText);
+}
+
+/**
+ * Matches a TOML table header, so "tool.ruff" matches `[tool.ruff]` and its
+ * subtables (`[tool.ruff.lint]`) but never a dependency string that happens to
+ * contain the name.
+ */
+function containsPyprojectTable(pyprojectText: string | undefined, table: string): boolean {
+  if (pyprojectText === undefined) {
+    return false;
+  }
+
+  const pattern = new RegExp(`^\\s*\\[\\s*${escapeRegExp(table)}(?:\\.[A-Za-z0-9_.-]+)?\\s*\\]`, "im");
 
   return pattern.test(pyprojectText);
 }
@@ -236,8 +251,16 @@ function globToRegExp(glob: string): RegExp {
 
     if (char === "*") {
       if (normalized[i + 1] === "*") {
-        pattern += ".*";
-        i += 1;
+        // `**/` spans zero or more path segments, so "tests/**/*.py" matches
+        // "tests/a.py" as well as "tests/unit/a.py". Requiring at least one
+        // segment silently missed every flat directory.
+        if (normalized[i + 2] === "/") {
+          pattern += "(?:[^/]*/)*";
+          i += 2;
+        } else {
+          pattern += ".*";
+          i += 1;
+        }
       } else {
         pattern += "[^/]*";
       }
@@ -271,7 +294,7 @@ function appendUnique(target: string[], values: string[]): void {
   }
 }
 
-function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetect): string[] | undefined {
+export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetect): string[] | undefined {
   const evidence: string[] = [];
 
   for (const file of detect.files ?? []) {
@@ -308,6 +331,14 @@ function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetect): str
     }
 
     appendUnique(evidence, [`pyproject.toml dependency: ${dependency}`]);
+  }
+
+  for (const table of detect.pyprojectTables ?? []) {
+    if (!containsPyprojectTable(signals.pyprojectText, table)) {
+      return undefined;
+    }
+
+    appendUnique(evidence, [`pyproject.toml [${table}]`]);
   }
 
   for (const dependency of detect.packageJsonDependencies ?? []) {

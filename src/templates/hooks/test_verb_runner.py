@@ -170,93 +170,8 @@ def test_command_output_overflow_terminates_process_and_emits_bounded_redacted_f
     assert len(data.encode("utf-8")) <= 16 * 1024 + 64
 
 
-def test_stop_runs_konsistent_and_blocks_on_failure(tmp_path: Path) -> None:
-    write_justfile(
-        tmp_path,
-        """check:
-  echo check
-
-konsistent:
-  echo konsistent
-""",
-    )
-
-    code, stdout, stderr = run_hook(
-        stop_payload(tmp_path),
-        tmp_path,
-        'test "$1" = "check-full" && exit 0\ntest "$1" = "konsistent" || exit 7\necho "drift found"\nexit 1',
-    )
-
-    assert code == 0
-    assert stderr == ""
-    data = json.loads(stdout)
-    assert data["decision"] == "block"
-    assert "konsistent check failed" in data["reason"]
-    assert "drift found" in data["reason"]
-
-
-def test_stop_runs_konpy_and_blocks_on_failure(tmp_path: Path) -> None:
-    write_justfile(
-        tmp_path,
-        """check:
-  echo check
-
-konpy:
-  echo konpy
-""",
-    )
-
-    code, stdout, stderr = run_hook(
-        stop_payload(tmp_path),
-        tmp_path,
-        'test "$1" = "check-full" && exit 0\ntest "$1" = "konpy" || exit 7\necho "drift found"\nexit 1',
-    )
-
-    assert code == 0
-    assert stderr == ""
-    data = json.loads(stdout)
-    assert data["decision"] == "block"
-    assert "konpy check failed" in data["reason"]
-    assert "drift found" in data["reason"]
-
-
-def test_stop_skips_structure_check_when_pack_ships_no_recipe(tmp_path: Path) -> None:
-    # Packs without a structure linter (rails) generate no konpy/konsistent
-    # recipe; the Stop gate must not demand one (2026-07-21 round 2: it
-    # blocked every rails stop). Drift detection belongs to doctor/update.
-    write_justfile(
-        tmp_path,
-        """check:
-  echo check
-
-test:
-  echo test
-
-fmt:
-  echo fmt
-""",
-    )
-
-    code, stdout, stderr = run_hook(
-        stop_payload(tmp_path),
-        tmp_path,
-        'test "$1" = "check-full" && exit 0\necho "structure should not have been called"\nexit 9',
-    )
-
-    assert code == 0
-    assert stderr == ""
-    assert stdout == ""
-    events = (tmp_path / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
-    assert "skipped-no-structure-recipe" in events
-
-
 def test_stop_hook_active_prevents_recursive_block(tmp_path: Path) -> None:
-    write_justfile(
-        tmp_path,
-        """konsistent:
-  echo konsistent
-""",
-    )
+    write_justfile(tmp_path, "check-full:\n  echo full\n")
 
     code, stdout, stderr = run_hook(
         stop_payload(tmp_path, active=True),
@@ -399,31 +314,8 @@ def test_safe_text_read_rejects_changed_fingerprint(tmp_path: Path, monkeypatch)
     assert error == "changed identity or contents while being read"
 
 
-def test_oversized_and_symlink_justfiles_block_recipe_discovery(tmp_path: Path) -> None:
-    outside = tmp_path / "outside"
-    outside.write_text("konsistent:\n  echo unsafe\n", encoding="utf-8")
-    for name in ("oversized", "symlink"):
-        case_dir = tmp_path / name
-        case_dir.mkdir()
-        justfile = case_dir / "justfile"
-        if name == "oversized":
-            justfile.write_text("x" * (257 * 1024), encoding="utf-8")
-        else:
-            justfile.symlink_to(outside)
-        code, stdout, stderr = run_hook(
-            stop_payload(case_dir), case_dir, 'test "$1" = "check-full" && exit 0\nexit 9'
-        )
-        assert code == 0
-        assert stderr == ""
-        data = json.loads(stdout)
-        assert data["decision"] == "block"
-        assert "safely discover" in data["reason"]
-
 STRUCTURE_OK_JUSTFILE = """check-full:
   echo full
-
-konsistent:
-  echo konsistent
 """
 
 
@@ -614,3 +506,20 @@ def test_redaction_patterns_cover_provider_credentials_and_spare_ordinary_text()
     )
     for text in untouched:
         assert module.redact_text(text) == text, text
+
+
+def test_stop_skips_when_the_harness_generates_no_gate(tmp_path: Path) -> None:
+    # An evidence-gated harness on a repository with no linter and no test
+    # runner has no check-full recipe. Demanding one would block every stop on
+    # exactly those projects.
+    write_justfile(tmp_path, "fmt:\n  echo fmt\n")
+
+    code, stdout, stderr = run_hook(
+        stop_payload(tmp_path), tmp_path, 'echo "gate should not have run"\nexit 9'
+    )
+
+    assert code == 0
+    assert stdout == ""
+    assert stderr == ""
+    events = (tmp_path / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")
+    assert "skipped-no-recipe" in events

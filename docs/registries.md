@@ -128,7 +128,7 @@ Pack ids are derived from the namespace and item name. A pack item named `demo` 
 }
 ```
 
-The `pack` object uses the same JSON-serializable fields as built-in packs: `extends`, `detect`, `generator`, `skills`, `hooks`, `toolPolicyRules`, `konsistentTemplate`, `konsistentTool`, `verbs`, `agentsRules`, and `secondaryDetectors`. `verbs` is required when the pack does not extend another pack. `konsistentTool` names the structure-linting tool (e.g. `"konpy"` for Python, defaults to `"konsistent"`); it drives the rendered config filename, justfile recipe name, and AGENTS.md label. `generator` documents the native scaffolding command associated with the pack. The creation plan surfaces its command and source as `declared-not-run`; Farrier never executes it, so users and automation retain control over project-code generation.
+The `pack` object uses the same JSON-serializable fields as built-in packs: `extends`, `detect`, `generator`, `skills`, `hooks`, `toolPolicyRules`, `verbs`, `agentsRules`, and `secondaryDetectors`. `verbs` is required when the pack does not extend another pack. A pack may only name commands the target repository can resolve on its own; an absolute path or an unpublished package makes the generated gate unrunnable for everyone but its author, and Farrier rejects neither at fetch time. `generator` documents the native scaffolding command associated with the pack. The creation plan surfaces its command and source as `declared-not-run`; Farrier never executes it, so users and automation retain control over project-code generation.
 
 Remote `extends` may reference built-in packs or other registry packs, including another namespace. Farrier rejects extends cycles.
 

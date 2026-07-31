@@ -1,4 +1,5 @@
 import type { Pack } from "./types";
+import { tsBaseVerbs } from "./ts-base";
 
 export const tsNextjsPack: Pack = {
   id: "ts-nextjs",
@@ -13,13 +14,7 @@ export const tsNextjsPack: Pack = {
   },
   skills: [],
   hooks: [],
-  verbs: {
-    check: "bunx tsc --noEmit && bun test",
-    checkFast: "bunx tsc --noEmit",
-    test: "bun test",
-    fmt: "bunx prettier --write .",
-    konsistent: "bunx konsistent@1.0.0-beta.1 check"
-  },
+  verbs: tsBaseVerbs,
   agentsRules: [
     "Prefer Next.js conventions over custom routing or build abstractions.",
     "Keep server and client component boundaries explicit.",

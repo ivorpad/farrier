@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join, posix } from "node:path";
 import type { ResolvedPack, ToolPolicyRule } from "../packs/types";
 import type { EnforcementAgent } from "./agent-selection";
+import { declaredVerbs } from "./verbs";
 import {
   advisorSkillFiles,
   hooksDirectory,
@@ -214,6 +215,15 @@ function withoutFarrierLintExclusion(content: string): string {
   return content.replaceAll(" --extend-exclude .farrier", "");
 }
 
+/**
+ * A harness generated before structure linting was dropped carries one extra
+ * trailing recipe that nothing reconstructs, so update no longer recognizes
+ * its justfile as its own output and reports it for manual review instead of
+ * repairing it. That is the safe degradation: the recipe is inert (the Stop
+ * gate does not invoke it), and stripping any unrecognized trailing recipe
+ * would let update overwrite a justfile the user had legitimately extended.
+ */
+
 const builtinHookIds = new Set(["secret-shield", "tool-policy", "write-guard", "verb-runner", "quality-judge", "stop-judge"]);
 
 /**
@@ -223,23 +233,17 @@ const builtinHookIds = new Set(["secret-shield", "tool-policy", "write-guard", "
  */
 function legacyJustfile(pack: ResolvedPack): string {
   const hookCheck = pack.hooks.some((hook) => builtinHookIds.has(hook)) ? ` && uv run --with pytest pytest ${legacyHooksDirectory}` : "";
+  // Those releases rendered every declared verb, so the reconstruction must
+  // too, regardless of what today's evidence gate would keep.
+  const verbs = declaredVerbs(pack.verbs);
   const recipes = [
     `check:
-  ${pack.verbs.check}${hookCheck}`,
+  ${verbs.check}${hookCheck}`,
     `test:
-  ${pack.verbs.test}`,
+  ${verbs.test}`,
     `fmt:
-  ${pack.verbs.fmt}`
+  ${verbs.fmt}`
   ];
-
-  if (pack.verbs.konsistent) {
-    const comment = pack.packIds.includes("python-uv")
-      ? "  # Temporary local path dependency; upgrade path: git dependency, then PyPI.\n"
-      : "";
-
-    recipes.push(`${pack.konsistentTool ?? "konsistent"}:
-${comment}  ${pack.verbs.konsistent}`);
-  }
 
   return `${recipes.join("\n\n")}\n`;
 }
@@ -328,7 +332,7 @@ async function classifyGeneratedSingletons(
       // Current layout rendered from the pack's default verbs, before
       // toolchain resolution derived manager-native verbs from the lockfile
       // (e.g. bun verbs generated on a pnpm repo).
-      renderJustfile(pack),
+      renderJustfile(declaredVerbs(pack.verbs)),
       // Current layout rendered before the ruff exclusion existed.
       justfile.content
     ];

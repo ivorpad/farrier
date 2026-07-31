@@ -35,10 +35,21 @@ export const railsPack: Pack = {
     }
   ],
   verbs: {
-    check: "bundle exec rails test && bundle exec rubocop",
-    checkFast: "bundle exec rubocop",
-    test: "bundle exec rails test",
-    fmt: "bundle exec rubocop -A"
+    lint: {
+      command: "bundle exec rubocop",
+      when: { gemfileGems: ["rubocop"] },
+      evidence: "rubocop is in the Gemfile"
+    },
+    test: {
+      command: "bundle exec rails test",
+      when: { gemfileGems: ["rails"] },
+      evidence: "rails is in the Gemfile"
+    },
+    fmt: {
+      command: "bundle exec rubocop -A",
+      when: { gemfileGems: ["rubocop"] },
+      evidence: "rubocop is in the Gemfile"
+    }
   },
   agentsRules: [
     "Use `bundle exec` for Rails and Ruby project commands.",

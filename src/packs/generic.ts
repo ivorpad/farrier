@@ -7,10 +7,18 @@ export const genericPack: Pack = {
   hooks: ["secret-shield", "tool-policy", "write-guard"],
   toolPolicyRules: [],
   verbs: {
-    check: 'echo "farrier generic pack: configure check in justfile"',
-    checkFast: 'echo "farrier generic pack: configure check-fast in justfile"',
-    test: 'echo "farrier generic pack: configure test in justfile"',
-    fmt: 'echo "farrier generic pack: configure fmt in justfile"'
+    lint: {
+      command: 'echo "farrier generic pack: configure check-fast in justfile"',
+      evidence: "explicit generic pack placeholder"
+    },
+    test: {
+      command: 'echo "farrier generic pack: configure test in justfile"',
+      evidence: "explicit generic pack placeholder"
+    },
+    fmt: {
+      command: 'echo "farrier generic pack: configure fmt in justfile"',
+      evidence: "explicit generic pack placeholder"
+    }
   },
   agentsRules: [
     "Replace placeholder justfile commands with real project commands before relying on this harness.",

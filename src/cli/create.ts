@@ -3,6 +3,7 @@ import { applyHarnessChangePlan, HarnessApplyError, inspectHarnessChangePlan, ty
 import { detectPacksWithEvidence, type DetectedPackEvidence, type EvaluatedPackRules } from "../engine/detect";
 import { formatAgents, parseAgents, type EnforcementAgent } from "../engine/agent-selection";
 import { agentsHardRules, createRenderPlan } from "../engine/render";
+import type { VerbResolution } from "../engine/verbs";
 import type { ToolchainResolution } from "../engine/toolchain";
 import { installSkills, type InstallSkillResult } from "../engine/skills";
 import type { ResolvedPack } from "../packs/types";
@@ -249,6 +250,7 @@ type CreationView = {
   catalog: PackCatalog;
   rules?: EvaluatedPackRules;
   toolchain?: ToolchainResolution;
+  verbs?: VerbResolution;
 };
 
 function creationReport(input: CreationView): Record<string, unknown> {
@@ -367,13 +369,22 @@ function printCreationPlan(input: CreationView): void {
   console.log("Harness behavior:");
   console.log(`  - enforcement targets: ${formatAgents(input.options.agents)}`);
   console.log(`  - ${agentsHardRules(input.pack, input.options.agents, input.rules?.agentsRules).length} shared agent rules in AGENTS.md`);
-  console.log(`  - ${input.pack.hooks.length} hook(s): ${input.pack.hooks.join(", ") || "none"}`);
-  const verbs = input.toolchain?.verbs ?? input.pack.verbs;
-  console.log(`  - check: ${verbs.check}`);
-  console.log(`  - test: ${verbs.test}`);
-  console.log(`  - format: ${verbs.fmt}`);
-  if (verbs.konsistent) {
-    console.log(`  - structure: ${verbs.konsistent}`);
+  const boundHooks = input.verbs !== undefined && Object.keys(input.verbs.verbs).length === 0
+    ? input.pack.hooks.filter((hook) => hook !== "verb-runner")
+    : input.pack.hooks;
+  console.log(`  - ${boundHooks.length} hook(s): ${boundHooks.join(", ") || "none"}`);
+  const verbs = input.verbs?.verbs ?? {};
+  if (verbs.check !== undefined) console.log(`  - check: ${verbs.check}`);
+  if (verbs.test !== undefined) console.log(`  - test: ${verbs.test}`);
+  if (verbs.fmt !== undefined) console.log(`  - format: ${verbs.fmt}`);
+  // Say what was left out and why: a silently missing gate reads as a harness
+  // that chose not to verify, rather than a repository with no tool to run.
+  for (const verb of input.verbs?.evaluated ?? []) {
+    if (verb.matched) continue;
+    console.log(`  - ${verb.id}: omitted, no evidence that ${verb.evidence} (\`${verb.command}\`)`);
+  }
+  if (input.verbs !== undefined && Object.keys(verbs).length === 0) {
+    console.log("  - no verification commands: no linter, test runner, or formatter evidence in this repository");
   }
   if (input.toolchain?.packageManager) {
     console.log(`  - toolchain: ${input.toolchain.packageManager} (${input.toolchain.evidence.join(", ")})`);
@@ -500,10 +511,9 @@ async function executeCreate(args: string[], usage: () => string): Promise<numbe
     hookCount: pack.hooks.length,
     skillCount: pack.skills.length,
     ruleCount: agentsHardRules(pack, options.agents, renderPlan.rules?.agentsRules).length,
-    verbs: renderPlan.toolchain?.verbs ?? pack.verbs,
-    konsistentTool: pack.konsistentTool,
+    verbs: renderPlan.verbs?.verbs ?? {},
   });
-  const view = { options, resolved, pack, plan, catalog, rules: renderPlan.rules, toolchain: renderPlan.toolchain };
+  const view = { options, resolved, pack, plan, catalog, rules: renderPlan.rules, toolchain: renderPlan.toolchain, verbs: renderPlan.verbs };
   const report = creationReport(view);
 
   if (options.dryRun) {

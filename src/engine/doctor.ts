@@ -1,6 +1,8 @@
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { createRenderPlan, hooksDirectory, type RenderedFile } from "./render";
+import { createRenderPlan, hooksDirectory, type RenderedFile, type RenderPlan } from "./render";
+import type { PackHookRef } from "../packs/types";
+import type { EvaluatedVerb } from "./verbs";
 import { inventoryOwnership } from "./update";
 import { manifestToInput, readManifest } from "./manifest";
 import { validateToolPolicyRuleProposal } from "./learn";
@@ -16,7 +18,7 @@ export type DoctorGroup =
   | "settings"
   | "codex"
   | "tool-policy"
-  | "konsistent"
+  | "verbs"
   | "learn"
   | "judge"
   | "guards"
@@ -53,7 +55,7 @@ const allGroups: DoctorGroup[] = [
   "settings",
   "codex",
   "tool-policy",
-  "konsistent",
+  "verbs",
   "learn",
   "judge",
   "guards",
@@ -969,68 +971,38 @@ async function addToolPolicyProblems(
   }
 }
 
-async function addKonsistentProblems(
-  targetDir: string,
-  configFile: string | undefined,
-  problems: DoctorProblem[]
-): Promise<void> {
-  if (!configFile) {
-    return;
+/**
+ * Verbs are evidence-gated at render time, so the interesting drift is a gate
+ * that no longer has evidence behind it (the linter was removed from the
+ * project) or a repository that has since grown a tool the harness is not
+ * using. Both are reported, neither is fatal: this reads the plan, it never
+ * runs a project command.
+ */
+function addVerbProblems(
+  expectedPlan: RenderPlan,
+  hookIds: readonly PackHookRef[],
+  problems: DoctorProblem[],
+  notes: string[]
+): void {
+  const resolution = expectedPlan.verbs;
+  if (!resolution) return;
+
+  for (const verb of resolution.evaluated as EvaluatedVerb[]) {
+    if (verb.matched) continue;
+    notes.push(
+      `No ${verb.id} recipe: this repository shows no evidence that ${verb.evidence}, so \`${verb.command}\` is not generated.`
+    );
   }
 
-  const path = join(targetDir, configFile);
+  const gated = resolution.evaluated.some((verb: EvaluatedVerb) => verb.matched);
 
-  if (!(await fileExists(path))) {
+  if (!gated && hookIds.includes("verb-runner")) {
     problems.push({
-      group: "konsistent",
-      severity: "error",
-      path: configFile,
-      message: `Expected ${configFile} is missing`,
-      remediation: `Run farrier update --yes to restore ${configFile}.`
-    });
-    return;
-  }
-
-  const parsed = await readJsonFile(path);
-  if (!parsed.ok) {
-    problems.push({
-      group: "konsistent",
-      severity: "error",
-      path: configFile,
-      message: `Unable to parse ${configFile}: ${parsed.message}`,
-      remediation: `Fix the JSON or restore the generated ${configFile}.`
-    });
-    return;
-  }
-
-  if (!isRecord(parsed.value)) {
-    problems.push({
-      group: "konsistent",
-      severity: "error",
-      path: configFile,
-      message: `${configFile} root must be an object`,
-      remediation: "Restore the generated structure-check v1 shape."
-    });
-    return;
-  }
-
-  if (parsed.value.version !== "v1") {
-    problems.push({
-      group: "konsistent",
-      severity: "error",
-      path: configFile,
-      message: `${configFile} version must be "v1"`,
-      remediation: "Restore the generated structure-check v1 shape."
-    });
-  }
-
-  if (!Array.isArray(parsed.value.conventions)) {
-    problems.push({
-      group: "konsistent",
-      severity: "error",
-      path: configFile,
-      message: `${configFile} conventions must be an array`,
-      remediation: "Restore the generated structure-check v1 shape."
+      group: "verbs",
+      severity: "warning",
+      path: "justfile",
+      message: "verb-runner is installed but no verification recipe has evidence, so every gate would run a recipe that does not exist",
+      remediation: "Run farrier update --yes to drop the binding, or add a linter or test suite and update again."
     });
   }
 }
@@ -1209,13 +1181,7 @@ export async function createDoctorReport(input: { targetDir: string; catalog?: P
   }
 
   await addToolPolicyProblems(targetDir, manifest.hookIds.includes("tool-policy"), problems);
-  const konsistentConfigFile = `${basePack.konsistentTool ?? "konsistent"}.json`;
-  await addKonsistentProblems(
-    targetDir,
-    expectedPlan.files.some((file) => file.path === konsistentConfigFile) ? konsistentConfigFile : undefined,
-    problems
-  );
-
+  addVerbProblems(expectedPlan, manifest.hookIds, problems, notes);
   return reportFor({
     targetDir,
     manifestPath,
