@@ -1,13 +1,13 @@
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import type { CapabilityHookEvent, HookId, KonsistentTemplate, PackHookRef, ResolvedPack, SkillRef, ToolPolicyRule } from "../packs/types";
+import type { CapabilityHookEvent, HookId, PackHookRef, ResolvedPack, ResolvedVerbs, SkillRef, ToolPolicyRule } from "../packs/types";
 import { hookCapabilities, packCapabilityProjection } from "../packs/index";
-import { PYTHON_KONSISTENT_PATH } from "../packs/python-uv";
 import type { RegistryPin } from "../registry/catalog";
 import { normalizeAgents, type EnforcementAgent } from "./agent-selection";
 import { evaluatePackRules, type EvaluatedPackRules } from "./detect";
 import { resolveToolchain, type ToolchainResolution } from "./toolchain";
+import { hasGate, resolveVerbs, type VerbResolution } from "./verbs";
 import { generateRepoMapSection, spliceRepoMapSection } from "./repo-map";
 import { playbookFiles } from "./render-playbook";
 
@@ -37,6 +37,8 @@ export type RenderPlan = {
   rules?: EvaluatedPackRules;
   /** Toolchain evidence behind the generated verbs, for previews and warnings. */
   toolchain?: ToolchainResolution;
+  /** Per-verb evidence verdicts: which recipes rendered, and which were omitted and why. */
+  verbs?: VerbResolution;
 };
 
 function sha256(value: string): string {
@@ -188,57 +190,6 @@ function posixPath(path: string): string {
   return path.replaceAll("\\", "/");
 }
 
-function snakeCasePackageName(targetDir: string): string {
-  const raw = basename(targetDir) || "app";
-  const snake = raw
-    .replace(/[^A-Za-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase();
-
-  const safe = snake.length > 0 ? snake : "app";
-  return /^[0-9]/.test(safe) ? `app_${safe}` : safe;
-}
-
-function replacePlaceholders(value: unknown, replacements: Record<string, string>): unknown {
-  if (typeof value === "string") {
-    return Object.entries(replacements).reduce(
-      (text, [key, replacement]) => text.replaceAll(`{${key}}`, replacement),
-      value
-    );
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => replacePlaceholders(item, replacements));
-  }
-
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, replacePlaceholders(item, replacements)])
-    );
-  }
-
-  return value;
-}
-
-function renderKonsistent(template: KonsistentTemplate, targetDir: string): string {
-  const pkg = snakeCasePackageName(targetDir);
-  const rendered = replacePlaceholders(template, { pkg });
-  return `${JSON.stringify(rendered, null, 2)}\n`;
-}
-
-/**
- * The structure-linting tool a pack scaffolds. Python packs use "konpy"; TS
- * packs use the npm "konsistent" package. Drives the config filename, justfile
- * recipe name, and AGENTS.md label so the generated harness speaks one name.
- */
-function konsistentToolName(pack: ResolvedPack): string {
-  return pack.konsistentTool ?? "konsistent";
-}
-
-function capitalize(value: string): string {
-  return value.length === 0 ? value : `${value[0].toUpperCase()}${value.slice(1)}`;
-}
-
 function bulletList(values: string[]): string {
   return values.map((value) => `- ${value}`).join("\n");
 }
@@ -252,7 +203,8 @@ function bulletList(values: string[]): string {
 export function agentsHardRules(
   pack: ResolvedPack,
   agents: readonly EnforcementAgent[] = ["claude"],
-  packRules?: readonly string[]
+  packRules?: readonly string[],
+  verbs?: ResolvedVerbs
 ): string[] {
   const selectedAgents = normalizeAgents(agents);
   const hookNames = selectedAgents.map((agent) => agent === "claude" ? "Claude" : "Codex").join(" or ");
@@ -260,15 +212,19 @@ export function agentsHardRules(
     ...pack.agentsRules,
     ...pack.ruleBlocks.flatMap((block) => block.agentsRules ?? [])
   ];
-  const stopChecks = pack.verbs.konsistent
-    ? `\`just check-full\` and \`just ${konsistentToolName(pack)}\``
-    : "`just check-full`";
   return [
     "Do not read real `.env*` files or private key material; tracked examples such as `.env.example` are allowed.",
     ...rules,
     "Do not directly edit protected generated/owned files: lockfiles, `.git/`, `skills-lock.json`, or `.farrier.json`.",
-    `Verification is automatic: hooks run \`just check-fast\` after each code edit and ${stopChecks} when you stop. Run these manually only to debug a failure the hooks reported.`,
-    "If the Stop check fails for reasons that predate your changes, name each pre-existing failing test explicitly in your final summary and stop again; do not re-run the full check yourself — an identical known failure does not re-block.",
+    // Both rules describe the verb-runner binding. With no gate that hook is
+    // never installed, so promising automatic verification would be a lie the
+    // agent acts on.
+    ...(verbs === undefined || verbs.check !== undefined || verbs.checkFast !== undefined
+      ? [
+          "Verification is automatic: hooks run `just check-fast` after each code edit and `just check-full` when you stop. Run these manually only to debug a failure the hooks reported.",
+          "If the Stop check fails for reasons that predate your changes, name each pre-existing failing test explicitly in your final summary and stop again; do not re-run the full check yourself — an identical known failure does not re-block."
+        ]
+      : ["This repository has no generated verification gate yet: no linter, test runner, or formatter evidence was found. Verify your changes the way the project already does, and say what you ran."]),
     "Keep files under `quality.maxFileLines` from `.farrier.json` unless there is a deliberate architectural reason.",
     "Follow the project quality preferences in `quality.rules` of `.farrier.json`; reuse existing helpers and types before writing new ones.",
     "Keep generated hook scripts and their tests together.",
@@ -276,21 +232,35 @@ export function agentsHardRules(
   ];
 }
 
-function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[], packRules: readonly string[]): string {
+function renderAgentsMd(
+  pack: ResolvedPack,
+  verbs: ResolvedVerbs,
+  agents: readonly EnforcementAgent[],
+  packRules: readonly string[]
+): string {
+  // Only commands the repository can actually run are listed. A project with
+  // no evidence for any tool gets a Commands section that says so rather than
+  // four recipes that do not exist.
   const commandLines = [
-    "- Fast check (after edits): `just check-fast [test files...]`",
-    `- Full check (before finishing): \`just check-full\` (${pack.verbs.check})`,
-    `- Test: \`${pack.verbs.test}\``,
-    `- Format: \`${pack.verbs.fmt}\``
+    ...(verbs.checkFast !== undefined || verbs.test !== undefined
+      ? ["- Fast check (after edits): `just check-fast [test files...]`"]
+      : []),
+    ...(verbs.check !== undefined
+      ? [`- Full check (before finishing): \`just check-full\` (${verbs.check})`]
+      : []),
+    ...(verbs.test !== undefined ? [`- Test: \`${verbs.test}\``] : []),
+    ...(verbs.fmt !== undefined ? [`- Format: \`${verbs.fmt}\``] : [])
   ];
 
-  if (pack.verbs.konsistent) {
-    commandLines.push(`- ${capitalize(konsistentToolName(pack))}: \`${pack.verbs.konsistent}\``);
+  if (commandLines.length === 0) {
+    commandLines.push(
+      "- No verification commands are generated yet: this repository shows no evidence of a linter, test runner, or formatter. Add one and run `farrier update --yes`."
+    );
   }
 
   const selectedAgents = normalizeAgents(agents);
   const capability = packCapabilityProjection(pack);
-  const hardRules = agentsHardRules(pack, selectedAgents, packRules);
+  const hardRules = agentsHardRules(pack, selectedAgents, packRules, verbs);
   const targetLines = [
     `- Selected enforcement targets: ${selectedAgents.join(", ")}.`,
     ...(selectedAgents.includes("claude")
@@ -309,20 +279,6 @@ function renderAgentsMd(pack: ResolvedPack, agents: readonly EnforcementAgent[],
     ...capability.limitations.map((limitation) => `- ${limitation}`)
   ];
 
-  const acceptedRisks = pack.packIds.includes("python-uv") && pack.verbs.konsistent
-    ? [
-        `Python ${konsistentToolName(pack)} currently uses a local path dependency:`,
-        `  \`${PYTHON_KONSISTENT_PATH}\``,
-        "Upgrade path: git dependency, then PyPI package.",
-        "Until that upgrade, generated Python projects are portable only on machines with that path."
-      ]
-    : [];
-
-  const acceptedRisksSection =
-    acceptedRisks.length > 0
-      ? `\n## Accepted Risks\n\n${bulletList(acceptedRisks)}\n`
-      : "";
-
   return `# Project Agent Instructions
 
 AGENTS.md is the source of truth for agent behavior in this repository.
@@ -338,7 +294,7 @@ ${targetLines.join("\n")}
 ## Hard Rules
 
 ${bulletList(hardRules)}
-${acceptedRisksSection}`;
+`;
 }
 
 export function renderClaudeMd(): string {
@@ -457,30 +413,21 @@ export function renderCodexHooksJson(pack: ResolvedPack): string {
   return `${JSON.stringify({ hooks }, null, 2)}\n`;
 }
 
-export function renderJustfile(pack: ResolvedPack): string {
+export function renderJustfile(verbs: ResolvedVerbs): string {
   // Hook self-tests are deliberately NOT part of the project gate; they are
-  // farrier's own tests and run under `farrier doctor`.
-  const recipes = [
-    `check-fast *tests:
-  ${pack.verbs.checkFast}
-  [ -z "{{tests}}" ] || ${pack.verbs.test} {{tests}}`,
-    `check-full:
-  ${pack.verbs.check}`,
-    `check: check-full`,
-    `test:
-  ${pack.verbs.test}`,
-    `fmt:
-  ${pack.verbs.fmt}`
+  // farrier's own tests and run under `farrier doctor`. Each recipe appears
+  // only when the repository proved the tool behind it.
+  const fastLines = [
+    ...(verbs.checkFast !== undefined ? [`  ${verbs.checkFast}`] : []),
+    ...(verbs.test !== undefined ? [`  [ -z "{{tests}}" ] || ${verbs.test} {{tests}}`] : [])
   ];
-
-  if (pack.verbs.konsistent) {
-    const comment = pack.packIds.includes("python-uv")
-      ? "  # Temporary local path dependency; upgrade path: git dependency, then PyPI.\n"
-      : "";
-
-    recipes.push(`${konsistentToolName(pack)}:
-${comment}  ${pack.verbs.konsistent}`);
-  }
+  const recipes = [
+    ...(fastLines.length > 0 ? [`check-fast *tests:\n${fastLines.join("\n")}`] : []),
+    ...(verbs.check !== undefined ? [`check-full:\n  ${verbs.check}`] : []),
+    ...(verbs.check !== undefined ? ["check: check-full"] : []),
+    ...(verbs.test !== undefined ? [`test:\n  ${verbs.test}`] : []),
+    ...(verbs.fmt !== undefined ? [`fmt:\n  ${verbs.fmt}`] : [])
+  ];
 
   return `${recipes.join("\n\n")}\n`;
 }
@@ -792,15 +739,25 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
       ? Promise.resolve(options.repoMapSection)
       : generateRepoMapSection(options.targetDir)
   ]);
-  // Verbs follow repository evidence (lockfile, test runner) so generated
-  // commands run with the project's own toolchain; without evidence the
-  // pack's defaults stand.
-  const pack: ResolvedPack = { ...options.pack, verbs: toolchain.verbs };
+  // Verbs follow repository evidence twice over: the toolchain resolution
+  // picks the package manager and test runner from lockfiles, then each verb
+  // is gated on proof that its tool exists at all. A verb with no evidence is
+  // dropped, because a gate naming an absent tool can never pass.
+  const verbResolution = await resolveVerbs(options.targetDir, toolchain.verbs);
+  const verbs = verbResolution.verbs;
+  // With no gate there is nothing for verb-runner to run, so it is not bound
+  // at all rather than bound to recipes that do not exist. It comes back on
+  // the next update once the repository grows a linter or a test runner.
+  const pack: ResolvedPack = {
+    ...options.pack,
+    verbs: toolchain.verbs,
+    hooks: hasGate(verbs) ? options.pack.hooks : options.pack.hooks.filter((hook) => hook !== "verb-runner")
+  };
 
   const files: RenderedFile[] = [
     {
       path: "AGENTS.md",
-      content: spliceRepoMapSection(renderAgentsMd(pack, agents, rules.agentsRules), repoMapSection)
+      content: spliceRepoMapSection(renderAgentsMd(pack, verbs, agents, rules.agentsRules), repoMapSection)
     }
   ];
 
@@ -897,15 +854,13 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     });
   }
 
-  files.push({
-    path: "justfile",
-    content: renderJustfile(pack)
-  });
-
-  if (pack.konsistentTemplate) {
+  // A justfile with no recipes is worse than no justfile: it looks like a
+  // configured project whose verbs someone deleted.
+  const justfile = renderJustfile(verbs);
+  if (justfile.trim().length > 0) {
     files.push({
-      path: `${konsistentToolName(pack)}.json`,
-      content: renderKonsistent(pack.konsistentTemplate, options.targetDir)
+      path: "justfile",
+      content: justfile
     });
   }
 
@@ -933,7 +888,8 @@ export async function createRenderPlan(options: CreateRenderPlanOptions): Promis
     files,
     reviewedDigest: renderPlanDigest(files),
     rules,
-    toolchain
+    toolchain,
+    verbs: verbResolution
   };
 }
 

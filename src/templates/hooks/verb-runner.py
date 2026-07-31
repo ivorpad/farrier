@@ -18,13 +18,10 @@ EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 # farrier scaffolds; they skip check-fast and downgrade the Stop check.
 DOC_EXTENSIONS = (".md", ".markdown", ".rst", ".adoc", ".txt")
 JUSTFILE_NAMES = ("justfile", "Justfile", ".justfile")
-# Structure-linting recipes farrier scaffolds, in priority order. Python packs
-# ship "konpy"; TypeScript packs ship "konsistent". A project has at most one.
-STRUCTURE_RECIPES = ("konpy", "konsistent")
+MAX_JUSTFILE_BYTES = 256 * 1024
 MAX_PAYLOAD_BYTES = 256 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024
 COMMAND_TIMEOUT_SECONDS = 120
-MAX_JUSTFILE_BYTES = 256 * 1024
 # Deterministic denylist: known provider token shapes plus assignments to
 # secret-named variables. Prose PII (names, addresses, secrets written as free
 # text) is not detectable here and stays out of scope pending its own design.
@@ -93,24 +90,32 @@ def edited_hook_file(payload: dict[str, Any]) -> bool:
     return False
 
 
-def find_just_recipes(cwd: str) -> tuple[set[str], str | None]:
-    recipes: set[str] = set()
-    found = False
-    patterns = {
-        recipe: re.compile(rf"^{re.escape(recipe)}\s*(?:[^:\n]*)?:", re.MULTILINE)
-        for recipe in STRUCTURE_RECIPES
-    }
+def recipe_missing(cwd: str, recipe: str) -> bool:
+    """True when the justfile demonstrably has no such recipe.
+
+    An evidence-gated harness only generates the recipes its repository can
+    actually run, so a project with no linter and no test runner has no
+    check-full at all, and demanding one would block every stop on exactly
+    those projects. Read the justfile rather than asking `just`: it is one
+    less process, and an unreadable or missing answer must not be mistaken
+    for a missing recipe. Anything unreadable returns False so the gate still
+    runs and `just` reports the real error.
+    """
+    pattern = re.compile(rf"^{re.escape(recipe)}\s*(?:[^:\n]*)?:", re.MULTILINE)
+    found_justfile = False
     for name in JUSTFILE_NAMES:
         if not os.path.lexists(os.path.join(cwd, name)):
             continue
-        found = True
+        found_justfile = True
         text, error = read_project_text(cwd, name, MAX_JUSTFILE_BYTES)
         if error is not None or text is None:
-            return set(), f"{name} {error}"
-        recipes.update(recipe for recipe, pattern in patterns.items() if pattern.search(text))
-    if not found:
-        return set(), "no justfile was found"
-    return recipes, None
+            return False
+        if pattern.search(text):
+            return False
+    # No justfile at all is not evidence of a missing recipe: a harness with no
+    # gate never binds this hook in the first place, so reaching here means
+    # something else is wrong and `just` should report it.
+    return found_justfile
 
 
 def run_command(command: list[str], cwd: str) -> tuple[bool, str]:
@@ -323,6 +328,10 @@ def main() -> int:
             log_event(cwd, "verb-runner", "PostToolUse", "skipped-docs-only", rule="check-fast")
             return 0
 
+        if recipe_missing(cwd, "check-fast"):
+            log_event(cwd, "verb-runner", "PostToolUse", "skipped-no-recipe", rule="check-fast")
+            return 0
+
         ok, output = run_command(["just", "check-fast", *targeted_test_files(payload, cwd)], cwd)
         log_event(cwd, "verb-runner", "PostToolUse", "passed" if ok else "failed", rule="check-fast")
         if not ok:
@@ -353,6 +362,10 @@ def main() -> int:
             docs_only_session = edit_serial > 0 and source_serial == 0
             recipe_name = "check-fast" if docs_only_session else "check-full"
 
+            if recipe_missing(cwd, recipe_name):
+                log_event(cwd, "verb-runner", "Stop", "skipped-no-recipe", rule=recipe_name)
+                return 0
+
             ok, output = run_command(["just", recipe_name], cwd)
             if ok:
                 log_event(cwd, "verb-runner", "Stop", "passed", rule=recipe_name)
@@ -379,23 +392,6 @@ def main() -> int:
                 write_verify_state(cwd, state)
                 log_event(cwd, "verb-runner", "Stop", "baseline-allowed", rule=recipe_name)
 
-        recipes, discovery_error = find_just_recipes(cwd)
-        if discovery_error is not None:
-            emit_stop_block("structure", f"Could not safely discover generated structure recipe: {discovery_error}. Run farrier doctor and farrier update --yes.")
-            return 0
-        recipe = next((name for name in STRUCTURE_RECIPES if name in recipes), None)
-        if recipe is None:
-            # Packs without a structure linter (e.g. rails) generate no such
-            # recipe; demanding one blocked every stop on those projects
-            # (2026-07-21 round 2). Missing-but-expected recipes are doctor's
-            # and update's job to detect, not the Stop gate's.
-            log_event(cwd, "verb-runner", "Stop", "skipped-no-structure-recipe", rule="structure")
-            return 0
-
-        ok, output = run_command(["just", recipe], cwd)
-        log_event(cwd, "verb-runner", "Stop", "passed" if ok else "blocked", rule=recipe)
-        if not ok:
-            emit_stop_block(recipe, output)
         return 0
 
     emit_posttool_failure("Unsupported hook event; run the generated checks manually.")

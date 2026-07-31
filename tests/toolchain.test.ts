@@ -6,18 +6,37 @@ import { createRenderPlan, writeRenderPlan } from "../src/engine/render";
 import { resolveToolchain } from "../src/engine/toolchain";
 import { createDoctorReport } from "../src/engine/doctor";
 import { applyUpdate, createUpdateReport } from "../src/engine/update";
+import type { PackVerbs } from "../src/packs/types";
 import { resolvePack } from "../src/packs/index";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-toolchain-"));
 }
 
+/** The derived commands only; evidence strings are asserted where they matter. */
+function commandsOf(verbs: PackVerbs): Record<string, string | undefined> {
+  return { lint: verbs.lint?.command, test: verbs.test?.command, fmt: verbs.fmt?.command };
+}
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-async function tsProject(dir: string, packageJson: Record<string, unknown>): Promise<void> {
-  await writeJson(join(dir, "package.json"), packageJson);
+/**
+ * Verbs are evidence-gated: tsc needs a tsconfig and prettier needs to be a
+ * declared dependency, so every fixture that expects those recipes declares
+ * them. Tests covering the ungated path opt out with `omitPrettier`.
+ */
+async function tsProject(
+  dir: string,
+  packageJson: Record<string, unknown>,
+  options: { omitPrettier?: boolean } = {}
+): Promise<void> {
+  const devDependencies = {
+    ...(packageJson.devDependencies as Record<string, unknown> | undefined),
+    ...(options.omitPrettier ? {} : { prettier: "^3.0.0" }),
+  };
+  await writeJson(join(dir, "package.json"), { ...packageJson, devDependencies });
   await writeJson(join(dir, "tsconfig.json"), { compilerOptions: { strict: true } });
 }
 
@@ -47,9 +66,6 @@ test:
 
 fmt:
   bunx prettier --write .
-
-konsistent:
-  bunx konsistent@1.0.0-beta.1 check
 `;
 
 const pnpmVitestJustfile = `check-fast *tests:
@@ -66,9 +82,6 @@ test:
 
 fmt:
   pnpm exec prettier --write .
-
-konsistent:
-  pnpm dlx konsistent@1.0.0-beta.1 check
 `;
 
 describe("toolchain resolution", () => {
@@ -83,7 +96,6 @@ describe("toolchain resolution", () => {
     expect(agents).toContain("- Full check (before finishing): `just check-full` (pnpm exec tsc --noEmit && pnpm exec vitest run)");
     expect(agents).toContain("- Test: `pnpm exec vitest run`");
     expect(agents).toContain("- Format: `pnpm exec prettier --write .`");
-    expect(agents).toContain("- Konsistent: `pnpm dlx konsistent@1.0.0-beta.1 check`");
     expect(agents).not.toContain("bun test");
     expect(agents).not.toContain("bunx");
 
@@ -138,7 +150,7 @@ describe("toolchain resolution", () => {
     const resolution = await resolveToolchain(dir, resolvePack("ts-react-vite"));
 
     expect(resolution.packageManager).toBe("pnpm");
-    expect(resolution.verbs.test).toBe("pnpm exec vitest run");
+    expect(resolution.verbs.test?.command).toBe("pnpm exec vitest run");
     expect(resolution.notes).toHaveLength(1);
     expect(resolution.notes[0]).toContain("package-lock.json");
   });
@@ -152,12 +164,10 @@ describe("toolchain resolution", () => {
 
     expect(resolution.packageManager).toBe("yarn");
     expect(resolution.testRunner).toBe("jest");
-    expect(resolution.verbs).toEqual({
-      check: "yarn run tsc --noEmit && yarn run jest",
-      checkFast: "yarn run tsc --noEmit",
+    expect(commandsOf(resolution.verbs)).toEqual({
+      lint: "yarn run tsc --noEmit",
       test: "yarn run jest",
       fmt: "yarn run prettier --write .",
-      konsistent: "yarn dlx konsistent@1.0.0-beta.1 check",
     });
   });
 
@@ -170,12 +180,10 @@ describe("toolchain resolution", () => {
 
     expect(resolution.packageManager).toBe("npm");
     expect(resolution.testRunner).toBeUndefined();
-    expect(resolution.verbs).toEqual({
-      check: "npx tsc --noEmit && npm test",
-      checkFast: "npx tsc --noEmit",
+    expect(commandsOf(resolution.verbs)).toEqual({
+      lint: "npx tsc --noEmit",
       test: "npm test",
       fmt: "npx prettier --write .",
-      konsistent: "npx --yes konsistent@1.0.0-beta.1 check",
     });
   });
 

@@ -13,9 +13,22 @@ import { createRenderPlan, writeRenderPlan } from "../src/engine/render";
 import { resolvePack } from "../src/packs/index";
 import type { ResolvedPack } from "../src/packs/types";
 import { builtinCatalog, type PackCatalog } from "../src/registry/catalog";
+import { seedToolingEvidence, type ToolingKind } from "./fixtures/toolchain-evidence";
 
-async function tempDir(): Promise<string> {
+async function bareTempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-doctor-"));
+}
+
+/**
+ * Verbs are evidence-gated, so a fixture expecting lint/test/format recipes
+ * has to look like a repository that adopted those tools. Seeding is per
+ * family because these tests also exercise stack detection: writing all three
+ * toolchains into one directory would make every project look polyglot.
+ */
+async function tempDir(kind: ToolingKind = "python"): Promise<string> {
+  const dir = await bareTempDir();
+  await seedToolingEvidence(dir, kind);
+  return dir;
 }
 
 async function renderPack(dir: string, packId = "python-fastapi"): Promise<void> {
@@ -578,21 +591,5 @@ describe("doctor engine", () => {
       message: expect.stringContaining("maxDiffBytes exceeds")
     });
     expect(report.notes).toContainEqual(expect.stringContaining("Doctor is static"));
-  });
-
-
-  test("flags malformed konpy json when expected", async () => {
-    const dir = await tempDir();
-    await renderPack(dir);
-
-    await writeFile(join(dir, "konpy.json"), "{not json", "utf8");
-
-    const report = await createDoctorReport({ targetDir: dir });
-
-    expect(report.healthy).toBe(false);
-    expectProblem(report, "konsistent", {
-      path: "konpy.json",
-      message: expect.stringContaining("Unable to parse konpy.json")
-    });
   });
 });

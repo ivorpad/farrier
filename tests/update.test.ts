@@ -10,9 +10,22 @@ import { resolvePack } from "../src/packs/index";
 import { loadPackCatalog, type RegistryCatalogClient } from "../src/registry/catalog";
 import type { RegistryFetchResult } from "../src/registry/client";
 import type { RegistryIndex, RegistryIndexItem, RegistryItem } from "../src/registry/schema";
+import { seedToolingEvidence, type ToolingKind } from "./fixtures/toolchain-evidence";
 
-async function tempDir(): Promise<string> {
+async function bareTempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-update-"));
+}
+
+/**
+ * Verbs are evidence-gated, so a fixture expecting lint/test/format recipes
+ * has to look like a repository that adopted those tools. Seeding is per
+ * family because these tests also exercise stack detection: writing all three
+ * toolchains into one directory would make every project look polyglot.
+ */
+async function tempDir(kind: ToolingKind = "python"): Promise<string> {
+  const dir = await bareTempDir();
+  await seedToolingEvidence(dir, kind);
+  return dir;
 }
 
 async function renderPack(dir: string, packId: string): Promise<void> {
@@ -54,10 +67,6 @@ test:
 
 fmt:
   uv run ruff format .
-
-konpy:
-  # Temporary local path dependency; upgrade path: git dependency, then PyPI.
-  ${resolvePack(packId).verbs.konsistent}
 `,
     "utf8"
   );
@@ -338,7 +347,7 @@ dependencies = ["fastapi>=0.110"]
   });
 
   test("reports and acknowledges Rails Hotwire secondary findings", async () => {
-    const dir = await tempDir();
+    const dir = await tempDir("rails");
     await renderPack(dir, "rails");
 
     await writeFile(
@@ -487,6 +496,29 @@ gem "rails"
     expect(manifest.hookIds).toEqual(["secret-shield", "tool-policy", "write-guard", "verb-runner"]);
     expect(manifest.judge).toBeUndefined();
     expect(manifest.advisors).toBe(false);
+  });
+
+  test("a justfile with an extra recipe is reported for review, never rewritten", async () => {
+    // What a harness generated before structure linting was dropped looks like
+    // on disk, and what any user who adds a recipe of their own looks like:
+    // byte-exact farrier output plus one trailing block. Update must not
+    // recognize it as its own, because repairing it would delete the extra
+    // recipe. Reporting it and leaving the bytes alone is the safe outcome.
+    const dir = await tempDir();
+    await writeFile(join(dir, "uv.lock"), "", "utf8");
+    await renderPack(dir, "python-fastapi");
+
+    const justfilePath = join(dir, "justfile");
+    const generated = await readFile(justfilePath, "utf8");
+    const extended = `${generated}\ndeploy:\n  ./scripts/deploy.sh\n`;
+    await writeFile(justfilePath, extended, "utf8");
+
+    const report = await createUpdateReport({ targetDir: dir });
+    expect(report.migratableUserFiles).not.toContain("justfile");
+
+    await applyUpdate({ targetDir: dir });
+
+    expect(await readFile(justfilePath, "utf8")).toBe(extended);
   });
 
   test("migration carries learned tool-policy rules into the new rules file", async () => {

@@ -1,6 +1,67 @@
-import type { Pack } from "./types";
+import type { Pack, PackDetect, PackVerbs } from "./types";
 
-export const PYTHON_KONSISTENT_PATH = "/Users/ivor/src/tries/2026-07-02-konsistent-python";
+/**
+ * Any one of the layouts pytest's default discovery finds a project's own
+ * tests in. `globs` within a single detect are ANDed, so the alternatives have
+ * to be separate branches. Deliberately anchored: a bare `**` + `test_*.py`
+ * would also match the hook self-tests farrier writes under `.farrier/`, which
+ * would make every generated harness look like it had a test suite.
+ */
+const pythonTestFiles: PackDetect = {
+  any: [
+    { globs: ["tests/**/*.py"] },
+    { globs: ["test/**/*.py"] },
+    { globs: ["src/**/test_*.py"] },
+    { globs: ["src/**/*_test.py"] }
+  ]
+};
+
+/**
+ * Shared by every python pack. `uv init` produces neither ruff nor pytest, so
+ * both are gated: a project that has not adopted them gets no gate rather than
+ * one that fails with "Failed to spawn: ruff" on the first edit. Configuration
+ * counts as evidence alongside a dependency entry, because the common uv
+ * pattern is `uv run --with ruff` plus a `[tool.ruff]` table and no dependency.
+ */
+export const pythonUvVerbs: PackVerbs = {
+  lint: {
+    command: "uv run ruff check . --extend-exclude .farrier",
+    when: {
+      any: [
+        { pyprojectDependencies: ["ruff"] },
+        { pyprojectTables: ["tool.ruff"] },
+        { anyFiles: ["ruff.toml", ".ruff.toml"] }
+      ]
+    },
+    evidence: "ruff is configured or declared"
+  },
+  test: {
+    command: "uv run pytest",
+    // Both halves are required. Installing pytest is not evidence that there
+    // is a suite to run: pytest exits 5 on "no tests collected", so a repo
+    // with the dependency and no tests yet would get a gate that fails on
+    // every stop until someone writes the first test.
+    when: {
+      any: [
+        { ...pythonTestFiles, pyprojectDependencies: ["pytest"] },
+        { ...pythonTestFiles, pyprojectTables: ["tool.pytest.ini_options"] },
+        { ...pythonTestFiles, anyFiles: ["pytest.ini", "tox.ini"] }
+      ]
+    },
+    evidence: "pytest is available and the repository has tests"
+  },
+  fmt: {
+    command: "uv run ruff format . --extend-exclude .farrier",
+    when: {
+      any: [
+        { pyprojectDependencies: ["ruff"] },
+        { pyprojectTables: ["tool.ruff"] },
+        { anyFiles: ["ruff.toml", ".ruff.toml"] }
+      ]
+    },
+    evidence: "ruff is configured or declared"
+  }
+};
 
 export const pythonUvPack: Pack = {
   id: "python-uv",
@@ -64,26 +125,5 @@ export const pythonUvPack: Pack = {
       ]
     }
   ],
-  konsistentTemplate: {
-    version: "v1",
-    conventions: [
-      {
-        name: "packages-have-init",
-        description: "Every source package is a regular package.",
-        paths: ["src/{pkg}"],
-        must: {
-          haveType: "directory",
-          haveFiles: ["__init__.py"]
-        }
-      }
-    ]
-  },
-  konsistentTool: "konpy",
-  verbs: {
-    check: "uv run ruff check . --extend-exclude .farrier && uv run pytest",
-    checkFast: "uv run ruff check . --extend-exclude .farrier",
-    test: "uv run pytest",
-    fmt: "uv run ruff format . --extend-exclude .farrier",
-    konsistent: `uv run --with ${PYTHON_KONSISTENT_PATH} konpy check`
-  }
+  verbs: pythonUvVerbs
 };

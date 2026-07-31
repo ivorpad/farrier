@@ -77,7 +77,7 @@ const explorationHeads = new Set([
 
 /** Verification verbs: failing checks/tests are iteration, not rediscovery. */
 const verificationTokens = new Set([
-  "pytest", "vitest", "jest", "tsc", "eslint", "ruff", "prettier", "konsistent",
+  "pytest", "vitest", "jest", "tsc", "eslint", "ruff", "prettier",
   "rspec", "mocha", "playwright", "cypress"
 ]);
 const verificationTokenPattern = /^(?:test|tests|check|lint|typecheck|build|fmt|format|spec)(?:[:.][\w:.-]*)?$/i;

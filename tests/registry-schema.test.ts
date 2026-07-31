@@ -73,7 +73,10 @@ describe("registry schema validation", () => {
 
     expect(item.type).toBe("pack");
     if (item.type === "pack") {
-      expect(item.pack.verbs?.check).toBe("uv run pytest");
+      // A legacy flat payload maps onto the gated shape as unconditional verbs,
+      // so remote packs published before verbs were gated keep resolving.
+      expect(item.pack.verbs?.lint?.command).toBe("uv run pytest");
+      expect(item.pack.verbs?.lint?.when).toBeUndefined();
       expect(item.pack.detect.files).toEqual(["pyproject.toml"]);
     }
 
@@ -126,18 +129,7 @@ describe("registry schema validation", () => {
             detect: { files: ["Dockerfile"] },
             suggestSkills: ["owner/repo@docker"]
           }
-        ],
-        konsistentTemplate: {
-          version: "v1",
-          conventions: [
-            {
-              name: "engine-modules",
-              description: "engine files are flat modules",
-              paths: "src/engine",
-              must: { haveType: "file" }
-            }
-          ]
-        }
+        ]
       }),
       indexItem
     );
@@ -146,7 +138,6 @@ describe("registry schema validation", () => {
     if (item.type === "pack") {
       expect(item.pack.toolPolicyRules?.[0]?.id).toBe("no-pip");
       expect(item.pack.secondaryDetectors?.[0]?.detect.files).toEqual(["Dockerfile"]);
-      expect(item.pack.konsistentTemplate?.conventions[0]?.name).toBe("engine-modules");
     }
 
     expect(() =>
@@ -175,23 +166,6 @@ describe("registry schema validation", () => {
       )
     ).toThrow("pack.toolPolicyRules.0.id: must be a non-empty string");
 
-    expect(() =>
-      validateRegistryItem(
-        packItem({
-          konsistentTemplate: { version: "v1", conventions: [{ name: "x", description: "y", paths: "src" }] }
-        }),
-        indexItem
-      )
-    ).toThrow("pack.konsistentTemplate.conventions.0: must have exactly one of must or mustNot");
-
-    expect(() =>
-      validateRegistryItem(
-        packItem({
-          konsistentTemplate: { version: 2, conventions: [] }
-        }),
-        indexItem
-      )
-    ).toThrow('pack.konsistentTemplate.version: must be "v1"');
   });
 
   test("validates hook payload paths and entry file", () => {

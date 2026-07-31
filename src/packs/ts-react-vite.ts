@@ -1,4 +1,5 @@
 import type { Pack } from "./types";
+import { tsBaseVerbs } from "./ts-base";
 
 export const tsReactVitePack: Pack = {
   id: "ts-react-vite",
@@ -13,13 +14,7 @@ export const tsReactVitePack: Pack = {
   },
   skills: [],
   hooks: [],
-  verbs: {
-    check: "bunx tsc --noEmit && bun test",
-    checkFast: "bunx tsc --noEmit",
-    test: "bun test",
-    fmt: "bunx prettier --write .",
-    konsistent: "bunx konsistent@1.0.0-beta.1 check"
-  },
+  verbs: tsBaseVerbs,
   agentsRules: [
     "Keep React components small and focused.",
     "Colocate UI-only logic with components.",

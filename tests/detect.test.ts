@@ -22,10 +22,9 @@ function catalogForDetect(detect: PackDetect): PackCatalog {
     skills: [],
     hooks: [],
     verbs: {
-      check: "true",
-      checkFast: "true",
-      test: "true",
-      fmt: "true",
+      lint: { command: "true" },
+      test: { command: "true" },
+      fmt: { command: "true" },
     },
   };
 

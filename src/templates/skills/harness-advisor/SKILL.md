@@ -71,4 +71,4 @@ Both call `farrier advise`, inspect the codebase even with no sessions, and use 
 - Do not invent hook code.
 - Do not rewrite Farrier-owned hook templates manually in the project.
 - Suggest declarative Farrier updates, skill installation, or `skill-creator` for repeatable behavior.
-- Keep user-customized files such as `AGENTS.md`, `CLAUDE.md`, `justfile`, `.gitignore`, selected `.claude/settings.json` / `.codex/hooks.json` bindings, `.claude/hooks/tool-policy-rules.json`, and the structure-check config (`konsistent.json` or `konpy.json`) under manual review when they drift.
+- Keep user-customized files such as `AGENTS.md`, `CLAUDE.md`, `justfile`, `.gitignore`, selected `.claude/settings.json` / `.codex/hooks.json` bindings, and `.claude/hooks/tool-policy-rules.json` under manual review when they drift.

@@ -5,9 +5,22 @@ import { dirname, join, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { getFarrierVersion } from "../src/engine/render";
+import { seedToolingEvidence, type ToolingKind } from "./fixtures/toolchain-evidence";
 
-async function tempDir(): Promise<string> {
+async function bareTempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-create-cli-"));
+}
+
+/**
+ * Verbs are evidence-gated, so a fixture expecting lint/test/format recipes
+ * has to look like a repository that adopted those tools. Seeding is per
+ * family because these tests also exercise stack detection: writing all three
+ * toolchains into one directory would make every project look polyglot.
+ */
+async function tempDir(kind: ToolingKind = "python"): Promise<string> {
+  const dir = await bareTempDir();
+  await seedToolingEvidence(dir, kind);
+  return dir;
 }
 
 async function listFiles(root: string): Promise<string[]> {
@@ -72,12 +85,11 @@ const pythonFastapiFiles = [
   ".farrier/hooks/test_verb_runner.py",
   ".farrier/hooks/tool-policy-rules.json",
   "justfile",
-  "konpy.json",
   ".farrier.json",
   ".gitignore",
 ];
 
-const railsFiles = pythonFastapiFiles.filter((path) => path !== "konpy.json");
+const railsFiles = pythonFastapiFiles;
 
 describe("creation CLI e2e", () => {
   test("writes python-fastapi harness into target directory", async () => {
@@ -87,7 +99,7 @@ describe("creation CLI e2e", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Applied 19 file change(s); 0 unchanged.");
+    expect(result.stdout).toContain("Applied 18 file change(s); 0 unchanged.");
     expect(result.stdout).toContain("Skills: installed 3 of 3");
 
     for (const file of pythonFastapiFiles) {
@@ -110,7 +122,7 @@ describe("creation CLI e2e", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 19 create");
+    expect(result.stdout).toContain("File actions: 18 create");
     expect(result.stdout).toContain("Dry run: nothing was written.");
     expect(result.stdout).toContain("advisor skill trees: not generated (opt in with --with-advisors)");
 
@@ -197,7 +209,7 @@ dependencies = [
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Selected stack: python-fastapi (detected");
-    expect(result.stdout).toContain("Applied 19 file change(s); 0 unchanged.");
+    expect(result.stdout).toContain("Applied 18 file change(s); 0 unchanged.");
 
     for (const file of pythonFastapiFiles) {
       expect(existsSync(join(dir, file))).toBe(true);
@@ -214,6 +226,12 @@ dependencies = [
       `[project]
 name = "example"
 dependencies = ["fastapi"]
+
+[dependency-groups]
+dev = ["ruff>=0.1", "pytest>=8"]
+
+[tool.ruff]
+line-length = 100
 `,
       "utf8",
     );
@@ -222,16 +240,15 @@ dependencies = ["fastapi"]
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("File actions: 19 create");
+    expect(result.stdout).toContain("File actions: 18 create");
     expect(result.stdout).toContain("pyproject.toml dependency: fastapi");
     expect(result.stdout).not.toContain(".claude/skills/harness-advisor/SKILL.md");
     expect(result.stdout).toContain(".farrier/hooks/tool-policy.py");
-    expect(result.stdout).toContain("konpy.json");
     expect(existsSync(join(dir, "AGENTS.md"))).toBe(false);
   });
 
   test("--detect errors clearly when no stack matches", async () => {
-    const dir = await tempDir();
+    const dir = await tempDir("none");
     await writeFile(join(dir, "README.md"), "# unknown\n", "utf8");
 
     const result = await runCli(["--detect", "--dry-run", "--dir", dir]);
@@ -242,7 +259,7 @@ dependencies = ["fastapi"]
   });
 
   test("--json keeps preflight failures machine-readable", async () => {
-    const dir = await tempDir();
+    const dir = await tempDir("none");
     await writeFile(join(dir, "README.md"), "# unknown\n", "utf8");
 
     const result = await runCli(["--detect", "--dry-run", "--json", "--dir", dir]);
@@ -263,8 +280,8 @@ dependencies = ["fastapi"]
     expect(result.stderr).toContain("--detect and --stack are mutually exclusive");
   });
 
-  test("dry-run rails omits konsistent artifacts", async () => {
-    const dir = await tempDir();
+  test("dry-run rails renders the deterministic inventory", async () => {
+    const dir = await tempDir("rails");
 
     const result = await runCli(["--stack", "rails", "--dry-run", "--dir", dir]);
 
@@ -277,10 +294,9 @@ dependencies = ["fastapi"]
       expect(existsSync(join(dir, file))).toBe(false);
     }
 
-    expect(result.stdout).not.toContain("konsistent.json");
   });
 
-  test("dry-run generic omits stop hook and konsistent inventory", async () => {
+  test("dry-run generic omits the stop hook", async () => {
     const dir = await tempDir();
 
     const result = await runCli(["--stack", "generic", "--dry-run", "--dir", dir]);
@@ -292,7 +308,6 @@ dependencies = ["fastapi"]
     expect(result.stdout).not.toContain(".claude/skills/harness-advisor/SKILL.md");
     expect(result.stdout).not.toContain("quality-judge.py");
     expect(result.stdout).toContain(".farrier/hooks/tool-policy-rules.json");
-    expect(result.stdout).not.toContain("konsistent.json");
     expect(result.stdout).not.toContain("verb-runner.py");
     expect(result.stdout).not.toContain("stop-judge.py");
 
@@ -380,7 +395,7 @@ dependencies = ["fastapi"]
 
   test("creation dry-run JSON exposes selection evidence harness behavior and file actions", async () => {
     const dir = await tempDir();
-    await writeFile(join(dir, "pyproject.toml"), `[project]\nname = "example"\ndependencies = ["fastapi"]\n`, "utf8");
+    await writeFile(join(dir, "pyproject.toml"), `[project]\nname = "example"\ndependencies = ["fastapi"]\n\n[dependency-groups]\ndev = ["ruff>=0.1", "pytest>=8"]\n\n[tool.ruff]\nline-length = 100\n`, "utf8");
 
     const result = await runCli(["--detect", "--dry-run", "--json", "--dir", dir]);
 
@@ -394,7 +409,7 @@ dependencies = ["fastapi"]
     expect(report.stack.detected[0].evidence).toContain("pyproject.toml dependency: fastapi");
     expect(report.harnessBehavior.skillAction).toBe("install");
     expect(report.harnessBehavior.agents).toEqual(["claude"]);
-    expect(report.summary.create).toBe(19);
+    expect(report.summary.create).toBe(18);
     expect(report.applicable).toBe(true);
     expect(report.files.find((file: { path: string }) => file.path === "AGENTS.md").purpose).toContain("instructions");
     expect(report.written).toBe(false);
@@ -422,7 +437,7 @@ dependencies = ["fastapi"]
     });
 
     expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain("Applied 19 file change(s)");
+    expect(result.stdout).toContain("Applied 18 file change(s)");
     expect(result.stdout).toContain("Skills: installed 0 of 3");
     expect(result.stdout).toContain("retry: skills add");
     expect(existsSync(join(dir, ".farrier.json"))).toBe(true);
@@ -504,7 +519,7 @@ dependencies = ["fastapi"]
   });
 
   test("dry-run maps every conditional rule block to repository evidence", async () => {
-    const withEvidence = await tempDir();
+    const withEvidence = await tempDir("ts");
     await writeFile(join(withEvidence, "package.json"), '{"name":"fixture","version":"1.0.0"}\n', "utf8");
     await writeFile(join(withEvidence, "tsconfig.json"), "{}\n", "utf8");
     await writeFile(join(withEvidence, "bun.lock"), "", "utf8");
@@ -515,7 +530,7 @@ dependencies = ["fastapi"]
     expect(included.stdout).toContain("bun-managed: 5 rule(s) included; evidence: bun.lock exists (bun.lock)");
     expect(included.stdout).toContain("12 shared agent rules in AGENTS.md");
 
-    const withoutEvidence = await tempDir();
+    const withoutEvidence = await tempDir("ts");
     await writeFile(join(withoutEvidence, "package.json"), '{"name":"fixture","version":"1.0.0"}\n', "utf8");
     await writeFile(join(withoutEvidence, "tsconfig.json"), "{}\n", "utf8");
 

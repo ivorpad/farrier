@@ -123,10 +123,9 @@ const platformPack: RegistryItem = {
     skills: [],
     hooks: [],
     verbs: {
-      check: "platform check",
-      checkFast: "platform check",
-      test: "platform test",
-      fmt: "platform fmt"
+      lint: { command: "platform check" },
+      test: { command: "platform test" },
+      fmt: { command: "platform fmt" }
     }
   }
 };
@@ -168,7 +167,7 @@ describe("PackCatalog", () => {
     const resolved = catalog.resolvePack("@platform/service");
 
     expect(resolved.packIds).toEqual(["python-uv", "@acme/demo", "@platform/service"]);
-    expect(resolved.verbs.check).toBe("platform check");
+    expect(resolved.verbs.lint?.command).toBe("platform check");
     expect(resolved.skills).toContain("github.com/acme/skills@python-style");
     expect(resolved.skills).toContain("github.com/acme/skills@testing");
     expect(resolved.hooks).toContain("@acme/guard");

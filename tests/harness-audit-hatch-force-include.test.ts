@@ -7,7 +7,7 @@ import { auditHarness } from "../src/engine/harness-audit";
 import { collectHarnessAuditCorpus } from "../src/engine/harness-audit-evidence";
 
 const source = "docs/reference/predicates.md";
-const destination = "konsistent/_docs/reference/predicates.md";
+const destination = "pkgname/_docs/reference/predicates.md";
 
 async function auditMapping(input: {
   section: string;

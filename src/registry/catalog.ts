@@ -132,8 +132,6 @@ function packFrom(namespace: string, result: RegistryFetchResult<Extract<Registr
       skills: result.value.pack.skills,
       hooks: result.value.pack.hooks as PackHookRef[],
       toolPolicyRules: result.value.pack.toolPolicyRules,
-      konsistentTemplate: result.value.pack.konsistentTemplate,
-      konsistentTool: result.value.pack.konsistentTool,
       verbs: result.value.pack.verbs ?? ({} as Pack["verbs"]),
       agentsRules: result.value.pack.agentsRules,
       secondaryDetectors: result.value.pack.secondaryDetectors,
@@ -174,8 +172,6 @@ function mergeResolvedPack(parent: ResolvedPack, pack: Pack, remoteHooks: Resolv
     skills: dedupe([...parent.skills, ...skills]),
     hooks: dedupe([...parent.hooks, ...pack.hooks]),
     toolPolicyRules: mergeToolPolicyRules(parent.toolPolicyRules, pack.toolPolicyRules ?? []),
-    konsistentTemplate: pack.konsistentTemplate ?? parent.konsistentTemplate,
-    konsistentTool: pack.konsistentTool ?? parent.konsistentTool,
     verbs: {
       ...parent.verbs,
       ...pack.verbs

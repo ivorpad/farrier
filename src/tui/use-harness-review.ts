@@ -85,8 +85,7 @@ export function useHarnessReview(input: HarnessReviewInput): HarnessReview {
           skillCount: input.selectedSkills.length,
           ruleCount: input.ruleCount,
           packId: input.packId,
-          konsistentTool: input.pack.konsistentTool,
-          verbs: plan.toolchain?.verbs ?? input.pack.verbs,
+          verbs: plan.verbs?.verbs ?? {},
         });
         const renderedByPath = new Map(plan.files.map((file) => [file.path, file]));
         const files: ReviewFile[] = changePlan.files.map((file) => ({

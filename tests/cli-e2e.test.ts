@@ -4,9 +4,22 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { seedToolingEvidence, type ToolingKind } from "./fixtures/toolchain-evidence";
 
-async function tempDir(): Promise<string> {
+async function bareTempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-cli-"));
+}
+
+/**
+ * Verbs are evidence-gated, so a fixture expecting lint/test/format recipes
+ * has to look like a repository that adopted those tools. Seeding is per
+ * family because these tests also exercise stack detection: writing all three
+ * toolchains into one directory would make every project look polyglot.
+ */
+async function tempDir(kind: ToolingKind = "python"): Promise<string> {
+  const dir = await bareTempDir();
+  await seedToolingEvidence(dir, kind);
+  return dir;
 }
 
 function repoRoot(): string {

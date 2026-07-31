@@ -14,8 +14,7 @@ export type FilePurposeContext = {
   skillCount?: number;
   ruleCount?: number;
   packId?: string;
-  konsistentTool?: string;
-  verbs?: { check?: string; test?: string; fmt?: string; konsistent?: string };
+  verbs?: { check?: string; test?: string; fmt?: string };
 };
 
 export type HarnessFileChange = {
@@ -98,9 +97,6 @@ export function filePurpose(path: string, context: FilePurposeContext = {}): str
   if (path.includes("/hooks/test_")) return "Tests the adjacent generated hook.";
   if (path.includes("/hooks/")) return "Generated hook implementation.";
   if (path === "justfile") return "Stable project verification commands.";
-  if (base === "konsistent.json" || base === "konpy.json") {
-    return `${context.konsistentTool ?? base.replace(".json", "")} structure conventions.`;
-  }
   if (path === ".farrier.json") {
     const skills = withCount(context.skillCount, "skill", "skills");
     const pack = context.packId ? ` for ${context.packId}` : "";

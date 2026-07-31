@@ -7,9 +7,6 @@ test:
 fmt:
   uv run ruff format .
 
-konsistent:
-  bun run konsistent
-
 # One smoke cell per repo: harness generates, agent runs, hooks fire (grids stay manual)
 eval-smoke:
   docs/evaluations/eval-kit-multi/eval-smoke.sh

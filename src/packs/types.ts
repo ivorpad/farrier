@@ -77,6 +77,12 @@ export type PackDetect = {
   anyFiles?: string[];
   globs?: string[];
   pyprojectDependencies?: string[];
+  /**
+   * TOML table headers in pyproject.toml, without brackets (e.g. "tool.ruff").
+   * A tool configured but not declared as a dependency -- the common case for
+   * anything run through `uv run --with` -- is only visible this way.
+   */
+  pyprojectTables?: string[];
   packageJsonDependencies?: string[];
   packageJsonDevDependencies?: string[];
   packageJsonAnyDependencies?: string[];
@@ -99,46 +105,6 @@ export type SecondaryDetectionFinding = {
   suggestSkills: SkillRef[];
   suggestPackIds: string[];
   notes: string[];
-};
-
-export type KonsistentHaveTypePredicate = {
-  haveType: "directory" | "file";
-};
-
-export type KonsistentHaveFilesPredicate = {
-  haveFiles: string[];
-};
-
-export type KonsistentExportPredicate = {
-  export: string[];
-};
-
-export type KonsistentImportFromPredicate = {
-  importFrom: string;
-};
-
-export type KonsistentPredicate =
-  | KonsistentHaveTypePredicate
-  | KonsistentHaveFilesPredicate
-  | KonsistentExportPredicate
-  | KonsistentImportFromPredicate
-  | (KonsistentHaveTypePredicate & Partial<KonsistentHaveFilesPredicate>)
-  | (KonsistentHaveTypePredicate & Partial<KonsistentExportPredicate>)
-  | (KonsistentHaveFilesPredicate & Partial<KonsistentExportPredicate>);
-
-export type KonsistentConvention = {
-  name: string;
-  description: string;
-  paths: string | string[];
-  excludeFiles?: string[];
-} & (
-  | { must: KonsistentPredicate; mustNot?: never }
-  | { mustNot: KonsistentPredicate; must?: never }
-);
-
-export type KonsistentTemplate = {
-  version: "v1";
-  conventions: KonsistentConvention[];
 };
 
 /**
@@ -212,17 +178,42 @@ export type PackPlaybook = {
   gateChecks?: PlaybookGateCheck[];
 };
 
+/**
+ * One command a pack can contribute to the generated recipes, gated on the
+ * same evidence mechanism as `PackRuleBlock`. A verb whose `when` does not
+ * match the repository is omitted rather than rendered hopefully: a gate that
+ * names a tool the project does not have can never pass, and it blocks every
+ * Stop for the life of the harness.
+ */
+export type PackVerb = {
+  command: string;
+  /** Repository evidence required to render it. Omit to render unconditionally. */
+  when?: PackDetect;
+  /** Human-readable justification shown in previews (e.g. "ruff in pyproject.toml"). */
+  evidence?: string;
+};
+
+/**
+ * The authoring shape. Recipes are composed from the parts that survive
+ * evidence evaluation: `check-fast` is the lint verb, `check-full` is the
+ * surviving parts joined, and a pack whose parts all fail evidence generates
+ * no gate and no verb-runner binding at all.
+ */
 export type PackVerbs = {
-  check: string;
-  /**
-   * Fast task-scoped gate run after every edit (format/lint/typecheck level).
-   * Targeted tests are appended by the generated `check-fast` recipe from the
-   * `test` verb when the caller passes test files.
-   */
-  checkFast: string;
-  test: string;
-  fmt: string;
-  konsistent?: string;
+  /** Lint/typecheck level. The fast gate, and the first half of the full check. */
+  lint?: PackVerb;
+  /** The test suite. The second half of the full check, and the `test` recipe. */
+  test?: PackVerb;
+  /** Formatter. Never part of a gate. */
+  fmt?: PackVerb;
+};
+
+/** What the render path consumes: composed commands, each present only with evidence. */
+export type ResolvedVerbs = {
+  check?: string;
+  checkFast?: string;
+  test?: string;
+  fmt?: string;
 };
 
 /**
@@ -252,14 +243,6 @@ export type Pack = {
   skills: SkillRef[];
   hooks: PackHookRef[];
   toolPolicyRules?: ToolPolicyRule[];
-  konsistentTemplate?: KonsistentTemplate;
-  /**
-   * Name of the structure-linting tool the pack scaffolds. Drives the rendered
-   * config filename (`${konsistentTool}.json`), the justfile recipe name, and
-   * the AGENTS.md label. Python packs use "konpy"; TypeScript packs use the npm
-   * "konsistent" package. Defaults to "konsistent" when omitted.
-   */
-  konsistentTool?: string;
   verbs: PackVerbs;
   agentsRules?: string[];
   ruleBlocks?: PackRuleBlock[];

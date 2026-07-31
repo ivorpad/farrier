@@ -1,4 +1,5 @@
 import type { Pack } from "./types";
+import { tsBaseVerbs } from "./ts-base";
 
 export const tsLambdaPack: Pack = {
   id: "ts-lambda",
@@ -18,13 +19,7 @@ export const tsLambdaPack: Pack = {
   },
   skills: [],
   hooks: [],
-  verbs: {
-    check: "bunx tsc --noEmit && bun test",
-    checkFast: "bunx tsc --noEmit",
-    test: "bun test",
-    fmt: "bunx prettier --write .",
-    konsistent: "bunx konsistent@1.0.0-beta.1 check"
-  },
+  verbs: tsBaseVerbs,
   agentsRules: [
     "Do not make live AWS calls in tests.",
     "Use stubs, fakes, local emulators, or explicitly gated integration tests for AWS behavior.",

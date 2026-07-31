@@ -102,8 +102,6 @@ const userMutableFiles = new Set([
   "AGENTS.md",
   "CLAUDE.md",
   "justfile",
-  "konsistent.json",
-  "konpy.json",
   ".gitignore",
   ".claude/settings.json",
   ".codex/hooks.json",

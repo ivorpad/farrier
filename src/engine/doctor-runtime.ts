@@ -4,6 +4,7 @@ import type { EnforcementAgent } from "./agent-selection";
 import type { DoctorProblem } from "./doctor";
 import { readManifest } from "./manifest";
 import { hooksDirectory } from "./render";
+import { resolveVerbs } from "./verbs";
 import { resolveToolchain } from "./toolchain";
 import { sxrSessionCrosscheck } from "./sxr-crosscheck";
 import { builtinCatalog, type PackCatalog } from "../registry/catalog";
@@ -239,8 +240,10 @@ export async function createRuntimeReport(input: {
   // toolchain, so the probe demands the binary the recipes actually run.
   const pack = catalog.resolvePack(manifest.currentPackId);
   const toolchain = await resolveToolchain(targetDir, pack);
+  const resolved = await resolveVerbs(targetDir, toolchain.verbs);
   const runtimeBinaries = new Set(["python3", "just"]);
-  const firstToken = toolchain.verbs.test.split(/\s+/)[0];
+  // A verb that failed evidence renders no recipe, so nothing needs its binary.
+  const firstToken = resolved.verbs.test?.split(/\s+/)[0];
   if (firstToken && firstToken !== "echo") {
     runtimeBinaries.add(firstToken);
   }
