@@ -29,6 +29,9 @@ eval-workspaces/
 # tree would have been committed.
 docs/evaluations/
 docs/plans/
+docs/PLAN.md
+docs/harness-model.md
+prompt-exports/
 
 # Claude Code local session state
 .claude/scheduled_tasks.lock
