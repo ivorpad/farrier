@@ -123,7 +123,7 @@ Open a selected agent in the generated project and try to misbehave:
 ⛔ Lockfiles are owned by their package manager. Use `uv`.
 ```
 
-Meanwhile every edit triggers `just check-fast` (typecheck-level, plus the tests related to the edited files when they exist). When the agent tries to end its turn, `just check-full` runs once — a failure blocks the stop with actionable feedback. A check-full failure whose normalized fingerprint matches an already-reported baseline failure does not re-block: the agent is told to report it once and stop retrying.
+Meanwhile every edit triggers `just check-fast` (typecheck-level, plus the tests related to the edited files when they exist). When the agent tries to end its turn, `just check-full` runs once — a failure blocks the stop with actionable feedback. Both are skipped when the recipe does not exist, so a repository with no verification tooling is never blocked by a gate it cannot satisfy. A check-full failure whose normalized fingerprint matches an already-reported baseline failure does not re-block: the agent is told to report it once and stop retrying.
 
 For Codex, trust the project and review the exact project hook commands in `/hooks`; command definitions are approved separately by content hash. Matching Codex hooks can run concurrently, so every Farrier hook is independent and the binding does not rely on handler order. See [Codex enforcement coverage](#codex-enforcement-coverage) for the released interception limits.
 
@@ -139,7 +139,7 @@ The wizard's Skills step is tuned so neither the network nor the skills CLI ever
 
 ## What got generated (and why each file exists)
 
-For `python-fastapi` with the default Claude-only binding, 18 rendered harness files, plus the selected installed skills and their `skills-lock.json` entries (selecting both agents adds `.codex/hooks.json`; `--agents codex` drops `CLAUDE.md` and everything under `.claude/`):
+File count depends on what the repository proves. For `python-fastapi` with the default Claude-only binding: 18 files when ruff, pytest, and a test suite are present; 15 when none of them are, because a project with nothing to run gets no `justfile` and no verb-runner. Add the selected installed skills and their `skills-lock.json` entries. Selecting both agents adds `.codex/hooks.json`; `--agents codex` drops `CLAUDE.md` and everything under `.claude/`.
 
 | File | Job |
 |---|---|
@@ -149,11 +149,11 @@ For `python-fastapi` with the default Claude-only binding, 18 rendered harness f
 | `.codex/hooks.json` | Codex-only: wires the same shared policy scripts to released Codex hook events. |
 | `.farrier/hooks/*.py` + `test_*.py` | The provider-neutral deterministic hooks, each with its pytest suite alongside (the self-tests run under `farrier doctor`, not inside the project gate). |
 | `.farrier/hooks/tool-policy-rules.json` | **Declarative** wrong-tool rules with probe fixtures (this is where `farrier learn` appends). |
-| `justfile` | The stable verbs: `just check-fast [tests…]` / `check-full` / `test` / `fmt`; `check` stays as a `check-full` alias. |
+| `justfile` | The verbs the repository has evidence for, from `just check-fast [tests…]` / `check-full` / `test` / `fmt`, with `check` as a `check-full` alias. Each recipe appears only when its tool does, and the file is not written at all when none of them do. |
 | `.farrier.json` | Manifest: selected enforcement agents, packs, hooks, skills, advisors flag. **Never edit by hand.** |
 | `.gitignore` | Gains `.env`, `.env.*`, `!.env.example`, `.farrier-staging/`, `.farrier/runtime/`. |
 
-With the default Claude-only binding, `rails` renders 18 and `generic` renders 16. Everything else is opt-in and produces zero files when disabled:
+With the default Claude-only binding, `rails` renders 18 with rubocop and rails in the Gemfile and 15 without, and `generic` renders 16 (its placeholder verbs are unconditional, since you are expected to replace them). Everything else is opt-in and produces zero files when disabled:
 
 - `--with-advisors` adds the agent-scoped advisor skill trees (`.claude/skills/harness-advisor/`, `.claude/skills/claude-automation-recommender/` with its pinned attributed Anthropic snapshot, `.agents/skills/codex-automation-recommender/`, `.agents/skills/farrier-project-advisor/`).
 - The LLM judge hooks (`quality-judge`, `stop-judge`) and their prompts are no longer in any default pack; opt in by adding the hook ids to `.farrier.json` and running `farrier update --yes`.
@@ -169,7 +169,7 @@ Four deterministic hooks ship by default; the two LLM judges are opt-in:
 | `secret-shield` | PreToolUse | Denies reading `.env*` / private keys (tracked examples like `.env.example` allowed). |
 | `tool-policy` | PreToolUse | Denies wrong-tool commands per the declarative rules file; every denial names the right tool. |
 | `write-guard` | PreToolUse | Denies writes to lockfiles, `.git/`, `skills-lock.json`, `.farrier.json`. |
-| `verb-runner` | PostToolUse + Stop | Runs `just check-fast` (with related test files) after edits; `just check-full` once plus the structure check at Stop. Records a normalized fingerprint of a check-full failure so an identical pre-existing failure blocks once and is then reported instead of retried. |
+| `verb-runner` | PostToolUse + Stop | Runs `just check-fast` (with related test files) after edits and `just check-full` once at Stop, skipping either when the repository generated no such recipe. Records a normalized fingerprint of a check-full failure so an identical pre-existing failure blocks once and is then reported instead of retried. Not installed at all when no verb has evidence. |
 | `quality-judge` (opt-in) | PostToolUse | Warns when a file exceeds `quality.maxFileLines` (a preference: default 500, `null` disables); optional haiku judge reviews each edit against your `quality.rules` and the repository map, so "this helper already exists in `_internal/…`" surfaces at write time. |
 | `stop-judge` (opt-in) | Stop | Optional sonnet/gpt-5.5 review of the whole turn's diff against the same rules and map; blocks only *serious* findings (clear-cut rule violations, recreated helpers/types, secret exposure). |
 
@@ -200,6 +200,8 @@ Farrier uses the released Codex project-hooks surface, not `.codex/config.toml` 
 | `PreToolUse` | `^apply_patch$` | `write-guard` |
 | `PostToolUse` | `^apply_patch$` | `verb-runner` (+ `quality-judge` when opted in) |
 | `Stop` | none | `verb-runner` (+ `stop-judge` when opted in) |
+
+`verb-runner` appears in both rows only when the repository has evidence for at least one verb; without it the hook is not bound on either provider.
 
 The coverage boundary matters:
 
@@ -415,7 +417,7 @@ Generated projects also carry provider-specific automation recommenders. Both us
 | `ts-react-vite` | + `react` & `vite` deps | |
 | `ts-nextjs` | + `next` dep | |
 | `ts-lambda` | `aws-cdk-lib` dep or `template.yaml`/`samconfig.toml` | |
-| `rails` | `Gemfile` with `rails` | No structure linter; **hotwire secondary detection** suggests JS skills |
+| `rails` | `Gemfile` with `rails` | Verbs gated on `rubocop`/`rails` in the Gemfile; **hotwire secondary detection** suggests JS skills |
 | `generic` | never auto-detected | Minimal safety harness for any repo; explicit `--stack generic` only |
 
 Detection returns most-specific-first; packs inherit (`python-fastapi extends python-uv`), and adding a stack is a data module in `src/packs/`, not engine code.

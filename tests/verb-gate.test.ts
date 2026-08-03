@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createRenderPlan } from "../src/engine/render";
+import { createRenderPlan, writeRenderPlan } from "../src/engine/render";
 import { resolvePack } from "../src/packs/index";
 import { resolveVerbs } from "../src/engine/verbs";
 import { pythonUvVerbs } from "../src/packs/python-uv";
+import { validateRegistryItem } from "../src/registry/schema";
+import { createRuntimeReport } from "../src/engine/doctor-runtime";
 
 async function dir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "farrier-verbs-"));
@@ -73,4 +75,57 @@ describe("evidence-gated verbs", () => {
     expect(resolved.verbs.check).toBe("uv run ruff check . --extend-exclude .farrier && uv run pytest");
     expect(resolved.verbs.checkFast).toBe("uv run ruff check . --extend-exclude .farrier");
   });
+
+  // A pack published before verbs were gated declared a flat `check` that was
+  // the authoritative gate, and it could hold stages beyond lint and test.
+  // Recomposing the gate from the converted parts silently dropped them, which
+  // would weaken a published pack's verification on upgrade.
+  test("a legacy remote pack keeps every stage of its declared check", async () => {
+    const item = validateRegistryItem(
+      {
+        schemaVersion: 1,
+        type: "pack",
+        name: "demo",
+        version: "1.0.0",
+        pack: {
+          detect: { files: ["demo.toml"] },
+          skills: [],
+          hooks: [],
+          verbs: {
+            check: "tsc --noEmit && bun test && bun run build",
+            checkFast: "tsc --noEmit",
+            test: "bun test",
+            fmt: "prettier -w ."
+          }
+        }
+      } as never,
+      { name: "demo", type: "pack", version: "1.0.0" } as never
+    );
+
+    expect(item.type).toBe("pack");
+    if (item.type !== "pack") return;
+
+    const resolved = await resolveVerbs(await dir(), item.pack.verbs!);
+
+    expect(resolved.verbs.check).toBe("tsc --noEmit && bun test && bun run build");
+    expect(resolved.verbs.checkFast).toBe("tsc --noEmit");
+    expect(resolved.verbs.test).toBe("bun test");
+  });
+});
+
+describe("gateless harness runtime expectations", () => {
+  // The render path deliberately omits the justfile and the verb-runner
+  // binding when nothing has evidence, so demanding `just` there reports an
+  // unhealthy harness over a tool nothing generated uses.
+  test("doctor does not require just when no gate was rendered", async () => {
+    const root = await dir();
+    await pyproject(root, '[project]\nname = "bare"\nversion = "0.1.0"\n');
+    const plan = await createRenderPlan({ targetDir: root, pack: resolvePack("python-uv") });
+    await writeRenderPlan(plan);
+
+    const report = await createRuntimeReport({ targetDir: root, includeHookTests: false });
+
+    expect(report.problems.some((problem) => problem.id === "executable:just")).toBe(false);
+  }, 20_000);
+
 });
