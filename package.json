@@ -1,6 +1,6 @@
 {
   "name": "farrier",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Create, understand, validate, and evolve reliable coding-agent harnesses.",
   "type": "module",
   "bin": {
