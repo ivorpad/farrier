@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRenderPlan, writeRenderPlan } from "../src/engine/render";
+import { resolveVerbs } from "../src/engine/verbs";
 import { resolveToolchain } from "../src/engine/toolchain";
 import { createDoctorReport } from "../src/engine/doctor";
 import { applyUpdate, createUpdateReport } from "../src/engine/update";
@@ -238,5 +239,52 @@ describe("toolchain resolution", () => {
 
     await applyUpdate(dir);
     expect(await readFile(join(dir, "justfile"), "utf8")).toBe(modified);
+  });
+});
+
+describe("explicit full check through toolchain derivation", () => {
+  // A pack published before verbs were gated carries its authoritative `check`
+  // as `full`. Derivation rewrites lint and test for the detected manager, and
+  // used to rebuild the gate from those parts, which dropped any other stage
+  // the pack had declared. The empty-directory tests never reached this path.
+  test("a non-bun lockfile keeps every stage of an explicit full check", async () => {
+    const dir = await tempDir();
+    await tsProject(dir, { devDependencies: { vitest: "^3.0.0" } });
+    await writeFile(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+
+    const pack = {
+      packIds: ["ts-base"],
+      verbs: {
+        lint: { command: "bunx tsc --noEmit" },
+        test: { command: "bun test" },
+        fmt: { command: "bunx prettier --write ." },
+        full: { command: "bunx tsc --noEmit && bun test && bun run build" }
+      }
+    };
+
+    const resolution = await resolveToolchain(dir, pack as never);
+    const resolved = await resolveVerbs(dir, resolution.verbs);
+
+    // Derived parts follow the repository's manager...
+    expect(resolved.verbs.checkFast).toBe("pnpm exec tsc --noEmit");
+    expect(resolved.verbs.test).toBe("pnpm exec vitest run");
+    // ...while the declared aggregate survives intact, build stage included.
+    expect(resolved.verbs.check).toBe("bunx tsc --noEmit && bun test && bun run build");
+    // Keeping it verbatim can leave another manager's commands in the gate, so
+    // that has to be said rather than left for the user to discover at Stop.
+    expect(resolution.notes.some((note) => note.includes("kept verbatim"))).toBe(true);
+  });
+
+  test("built-in packs declare no full check, so the gate is still composed", async () => {
+    const dir = await tempDir();
+    await tsProject(dir, { devDependencies: { vitest: "^3.0.0" } });
+    await writeFile(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+
+    const resolution = await resolveToolchain(dir, resolvePack("ts-base"));
+    const resolved = await resolveVerbs(dir, resolution.verbs);
+
+    expect(resolution.verbs.full).toBeUndefined();
+    expect(resolved.verbs.check).toBe("pnpm exec tsc --noEmit && pnpm exec vitest run");
+    expect(resolution.notes.some((note) => note.includes("kept verbatim"))).toBe(false);
   });
 });

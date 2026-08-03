@@ -121,7 +121,14 @@ function derivedVerbs(
     // not get a recipe naming them.
     lint: packVerbs.lint && { ...packVerbs.lint, command: checkFast, evidence: `${packVerbs.lint.evidence ?? "declared"}, run through ${manager}` },
     test: packVerbs.test && { ...packVerbs.test, command: test, evidence: `${manager} provides the test script` },
-    fmt: packVerbs.fmt && { ...packVerbs.fmt, command: `${exec} prettier --write .`, evidence: `${packVerbs.fmt.evidence ?? "declared"}, run through ${manager}` }
+    fmt: packVerbs.fmt && { ...packVerbs.fmt, command: `${exec} prettier --write .`, evidence: `${packVerbs.fmt.evidence ?? "declared"}, run through ${manager}` },
+    // An explicit aggregate is carried through untouched. Recomposing the gate
+    // from the derived parts would drop whatever else the pack put in it (a
+    // build, a schema check), and rewriting its commands would mean guessing
+    // which words are package-manager invocations. Neither is ours to decide,
+    // so the command survives and resolveToolchain adds a note saying it was
+    // not adapted to the detected manager.
+    full: packVerbs.full
   };
 }
 
@@ -178,6 +185,11 @@ export async function resolveToolchain(
   }
 
   const runner = detectTestRunner(await readPackageJsonDependencies(repository));
+  if (pack.verbs.full !== undefined) {
+    notes.push(
+      `This pack declares an explicit full check (\`${pack.verbs.full.command}\`). It is kept verbatim rather than rewritten for ${chosen.manager}, so verify it runs with this repository's package manager.`
+    );
+  }
 
   return {
     verbs: derivedVerbs(pack.verbs, chosen.manager, runner?.runner),
