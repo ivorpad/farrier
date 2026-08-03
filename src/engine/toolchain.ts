@@ -104,6 +104,30 @@ function detectTestRunner(dependencies: PackageJsonDependencies | undefined): { 
   return undefined;
 }
 
+/** Command heads that identify which package manager a command runs through. */
+const managerInvocations: Record<JsPackageManager, readonly string[]> = {
+  bun: ["bun", "bunx"],
+  pnpm: ["pnpm"],
+  yarn: ["yarn"],
+  npm: ["npm", "npx"],
+};
+
+/**
+ * Whether a command invokes a package manager other than the detected one.
+ *
+ * A pack's explicit aggregate is only usable here if the repository can run
+ * it. One that calls `bun test` on a pnpm repository cannot: the gate fails on
+ * every Stop, and doctor will not catch it, because the runtime probe only
+ * checks the head of the `test` verb and never looks at `check-full`.
+ */
+function namesForeignManager(command: string, manager: JsPackageManager): boolean {
+  return Object.entries(managerInvocations).some(
+    ([candidate, heads]) =>
+      candidate !== manager &&
+      heads.some((head) => new RegExp(`(?:^|[;&|(\\s])${head}(?=\\s|$)`).test(command))
+  );
+}
+
 function derivedVerbs(
   packVerbs: PackVerbs,
   manager: Exclude<JsPackageManager, "bun">,
@@ -122,13 +146,12 @@ function derivedVerbs(
     lint: packVerbs.lint && { ...packVerbs.lint, command: checkFast, evidence: `${packVerbs.lint.evidence ?? "declared"}, run through ${manager}` },
     test: packVerbs.test && { ...packVerbs.test, command: test, evidence: `${manager} provides the test script` },
     fmt: packVerbs.fmt && { ...packVerbs.fmt, command: `${exec} prettier --write .`, evidence: `${packVerbs.fmt.evidence ?? "declared"}, run through ${manager}` },
-    // An explicit aggregate is carried through untouched. Recomposing the gate
-    // from the derived parts would drop whatever else the pack put in it (a
-    // build, a schema check), and rewriting its commands would mean guessing
-    // which words are package-manager invocations. Neither is ours to decide,
-    // so the command survives and resolveToolchain adds a note saying it was
-    // not adapted to the detected manager.
-    full: packVerbs.full
+    // An explicit aggregate survives only when this repository can run it.
+    // Kept, it preserves stages that recomposing from lint and test would drop
+    // (a build, a schema check); dropped, the gate is weaker but runnable.
+    // Rendering one that calls another package manager is the one option that
+    // helps nobody, so it is not on the table.
+    full: packVerbs.full && !namesForeignManager(packVerbs.full.command, manager) ? packVerbs.full : undefined
   };
 }
 
@@ -185,9 +208,9 @@ export async function resolveToolchain(
   }
 
   const runner = detectTestRunner(await readPackageJsonDependencies(repository));
-  if (pack.verbs.full !== undefined) {
+  if (pack.verbs.full !== undefined && namesForeignManager(pack.verbs.full.command, chosen.manager)) {
     notes.push(
-      `This pack declares an explicit full check (\`${pack.verbs.full.command}\`). It is kept verbatim rather than rewritten for ${chosen.manager}, so verify it runs with this repository's package manager.`
+      `This pack declares a full check (\`${pack.verbs.full.command}\`) that runs through a different package manager than ${chosen.manager}, so it is not used. The generated gate is composed from the derived commands instead and may verify less than the pack intended; port the remaining stages by hand if you need them.`
     );
   }
 

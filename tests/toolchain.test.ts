@@ -243,48 +243,63 @@ describe("toolchain resolution", () => {
 });
 
 describe("explicit full check through toolchain derivation", () => {
-  // A pack published before verbs were gated carries its authoritative `check`
-  // as `full`. Derivation rewrites lint and test for the detected manager, and
-  // used to rebuild the gate from those parts, which dropped any other stage
-  // the pack had declared. The empty-directory tests never reached this path.
-  test("a non-bun lockfile keeps every stage of an explicit full check", async () => {
+  async function pnpmRepo(): Promise<string> {
     const dir = await tempDir();
     await tsProject(dir, { devDependencies: { vitest: "^3.0.0" } });
     await writeFile(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+    return dir;
+  }
 
-    const pack = {
+  function legacyPack(fullCommand: string) {
+    return {
       packIds: ["ts-base"],
       verbs: {
         lint: { command: "bunx tsc --noEmit" },
         test: { command: "bun test" },
         fmt: { command: "bunx prettier --write ." },
-        full: { command: "bunx tsc --noEmit && bun test && bun run build" }
+        full: { command: fullCommand }
       }
     };
+  }
 
-    const resolution = await resolveToolchain(dir, pack as never);
+  // The whole point of gating verbs is that farrier never renders a gate the
+  // repository cannot run. An aggregate calling `bun test` on a pnpm repo is
+  // exactly that, and doctor would not catch it: the runtime probe checks the
+  // head of the `test` verb and never looks at check-full.
+  test("an aggregate naming another package manager is dropped, not rendered", async () => {
+    const dir = await pnpmRepo();
+
+    const resolution = await resolveToolchain(dir, legacyPack("bunx tsc --noEmit && bun test && bun run build") as never);
     const resolved = await resolveVerbs(dir, resolution.verbs);
 
-    // Derived parts follow the repository's manager...
+    expect(resolution.verbs.full).toBeUndefined();
+    expect(resolved.verbs.check).toBe("pnpm exec tsc --noEmit && pnpm exec vitest run");
+    expect(resolved.verbs.check).not.toContain("bun");
+    // The gate is now weaker than the pack intended, so that has to be said.
+    expect(resolution.notes.some((note) => note.includes("not used"))).toBe(true);
+  });
+
+  // A manager-neutral aggregate runs anywhere, so dropping it would lose
+  // stages for no reason.
+  test("a manager-neutral aggregate is kept with all its stages", async () => {
+    const dir = await pnpmRepo();
+
+    const resolution = await resolveToolchain(dir, legacyPack("make typecheck && make test && make build") as never);
+    const resolved = await resolveVerbs(dir, resolution.verbs);
+
+    expect(resolved.verbs.check).toBe("make typecheck && make test && make build");
     expect(resolved.verbs.checkFast).toBe("pnpm exec tsc --noEmit");
-    expect(resolved.verbs.test).toBe("pnpm exec vitest run");
-    // ...while the declared aggregate survives intact, build stage included.
-    expect(resolved.verbs.check).toBe("bunx tsc --noEmit && bun test && bun run build");
-    // Keeping it verbatim can leave another manager's commands in the gate, so
-    // that has to be said rather than left for the user to discover at Stop.
-    expect(resolution.notes.some((note) => note.includes("kept verbatim"))).toBe(true);
+    expect(resolution.notes.some((note) => note.includes("not used"))).toBe(false);
   });
 
   test("built-in packs declare no full check, so the gate is still composed", async () => {
-    const dir = await tempDir();
-    await tsProject(dir, { devDependencies: { vitest: "^3.0.0" } });
-    await writeFile(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+    const dir = await pnpmRepo();
 
     const resolution = await resolveToolchain(dir, resolvePack("ts-base"));
     const resolved = await resolveVerbs(dir, resolution.verbs);
 
     expect(resolution.verbs.full).toBeUndefined();
     expect(resolved.verbs.check).toBe("pnpm exec tsc --noEmit && pnpm exec vitest run");
-    expect(resolution.notes.some((note) => note.includes("kept verbatim"))).toBe(false);
+    expect(resolution.notes).toEqual([]);
   });
 });
