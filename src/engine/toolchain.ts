@@ -133,7 +133,11 @@ const managerInvocations: Record<JsPackageManager, readonly string[]> = {
  * pack asked for.
  */
 function namesForeignManager(command: string, manager: JsPackageManager): boolean {
-  const environmentPrefix = "(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*";
+  // An assignment value may be quoted or contain escapes, so it cannot be read
+  // as "everything up to whitespace": `CI="integration mode" bun test` would
+  // end the value mid-quote and hide the bun invocation behind it.
+  const assignmentValue = `(?:"(?:[^"\\\\]|\\\\.)*"|'[^']*'|\\\\.|[^\\s'"\\\\])*`;
+  const environmentPrefix = `(?:[A-Za-z_][A-Za-z0-9_]*=${assignmentValue}\\s+)*`;
 
   return Object.entries(managerInvocations).some(
     ([candidate, heads]) =>
