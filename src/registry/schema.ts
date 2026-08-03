@@ -250,15 +250,23 @@ function validateVerbs(value: unknown, path: string): PackVerbs | undefined {
     return {
       lint: validateVerb(value.lint, `${path}.lint`),
       test: validateVerb(value.test, `${path}.test`),
-      fmt: validateVerb(value.fmt, `${path}.fmt`)
+      fmt: validateVerb(value.fmt, `${path}.fmt`),
+      full: validateVerb(value.full, `${path}.full`)
     };
   }
 
-  const checkFast = optionalStringField(value.checkFast, `${path}.checkFast`) ?? stringField(value.check, `${path}.check`);
+  // The flat `check` was the authoritative gate for these packs and may hold
+  // stages beyond lint and test, so it is carried through verbatim as `full`
+  // rather than recomposed. Dropping a build or schema step here would
+  // silently weaken a published pack's gate on upgrade.
+  const evidence = "declared by a remote pack without evidence";
+  const check = stringField(value.check, `${path}.check`);
+  const checkFast = optionalStringField(value.checkFast, `${path}.checkFast`) ?? check;
   return {
-    lint: { command: checkFast, evidence: "declared by a remote pack without evidence" },
-    test: { command: stringField(value.test, `${path}.test`), evidence: "declared by a remote pack without evidence" },
-    fmt: { command: stringField(value.fmt, `${path}.fmt`), evidence: "declared by a remote pack without evidence" }
+    lint: { command: checkFast, evidence },
+    test: { command: stringField(value.test, `${path}.test`), evidence },
+    fmt: { command: stringField(value.fmt, `${path}.fmt`), evidence },
+    full: { command: check, evidence }
   };
 }
 

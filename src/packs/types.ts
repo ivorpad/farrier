@@ -206,6 +206,14 @@ export type PackVerbs = {
   test?: PackVerb;
   /** Formatter. Never part of a gate. */
   fmt?: PackVerb;
+  /**
+   * An explicit `check-full` command that replaces composition from the parts.
+   * Only for packs published before verbs were gated: their flat `check` was
+   * the authoritative gate and could contain stages beyond lint and test (a
+   * build, a schema validation), which recomposing from `lint` and `test`
+   * would silently drop. Built-in packs leave this unset.
+   */
+  full?: PackVerb;
 };
 
 /** What the render path consumes: composed commands, each present only with evidence. */

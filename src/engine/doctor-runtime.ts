@@ -4,7 +4,7 @@ import type { EnforcementAgent } from "./agent-selection";
 import type { DoctorProblem } from "./doctor";
 import { readManifest } from "./manifest";
 import { hooksDirectory } from "./render";
-import { resolveVerbs } from "./verbs";
+import { hasGate, resolveVerbs } from "./verbs";
 import { resolveToolchain } from "./toolchain";
 import { sxrSessionCrosscheck } from "./sxr-crosscheck";
 import { builtinCatalog, type PackCatalog } from "../registry/catalog";
@@ -241,7 +241,13 @@ export async function createRuntimeReport(input: {
   const pack = catalog.resolvePack(manifest.currentPackId);
   const toolchain = await resolveToolchain(targetDir, pack);
   const resolved = await resolveVerbs(targetDir, toolchain.verbs);
-  const runtimeBinaries = new Set(["python3", "just"]);
+  const runtimeBinaries = new Set(["python3"]);
+  // A harness with no gate generates no justfile and binds no verb-runner, so
+  // demanding `just` there would report an unhealthy harness over a tool
+  // nothing it generated uses.
+  if (hasGate(resolved.verbs)) {
+    runtimeBinaries.add("just");
+  }
   // A verb that failed evidence renders no recipe, so nothing needs its binary.
   const firstToken = resolved.verbs.test?.split(/\s+/)[0];
   if (firstToken && firstToken !== "echo") {

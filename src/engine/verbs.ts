@@ -18,9 +18,9 @@ export type VerbResolution = {
   evaluated: EvaluatedVerb[];
 };
 
-export type VerbId = "lint" | "test" | "fmt";
+export type VerbId = "lint" | "test" | "fmt" | "full";
 
-const verbOrder: VerbId[] = ["lint", "test", "fmt"];
+const verbOrder: VerbId[] = ["lint", "test", "fmt", "full"];
 
 function unconditional(verb: PackVerb): EvaluatedVerb["evidence"] {
   return verb.evidence ?? "no evidence required";
@@ -82,11 +82,15 @@ export async function resolveVerbs(dir: RepositoryInput, verbs: PackVerbs): Prom
 
   const lint = commandFor("lint");
   const test = commandFor("test");
+  // An explicit `full` wins: a legacy remote pack's aggregate may contain
+  // stages that recomposing from lint and test would drop.
+  const full = commandFor("full");
   const gate = [lint, test].filter((command): command is string => command !== undefined);
+  const check = full ?? (gate.length > 0 ? gate.join(" && ") : undefined);
 
   return {
     verbs: {
-      ...(gate.length > 0 ? { check: gate.join(" && ") } : {}),
+      ...(check !== undefined ? { check } : {}),
       ...(lint !== undefined ? { checkFast: lint } : {}),
       ...(test !== undefined ? { test } : {}),
       ...(commandFor("fmt") !== undefined ? { fmt: commandFor("fmt") } : {}),
@@ -110,9 +114,10 @@ export function declaredVerbs(verbs: PackVerbs): ResolvedVerbs {
   const gate = [verbs.lint?.command, verbs.test?.command].filter(
     (command): command is string => command !== undefined
   );
+  const check = verbs.full?.command ?? (gate.length > 0 ? gate.join(" && ") : undefined);
 
   return {
-    ...(gate.length > 0 ? { check: gate.join(" && ") } : {}),
+    ...(check !== undefined ? { check } : {}),
     ...(verbs.lint !== undefined ? { checkFast: verbs.lint.command } : {}),
     ...(verbs.test !== undefined ? { test: verbs.test.command } : {}),
     ...(verbs.fmt !== undefined ? { fmt: verbs.fmt.command } : {}),
