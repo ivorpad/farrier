@@ -292,6 +292,25 @@ describe("explicit full check through toolchain derivation", () => {
     expect(resolution.notes.some((note) => note.includes("not used"))).toBe(false);
   });
 
+  // Only executable positions count. A manager name can appear as an ordinary
+  // argument, and treating that as an invocation would discard an aggregate
+  // the repository could have run.
+  test.each([
+    ["node verify.js npm && make build", true, "manager name as an argument"],
+    ["make build --with npm-style", true, "manager name inside a longer word"],
+    ["make typecheck && make test", true, "no manager at all"],
+    ["pnpm exec tsc && pnpm test", true, "the repository's own manager"],
+    ["bunx tsc --noEmit && bun test", false, "foreign manager at the head"],
+    ["make a && bun run build", false, "foreign manager after a separator"],
+    ["CI=1 bun test", false, "foreign manager behind an environment assignment"]
+  ])("keeps=%p for %s", async (fullCommand, kept, _why) => {
+    const dir = await pnpmRepo();
+
+    const resolution = await resolveToolchain(dir, legacyPack(fullCommand as string) as never);
+
+    expect(resolution.verbs.full !== undefined).toBe(kept as boolean);
+  });
+
   test("built-in packs declare no full check, so the gate is still composed", async () => {
     const dir = await pnpmRepo();
 

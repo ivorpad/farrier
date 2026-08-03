@@ -113,18 +113,34 @@ const managerInvocations: Record<JsPackageManager, readonly string[]> = {
 };
 
 /**
- * Whether a command invokes a package manager other than the detected one.
+ * Whether a command *invokes* a package manager other than the detected one.
  *
  * A pack's explicit aggregate is only usable here if the repository can run
  * it. One that calls `bun test` on a pnpm repository cannot: the gate fails on
  * every Stop, and doctor will not catch it, because the runtime probe only
  * checks the head of the `test` verb and never looks at `check-full`.
+ *
+ * Only executable positions count. A manager name can appear as an ordinary
+ * argument (`node verify.js npm && make build` runs neither npm nor anything
+ * else foreign), and treating that as an invocation would discard an aggregate
+ * the repository could have run. Segments start at the string or after
+ * `;`, `&&`, `||`, `|`, `(`, or a newline, and may carry environment
+ * assignments before the executable.
+ *
+ * This is deliberately not a shell parser. It answers one bounded question,
+ * and errs toward keeping an aggregate: a missed invocation renders a gate
+ * that fails loudly, while a false positive silently drops verification the
+ * pack asked for.
  */
 function namesForeignManager(command: string, manager: JsPackageManager): boolean {
+  const environmentPrefix = "(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*";
+
   return Object.entries(managerInvocations).some(
     ([candidate, heads]) =>
       candidate !== manager &&
-      heads.some((head) => new RegExp(`(?:^|[;&|(\\s])${head}(?=\\s|$)`).test(command))
+      heads.some((head) =>
+        new RegExp(`(?:^|[;&|(\\n])\\s*${environmentPrefix}${head}(?=\\s|$)`).test(command)
+      )
   );
 }
 
