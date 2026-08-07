@@ -29,9 +29,11 @@ eval-workspaces/
 # tree would have been committed.
 docs/evaluations/
 docs/plans/
+docs/reviews/
 docs/PLAN.md
 docs/decision-gate.md
 docs/harness-model.md
+*.local.md
 prompt-exports/
 
 # This repository's own harness context. AGENTS.md is farrier's generated
