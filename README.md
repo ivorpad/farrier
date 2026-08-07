@@ -4,7 +4,7 @@ farrier generates the agent harness for a repository: the hooks, rules, verifica
 
 ## What it does, and what that is worth
 
-This section separates the two. Everything under "measured" comes from paired A/B rounds in `docs/evaluations/`; everything under "unmeasured" may still be useful, but no round has shown it.
+This section separates the two. Everything under "measured" comes from local paired A/B records that are intentionally excluded from this repository; the numbers are project notes, not independently reproducible published evidence. Everything under "unmeasured" may still be useful, but no round has shown it.
 
 **It writes a harness that runs.** AGENTS.md, CLAUDE.md, the native hook bindings, four deterministic Python hooks each with its own pytest suite, a justfile, the manifest, gitignore entries.
 
@@ -24,7 +24,7 @@ This section separates the two. Everything under "measured" comes from paired A/
 
 Across six completed A/B rounds, **no arm has ever changed a measured outcome.** The deny hooks prevented nothing observable, because the control agents never violated the standards in the first place; one advise-recommended enforcement hook fired zero times, since the agents complied by imitating neighboring code. The sixth round was the first outcome eval and its pre-registered kill criterion fired.
 
-That is not evidence the harness fails. It means the question is still open: you cannot measure prevention when the control never fails. Every round so far is codex-only, so nothing generalizes to Claude yet either. Answering it needs a task a bare agent fails at a known nonzero rate, which is the calibration no round has run.
+That is not evidence the harness fails. It means the question is still open: you cannot measure prevention when the control never fails. Every completed round so far is codex-only, so nothing generalizes to Claude yet either. Farrier now has a frozen prospective protocol and deterministic validators for snapshots, native-harness delivery, event origin, independent audit, rescue, and result scoring. Those validators make a future result falsifiable; they do not establish lift by themselves.
 
 `farrier advise` has never been A/B evaluated at all.
 
@@ -48,7 +48,7 @@ pnpm dlx farrier
 npx farrier
 ```
 
-Bare `farrier` on a terminal opens exactly three primary workflows: **⚒ Create a harness**, **✚ Create a skill**, and **✦ Advise this project**. Advice inspects the project and optionally its exact-project Claude/Codex sessions, then reports configuration improvements without changing the project.
+Bare `farrier` on a terminal opens six workflows: **Create harness**, **Find/Create skills**, **Improve harness**, **Compile preferences**, **Export harness**, and **Doctor & update**. Improve starts with local session evidence and can open the deeper advice flow; every write-capable workflow has a separate review and confirmation step.
 
 Every launcher accepts the same headless flags, for example `bunx farrier --detect --dry-run --dir .`. Bun is still required because the published executable runs Farrier's TypeScript entry point directly.
 
@@ -186,7 +186,7 @@ Four deterministic hooks ship by default; the two LLM judges are opt-in:
 }
 ```
 
-Enabling after creation: add the two hook ids to `hookIds`, run `farrier update --yes` (materializes the hook files and prompts), then add the judge entries to your binding file — update never rewrites an existing `.claude/settings.json`/`.codex/hooks.json`, though it will regenerate a deleted one. Every verdict lands in `.farrier/runtime/events.jsonl`. Measured honestly in `docs/evaluations/judge-eval-2026-07-22/`: the judge catches seeded duplication citing the map, at real cost — on a repo where the map plus AGENTS.md rules already kept the agent honest, it changed nothing, which is why it ships off.
+Enabling after creation: add the two hook ids to `hookIds`, run `farrier update --yes` (materializes the hook files and prompts), then add the judge entries to your binding file — update never rewrites an existing `.claude/settings.json`/`.codex/hooks.json`, though it will regenerate a deleted one. Every verdict lands in `.farrier/runtime/events.jsonl`. The judges ship off because each enabled path makes a model call and no tracked evaluation establishes outcome lift.
 
 Judge failures follow the selected hook event. PostToolUse quality feedback is non-destructive. A selected Stop judge fails closed on malformed input, invalid configuration, timeout, or internal failure and reports how to retry or disable the judge through Farrier's managed configuration.
 
@@ -223,9 +223,11 @@ farrier update --dir . --json   # machine-readable
 farrier update --dir . --yes    # repair
 ```
 
-Reports: stack drift (e.g. hotwire files appeared in your Rails repo → suggests JS skills), hook version drift, missing/outdated harness files, unacknowledged secondary findings.
+Reports: incompatible primary-pack drift, hook version drift, missing/outdated harness files, and unacknowledged secondary findings (for example, Hotwire files in a Rails repository suggesting JavaScript skills).
 
-Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Selected binding files (`.claude/settings.json` and/or `.codex/hooks.json`) and other files you customize — `AGENTS.md`, `justfile`, `tool-policy-rules.json` — are *reported* for manual review when modified, never clobbered; a missing selected binding is restored. Unselected vendor bindings are ignored and preserved. Manifests created before the `agents` field are treated as Claude-only. Update never switches packs and never installs skills without you.
+Repair (`--yes`) is deliberately conservative — it restores missing files and overwrites **only farrier-owned files** (hooks, prompts, advisor skill). Selected binding files (`.claude/settings.json` and/or `.codex/hooks.json`) and other files you customize — `AGENTS.md`, `justfile`, `tool-policy-rules.json` — are *reported* for manual review when modified, never clobbered; a missing selected binding is restored. Unselected vendor bindings are ignored and preserved. Manifests created before the `agents` field are treated as Claude-only. Headless update never switches packs and never installs skills without you.
+
+The interactive **Doctor & update** workflow handles deterministic incompatible primary-stack drift separately; compatible parent/child packs and an explicitly selected `generic` pack remain valid and produce no migration offer. Enter opens the exact old-pack → new-pack byte plan, including removals and the selected Claude/Codex bindings; nothing changes until the destructive confirmation. Migration preserves custom hooks, project-selected skills, learned tool-policy rules, and relevant registry pins. It removes only byte-exact old-pack output, blocks on locally edited obsolete files or installed old-pack skills, and aborts if the manifest, detection evidence, source material, or reviewed output changes before commit.
 
 ### `farrier learn` — mine sessions for repeated failures
 
@@ -277,11 +279,13 @@ LLM mode sends the extracted candidates (not your whole transcript) to the backe
 ### `farrier doctor` — is the harness healthy?
 
 ```bash
-farrier doctor --dir .          # exit 1 if problems
+farrier doctor --dir .          # static checks + fixture probes + generated hook tests
+farrier doctor --dir . --static # static checks only
+farrier doctor --dir . --live   # also require one real blocked Codex session
 farrier doctor --dir . --json
 ```
 
-Static checks: manifest and its non-empty agent selection parse, all selected inventory files exist, executable digests and permissions match, generated hook tests are present, selected Claude/Codex bindings contain their required Farrier entries, every tool-policy regex compiles, skill provenance/cases are reported, and judge/quality config is shape-valid. Doctor does not run hooks or project tests. Unrelated user-authored Codex hooks are allowed. Runtime Codex trust/approval remains a `/hooks` check. Good in CI: `farrier doctor --dir . || exit 1`.
+Static checks cover the manifest, selected inventory, executable digests and permissions, binding entries, tool-policy regexes, skill provenance/cases, and judge/quality config. When static health passes, Doctor executes the literal installed binding commands against deny/allow fixtures, verifies their event-log writes, and runs the generated hook pytest suite; it does not run the project's application tests. `--static` skips that runtime layer. `--live` additionally starts one real Codex session and requires a blocked event, which is the only mode that tests runner delivery rather than just the installed command path. Unrelated user-authored Codex hooks are allowed. Good in CI: `farrier doctor --dir . || exit 1`.
 
 ### `farrier advise` — evidence-backed project advice
 
@@ -319,7 +323,7 @@ The coordinator can prepare the five-review blinded packet without resolving a b
 farrier audit-panel prepare --manifest ./panel.json --output ./panel-packet --json
 ```
 
-The manifest format is shown in `docs/evaluations/harness-audit-panel-manifest.example.json`. The example's dollar amount is a placeholder proposal, not approval to spend it. The command accepts three distinct committed Git roots with a clean tracked worktree, rejects tracked environment or private-key material, and creates 15 read-only physical snapshots plus all 30 baseline/deep plans. It verifies canonical paths, whole-snapshot and selected-corpus digests, unique reviewer ordering, source-blind reviewer files, and at least one multi-worker deep plan per reviewer. It never calls a provider and refuses to replace an existing output path. The generated budget is a proposal only: the packet stays `awaiting-external-approval`, records zero provider calls, and cannot stand in for the separate external panel approval.
+The manifest shape is defined by [`HarnessAuditPanelManifest`](src/engine/harness-audit-panel-packet.ts) and exercised end to end in [`tests/harness-audit-panel-packet.test.ts`](tests/harness-audit-panel-packet.test.ts). The command accepts three distinct committed Git roots with a clean tracked worktree, rejects tracked environment or private-key material, and creates 15 read-only physical snapshots plus all 30 baseline/deep plans. It verifies canonical paths, whole-snapshot and selected-corpus digests, unique reviewer ordering, source-blind reviewer files, and at least one multi-worker deep plan per reviewer. It never calls a provider and refuses to replace an existing output path. The generated budget is a proposal only: the packet stays `awaiting-external-approval`, records zero provider calls, and cannot stand in for the separate external panel approval.
 
 Audit recommendations are report-only. Each one names a real defect, change layer, exact file and line, local counterchecks, affected artifact, proposed correction, operational risk, and remaining uncertainty. Model results cannot use confidence claims, call themselves validated, invent artifact paths, turn absence into speculative creation work, assert link health without a semantic link-health check, contradict a referenced-path result, use a missing result from another artifact or manifest hook, use a package countercheck from a different manifest scope, call an existing mypy module target stale, call a listed verification target missing, misstate the declared package manager, call an exact package-manager declaration unpinned, claim under alternate omitted-stage wording that a named package gate lacks a stage it invokes, or route completion-gate defects to guidance or toolchain. JSON reports include calls, provider-reported input/output tokens when available, wall latency, cumulative model time, corpus bounds, and rejected model candidates.
 
@@ -337,7 +341,7 @@ Concurrent backend work does not mean concurrent filesystem commits. Skill-creat
 
 While batch planning/authoring runs, Ctrl+C or Command-Z requests cancellation through the batch's one abort signal, stops queued work, terminates running backend process groups, and waits for all jobs to settle. A cancellation arriving after the atomic file transaction begins does not interrupt it mid-commit; the transaction finishes or rolls back first. OpenTUI exposes Command as the `super` modifier, so the binding is `super+z`, never plain `z`. The host terminal must deliver an enhanced Super-modified key event (for example through the Kitty keyboard protocol); terminals that intercept Command-Z or cannot encode Super will not deliver it, and Ctrl+C remains the portable cancellation key. Headless users continue to choose with `--backend claude|codex`; headless advice remains report-only, progress stages go to stderr, and `--json` stdout remains valid machine-readable JSON.
 
-Every accepted recommendation has a stable ID, category, one target provider, reason, benefit, validated evidence IDs, confidence, evidence origin, and a provider-supported implementation route. Registry references must match an exact verified candidate. Malformed, duplicated, unsupported, invented, or unsafe results are rejected with reasons. A broad report keeps the top two recommendations per applicable category; a focused category may return up to five. Valid items past that bound remain in `omittedRecommendations` with their ranking reason. There is no global recommendation target and no recovery call that fills missing categories. Hook output is declarative, and hooks that commit, push, publish, or deploy automatically are rejected.
+Every accepted recommendation has a stable ID, category, one target provider, reason, benefit, validated evidence IDs, confidence, evidence origin, and a provider-supported implementation route. Registry references are meaningful only for skills, plugins, and MCP, where they must match an exact verified candidate; a misplaced ref on guidance, hooks, or subagents is stripped with a validation note so the otherwise valid local recommendation survives. Malformed, duplicated, unsupported, invented, or unsafe results are rejected with reasons. A broad report keeps the top two recommendations per applicable category; a focused category may return up to five. Valid items past that bound remain in `omittedRecommendations` with their ranking reason. There is no global recommendation target and no recovery call that fills missing categories. Hook output is declarative, and hooks that commit, push, publish, or deploy automatically are rejected.
 
 Advice analysis is always read-only, and headless advice remains report-only. The interactive TUI may create one selected recommendation or a reviewed batch only after opening a separate review screen and receiving explicit confirmation; no report result is applied automatically. Human and JSON output remain two renderings of the same validated report.
 
@@ -362,7 +366,7 @@ The wizard has a **Create** step (Stack → Skills → Create → Hooks → Lear
 
 Vague briefs make dumb skills, so the standalone create flow **asks first**: before authoring, farrier makes one read-only backend call (`claude -p` / `codex exec`) that proposes 2–4 concrete questions about whatever the description leaves open — language, specific libraries, input/output formats — each with recommended options, a "let the creator decide" escape hatch, and free-text input. Escape leaves a focused text field first; outside the field, Escape or `b` finishes the interview with the answers so far. Your answers are folded into the brief as an "Implementation decisions (follow these exactly)" block before it reaches the skill-creator. Toggle it off with the "ask clarifying questions first" checkbox; the wizard's Create step asks the same questions at queue time. Headless `farrier skill new` asks only with `--refine` (interactive: numbers pick options, free text is used verbatim, empty lets the creator decide) — otherwise put the decisions in the description yourself. If the authored skill's directory already exists, the standalone flow and the harness wizard both pause with the shared confirmation grammar: `y` replaces it, while `n` or Escape keeps the existing copy (the new one stays in `.farrier-staging/`); headless replaces only with `--force`.
 
-You don't need the full wizard to create a skill: bare `farrier` opens the three-workflow launcher—**⚒ Create a harness**, **✚ Create a skill**, or **✦ Advise this project**—and bare `farrier skill new` (optionally with `--dir`) on a terminal opens the same standalone create flow directly: describe → check agents → ⚒ Create → per-skill results.
+You don't need the harness wizard to create a skill: choose **Find/Create skills** from bare `farrier`, or run bare `farrier skill new` (optionally with `--dir`) to open the same standalone flow directly: describe → check agents → Create → per-skill results.
 
 #### Interactive keyboard grammar
 
@@ -482,13 +486,14 @@ Built-in defaults when nothing is configured: skill creation authors with **Opus
 bun test              # engine + CLI + wizard-machine tests
 bun run typecheck     # tsc --noEmit
 bun run test:hooks    # pytest for the hook templates (needs uv)
+bun run test:evaluations # prospective evidence contracts + typecheck
 bun run check         # all of the above — the verb the harness itself would run
 just eval-smoke       # one live cell per fixture repo: harness generates, agent runs, hooks fire
 ```
 
-Grid evals (A/B arms, seeds, verdicts) live in `docs/evaluations/` — see its README for the kit and every round's evidence.
+`test:evaluations` checks the frozen protocol, snapshot isolation, prompt delivery, event provenance, independent-audit parity, rescue accounting, adversarial forgery cases, and result aggregation in [`src/engine/evaluations/`](src/engine/evaluations/). It validates fixtures, not scored runs; no Farrier CLI command launches or records the study, and the Codex prompt proof establishes byte inclusion rather than model reliance or outcome improvement. Live grids remain local artifacts and are not tracked.
 
-Architecture in one breath: **packs are declarative data** (`src/packs/`), the **engine** renders/detects/updates/learns/doctors (`src/engine/`), **hook templates** are self-contained Python scripts with tests (`src/templates/hooks/`), and the **TUI** is a pure reducer (`src/tui/machine.ts`, zero opentui imports) with thin opentui-react components around it.
+Architecture in one breath: **packs are declarative data** (`src/packs/`), the **engine** renders, detects, updates, migrates, evaluates, learns, and doctors (`src/engine/`), **hook templates** are self-contained Python scripts with tests (`src/templates/hooks/`), and the **TUI** is a pure reducer (`src/tui/machine.ts`, zero opentui imports) with thin opentui-react components around it.
 
 ## Portability rule
 
