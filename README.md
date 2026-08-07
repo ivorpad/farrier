@@ -53,7 +53,8 @@ Bare `farrier` on a terminal opens six workflows: **Create harness**, **Find/Cre
 Every launcher accepts the same headless flags, for example `bunx farrier --detect --dry-run --dir .`. Bun is still required because the published executable runs Farrier's TypeScript entry point directly.
 
 ```bash
-cd ~/src/tries/2026-07-02-farrier
+git clone https://github.com/ivorpad/farrier.git ~/src/farrier
+cd ~/src/farrier
 bun install
 ```
 
@@ -62,7 +63,7 @@ bun install
 ```bash
 mkdir ~/src/my-api && cd ~/src/my-api
 uv init --package .                                # native generator makes the code
-bun run ~/src/tries/2026-07-02-farrier/src/cli.ts  # bare farrier on a TTY = wizard
+bun run ~/src/farrier/src/cli.ts                   # bare farrier on a TTY = wizard
 ```
 
 The wizard walks: **Stack → Skills → Create → Hooks → Learn → Review → write**. Claude and Codex enforcement targets are checkboxes at the top of the existing Hooks screen; this does not add another wizard step.

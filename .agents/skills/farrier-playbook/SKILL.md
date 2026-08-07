@@ -1,11 +1,11 @@
 ---
 name: farrier-playbook
-description: "Process playbook distilled from the 2026-07-02-farrier build: 4 phased gate(s) (skeleton-before-features, vertical-slice-before-capabilities, evidence-before-complete, ...) with exit evidence per gate. Use when implementing or resuming a project on this stack."
+description: "Process playbook distilled from the farrier build: 4 phased gate(s) (skeleton-before-features, vertical-slice-before-capabilities, evidence-before-complete, ...) with exit evidence per gate. Use when implementing or resuming a project on this stack."
 ---
 
 # farrier-playbook
 
-Distilled from the agent sessions that built 2026-07-02-farrier (2026-07-02 to 2026-07-23). Every gate below exists because skipping it cost real time on that build; per-gate rationale and evidence live in `references/gates.md` so a gate can be challenged instead of ossifying.
+Distilled from the agent sessions that built farrier (2026-07-02 to 2026-07-23). Every gate below exists because skipping it cost real time on that build; per-gate rationale and evidence live in `references/gates.md` so a gate can be challenged instead of ossifying.
 
 ## Operating style (earned, do not regress)
 

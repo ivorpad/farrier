@@ -1,6 +1,6 @@
 # Gate catalog (distilled)
 
-Each gate carries a portable statement, a stack binding, the transcript symptom it was matched on, its catalog origin, and the evidence from 2026-07-02-farrier that selected it. Evidence stays inline so a gate can be challenged later instead of ossifying.
+Each gate carries a portable statement, a stack binding, the transcript symptom it was matched on, its catalog origin, and the evidence from farrier that selected it. Evidence stays inline so a gate can be challenged later instead of ossifying.
 
 ## skeleton-before-features
 - Portable: Build a navigable skeleton of the whole UI with placeholder data and get it approved before writing feature logic.
