@@ -28,9 +28,11 @@ That is not evidence the harness fails. It means the question is still open: you
 
 `farrier advise` has been through one arm: round 5 installed an enforcement hook it recommended, and that hook fired zero times. What no round has scored is the recommendations themselves, their precision and recall against known defects. The blinded audit panel is the instrument built for that, and it is still awaiting external approval with zero provider calls made.
 
-### What does not work yet
+### The learning loop, and where it stops
 
-`farrier learn` mines sessions for repeated failures and proposes primitives. On real data it currently proposes nothing: 35 codex sessions of one project produced zero proposals, 12 of another produced zero. That is not a parsing failure, it is the eligibility filter, which drops exploration commands, drops anything containing a verification verb, and requires the same failure across two distinct sessions. Treat the learning loop as unfinished.
+`farrier learn` mines sessions for repeated failures and proposes primitives. Through v0.6.2 it proposed nothing on any real project; v0.7.0 fixed the three causes (exact-command keys, a length and composition filter that excluded the whole codex backend, and a candidate-event path that read Claude transcripts only). Measured before → after on three projects: 73 codex + 21 Claude sessions, 2 → 7 proposals; 109 codex sessions with no Claude history at all, 0 → 5 tool-policy proposals; a third stayed at 6 but on better evidence, since a `sqlite3` invocation that failed 33 times across 5 sessions now aggregates instead of scattering into singletons. Details in the [learn section](#farrier-learn--mine-sessions-for-repeated-failures).
+
+What still stops it: a project whose failures never repeat across two sessions yields nothing, by design. And the Codex Desktop `exec` tool records no per-command exit status — its outputs read `Script completed` whatever the commands inside did — so only script-level failures are countable there. Learn reports that in its notes rather than showing a quiet zero.
 
 Everything farrier generates is declarative data plus tested templates. The LLM never writes hook code; it only proposes data the tested engine renders.
 
@@ -81,7 +83,7 @@ Step by step:
 - *Stack*: your detected stack is preselected and annotated; Enter continues with it.
 - *Skills*: Farrier derives up to four registry queries from installed libraries and project capabilities, then searches skills.sh without an LLM. Pack defaults remain pre-ticked. Optional **Research with Claude/Codex** is explicit, says that it makes two LLM calls, and can be cancelled.
 - *Hooks*: choose Claude, Codex, or both enforcement targets, then toggle any of the six pre-ticked protections. At least one target remains selected. CLI availability is informational and never removes an option or changes the saved selection.
-- *Learn*: record intent to mine sessions in `.farrier.json`. See the learn section below for its current status, which is that it proposes nothing on real data yet.
+- *Learn*: record intent to mine sessions in `.farrier.json`. See the learn section below for what it does and does not catch.
 - *Review*: the same creation plan used by headless mode, including per-file create/merge/unchanged/replace/blocked actions and why each file exists. Enter writes only an accepted plan, then installs skills into `.claude/skills/` and `.agents/skills/` for Claude Code and Codex.
 
 ### B. New project, headless (for scripts, CI, or agents driving farrier)
@@ -234,7 +236,13 @@ The interactive **Doctor & update** workflow handles deterministic incompatible 
 
 Intended to turn *things that went wrong in your sessions* into *rules that prevent them next time*, as declarative data, never generated code.
 
-**Status: it proposes nothing on real data.** Measured against 35 codex sessions from one project and 12 from another, both returned zero proposals. The pipeline reads the transcripts correctly; the eligibility filter is what empties it. It drops any command over 120 characters or containing a pipe, drops around 50 exploration heads (`git`, `python3`, `rg`, `curl`), drops anything containing a verification verb, and then requires the same failure in two distinct sessions. On the sessions measured, 25 distinct failing commands produced exactly one cross-session repeat, and that one was excluded by the vocabulary. The walkthrough below is accurate about the mechanics; do not expect output from it yet.
+**Status since v0.7.0: it produces proposals on real projects.** Earlier versions returned zero everywhere, for three reasons:
+
+- A 120-character cap and a no-pipes rule dropped 131 of 146 failures on one measured project, against 2 dropped by the exploration rule and 0 by the verification rule. Codex records shell work as chained scripts with absolute paths, so those two rules excluded that backend wholesale. Length and composition no longer disqualify anything; every segment of a chain still has to pass the semantic filters, so `set -o pipefail; xcodebuild … test` is still a verification run and `cd repo && pnpm package` keys on `pnpm package`.
+- Signals were keyed by exact command text, so `xcrun simctl shutdown <UUID>` and the same command with another UUID were two singletons that never reached the two-session threshold. Keys are now the leading verbs, with wrappers peeled first (`bash -lc '…'`, `rtk proxy sh -c '…'`) so exploration cannot hide inside one.
+- Candidate events, the half that becomes tool-policy rules, read Claude transcripts only. A codex-only project produced none however much history it had. Failed codex commands now feed the same set. The codex reader stays local: its text is never sent to a provider, so a run whose candidates are all codex-derived proposes deterministically and makes no backend call.
+
+What it still misses: failures that never repeat across two sessions (deliberate), around 50 exploration heads and any command carrying a verification verb (`test`, `lint`, `build` — iteration, not a harness gap), and command-level exit codes under the Codex Desktop `exec` tool, which does not record them.
 
 **How to use it, start to finish:**
 

@@ -179,7 +179,7 @@ function summarizeReason(text: string, denied: boolean): string {
   return firstUsefulLine.length > 160 ? `${firstUsefulLine.slice(0, 157)}...` : firstUsefulLine;
 }
 
-function toCandidateEvents(observations: TranscriptObservation[]): CandidateEvent[] {
+export function toCandidateEvents(observations: TranscriptObservation[]): CandidateEvent[] {
   const byCommand = new Map<string, { command: string; reasons: string[]; count: number }>();
   const prefixCounts = new Map<string, number>();
 
@@ -230,7 +230,7 @@ export async function extractCandidateEvents(
     fileFilter?: (fileName: string) => boolean;
     recordFilter?: (record: Record<string, unknown>) => boolean;
   } = {}
-): Promise<{ events: CandidateEvent[]; notes: string[] }> {
+): Promise<{ events: CandidateEvent[]; notes: string[]; observations: TranscriptObservation[] }> {
   const maxEvents = options.maxEvents ?? transcriptEventLimit;
   const notes: string[] = [];
   const observations: TranscriptObservation[] = [];
@@ -244,7 +244,8 @@ export async function extractCandidateEvents(
   } catch {
     return {
       events: [],
-      notes: [`Transcript directory not found or unreadable: ${transcriptsDir}`]
+      notes: [`Transcript directory not found or unreadable: ${transcriptsDir}`],
+      observations: []
     };
   }
 
@@ -326,7 +327,8 @@ export async function extractCandidateEvents(
 
   return {
     events: toCandidateEvents(observations),
-    notes
+    notes,
+    observations
   };
 }
 
@@ -783,17 +785,30 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
     notes.push("No .farrier.json here yet: mined sessions only. Applying a proposal installs into the harness, so run farrier create first.");
   }
 
+  // Candidate events come from both backends: the Claude walk below and this
+  // tap over codex rollouts, so a codex-only project is not silently empty.
+  const codexObservations: TranscriptObservation[] = [];
   const [candidateResult, existingRules, signalScan] = await Promise.all([
     extractCandidateEvents(transcriptsDir),
     readToolPolicyRulesDocument(targetDir),
     mineFailureSignalsFromSources({
       claudeTranscriptsDir: transcriptsDir,
       codexProjectDir: targetDir,
-      codexSessionsDir: options.codexSessionsDir
+      codexSessionsDir: options.codexSessionsDir,
+      onCodexFailure: (event) => {
+        if (codexObservations.length >= transcriptEventLimit) return;
+        codexObservations.push({
+          command: event.command,
+          reason: summarizeReason(event.text, event.isDenied)
+        });
+      }
     })
   ]);
 
   notes.push(...candidateResult.notes);
+  if (codexObservations.length > 0) {
+    notes.push(`Merged ${codexObservations.length} failed codex command(s) into the candidate events.`);
+  }
   errors.push(...existingRules.errors);
   const signals = signalScan.signals;
   let primitiveProposals = routeFailureSignals({
@@ -804,15 +819,23 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
   for (const note of signalScan.notes) {
     if (!notes.includes(note)) notes.push(note);
   }
+  const mergedEvents =
+    codexObservations.length > 0
+      ? toCandidateEvents([...candidateResult.observations, ...codexObservations])
+      : candidateResult.events;
   const reportEvidenceSet = createEvidenceSet({
     workflow: "learn",
-    items: candidateResult.events,
+    items: mergedEvents,
     maxItems: 200,
     maxItemBytes: 8_000,
     maxTotalBytes: 1_600_000
   });
   const candidateEvents = reportEvidenceSet.items;
-  const evidenceSet = createEvidenceSet({ workflow: "learn", items: candidateEvents });
+  // The codex reader is local and counting-only by design: its text never
+  // reaches a provider. Codex-derived candidates therefore stay in the local
+  // report and the deterministic path, and only Claude-derived events are
+  // eligible for the backend payload.
+  const evidenceSet = createEvidenceSet({ workflow: "learn", items: candidateResult.events });
   const backendCandidateEvents = evidenceSet.items;
   if (reportEvidenceSet.truncated) {
     notes.push(`Learn report evidence was bounded: retained ${reportEvidenceSet.itemCount}/${reportEvidenceSet.inputItemCount} candidates; ${reportEvidenceSet.truncatedItemCount} truncated and ${reportEvidenceSet.omittedItemCount} omitted.`);
@@ -856,6 +879,11 @@ export async function createLearnReport(options: LearnOptions): Promise<LearnRep
     if (options.noLlm) {
       rawProposals = deterministicRuleProposals(candidateEvents);
       notes.push("Using deterministic --no-llm proposal mode.");
+    } else if (backendCandidateEvents.length === 0) {
+      rawProposals = deterministicRuleProposals(candidateEvents);
+      notes.push(
+        "Every candidate came from codex sessions, whose text stays on this machine; proposed deterministically without a backend call."
+      );
     } else {
       const backend = options.backend ?? "claude";
 

@@ -165,6 +165,111 @@ describe("learn deterministic proposals", () => {
   });
 });
 
+describe("codex-only projects", () => {
+  test("failed codex commands become candidate events without any Claude transcript", async () => {
+    const project = await tempDir();
+    const transcripts = join(await tempDir("farrier-learn-transcripts-"), "never-written");
+    const sessions = await tempDir("farrier-learn-codex-sessions-");
+    await renderPack(project, "python-fastapi");
+
+    const day = join(sessions, "2026", "07", "20");
+    await mkdir(day, { recursive: true });
+    for (const stem of ["rollout-2026-07-20T08-00-00-c0de", "rollout-2026-07-20T09-00-00-c0df"]) {
+      await writeJsonl(join(day, `${stem}.jsonl`), [
+        {
+          timestamp: "2026-07-20T08:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "019f0000-0000-0000-0000-000000000000", cwd: project, originator: "codex_cli_rs" }
+        },
+        {
+          timestamp: "2026-07-20T08:02:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            name: "exec_command",
+            arguments: JSON.stringify({ cmd: "pip install requests", workdir: project }),
+            call_id: "call_1"
+          }
+        },
+        {
+          timestamp: "2026-07-20T08:02:05.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call_1",
+            output: "Command: /bin/zsh -lc 'pip install requests'\nProcess exited with code 1\nOutput:\nblocked: use uv instead\n"
+          }
+        }
+      ]);
+    }
+
+    const report = await createLearnReport({
+      targetDir: project,
+      transcriptsDir: transcripts,
+      codexSessionsDir: sessions,
+      noLlm: true
+    });
+
+    expect(report.candidateEvents.map((event) => event.command)).toContain("pip install requests");
+    expect(report.notes.some((note) => note.includes("failed codex command"))).toBe(true);
+    expect(report.proposedRules.length).toBeGreaterThan(0);
+  });
+
+  test("codex candidate text never reaches the proposal backend", async () => {
+    const project = await tempDir();
+    const transcripts = join(await tempDir("farrier-learn-transcripts-"), "never-written");
+    const sessions = await tempDir("farrier-learn-codex-sessions-");
+    await renderPack(project, "python-fastapi");
+
+    const day = join(sessions, "2026", "07", "20");
+    await mkdir(day, { recursive: true });
+    await writeJsonl(join(day, "rollout-2026-07-20T08-00-00-pr1v.jsonl"), [
+      {
+        timestamp: "2026-07-20T08:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "019f0000-0000-0000-0000-000000000002", cwd: project, originator: "codex_cli_rs" }
+      },
+      {
+        timestamp: "2026-07-20T08:02:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "deploy-tool ship --token hunter2", workdir: project }),
+          call_id: "call_1"
+        }
+      },
+      {
+        timestamp: "2026-07-20T08:02:05.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: "Process exited with code 1\nOutput:\nrefused for private-corpus reasons\n"
+        }
+      }
+    ]);
+
+    let backendCalls = 0;
+    const runner: LearnCommandRunner = async () => {
+      backendCalls += 1;
+      return { exitCode: 0, stdout: JSON.stringify({ rules: [] }), stderr: "" };
+    };
+
+    const report = await createLearnReport({
+      targetDir: project,
+      transcriptsDir: transcripts,
+      codexSessionsDir: sessions,
+      backend: "claude",
+      runner
+    });
+
+    expect(backendCalls).toBe(0);
+    expect(report.notes.some((note) => note.includes("stays on this machine"))).toBe(true);
+    expect(report.candidateEvents.map((event) => event.command)).toContain("deploy-tool ship --token hunter2");
+  });
+});
+
 describe("learn LLM proposal validation", () => {
   test("redacts and bounds candidate evidence before backend invocation and JSON reporting", async () => {
     const project = await tempDir();

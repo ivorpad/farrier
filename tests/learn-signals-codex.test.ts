@@ -271,7 +271,9 @@ describe("codex desktop 0.145 custom exec mining", () => {
     expect(repeated?.key).toBe("npm deploy");
     expect(repeated?.sessionCount).toBe(2);
     // Events were extracted, so the format-drift tripwire stays quiet.
-    expect(scan.notes).toEqual([]);
+    expect(scan.notes.filter((note) => note.includes("format may have drifted"))).toEqual([]);
+    // The shape itself is still reported: it hides per-command exit codes.
+    expect(scan.notes.some((note) => note.includes("no per-command exit status"))).toBe(true);
   });
 
   test("Script completed output is not a failure even when the text looks error-ish", async () => {

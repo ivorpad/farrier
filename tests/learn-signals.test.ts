@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mineFailureSignals, type FailureSignal } from "../src/engine/learn-signals";
+import { failureSignalKey, mineFailureSignals, type FailureSignal } from "../src/engine/learn-signals";
 import { citeEvidence, routeFailureSignals } from "../src/engine/failure-router";
 import { createLearnReport, formatLearnReport } from "../src/engine/learn";
 import { createRenderPlan, writeRenderPlan } from "../src/engine/render";
@@ -184,10 +184,77 @@ describe("failure-signal mining", () => {
     expect(repeated?.sessionCount).toBe(2);
   });
 
+  test("the same operation with different arguments aggregates into one signal", async () => {
+    const transcripts = await tempDir();
+    await writeTranscript(transcripts, "sim-a.jsonl", [
+      bashUse("s1", "xcrun simctl shutdown E6CAE5F0-701A-46A6-9AC0-2F664915DECC"),
+      toolResult("s1", "An error was encountered processing the command: Invalid device state")
+    ]);
+    await writeTranscript(transcripts, "sim-b.jsonl", [
+      bashUse("s2", "cd /Users/dev/app && xcrun simctl shutdown 0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0"),
+      toolResult("s2", "An error was encountered processing the command: Invalid device state")
+    ]);
+
+    const scan = await mineFailureSignals(transcripts);
+    const repeated = scan.signals.filter((item) => item.class === "repeated-failure");
+
+    expect(repeated).toHaveLength(1);
+    expect(repeated[0]!.key).toBe("xcrun simctl shutdown");
+    expect(repeated[0]!.sessionCount).toBe(2);
+  });
+
+  test("quoted rejection wording is not an incident unless a git command produced it", async () => {
+    const transcripts = await tempDir();
+    const rejection =
+      "remote: error: File assets/framework.dylib is 141.00 MB; this exceeds GitHub's file size limit of 100.00 MB";
+    await writeTranscript(transcripts, "read-session.jsonl", [
+      bashUse("r1", "bun run src/cli.ts learn --dir ."),
+      toolResult("r1", `error: the mining regex matches "${rejection}"`)
+    ]);
+
+    const scan = await mineFailureSignals(transcripts);
+    expect(scan.signals.find((item) => item.class === "oversized-commit")).toBeUndefined();
+  });
+
   test("missing transcript directory returns a note and no signals", async () => {
     const scan = await mineFailureSignals(join(await tempDir(), "missing"));
     expect(scan.signals).toEqual([]);
     expect(scan.notes[0]).toContain("not found or unreadable");
+  });
+});
+
+describe("failureSignalKey", () => {
+  test("keys on the leading verbs, not the arguments that vary per run", () => {
+    expect(failureSignalKey("xcrun simctl shutdown E6CAE5F0-701A-46A6-9AC0-2F664915DECC")).toBe("xcrun simctl shutdown");
+    expect(failureSignalKey("sqlite3 -header -column /Users/dev/Library/app.sqlite 'select 1'")).toBe("sqlite3");
+    expect(failureSignalKey("bun run src/cli.ts doctor --dir . --json")).toBe("bun run");
+  });
+
+  test("chains and length no longer disqualify a command; the shell prelude is skipped", () => {
+    expect(failureSignalKey(`cd /Users/dev/${"nested/".repeat(20)}app && pnpm package`)).toBe("pnpm package");
+    expect(failureSignalKey("set -euo pipefail; asc pricing availability view --app 6793902238")).toBe(
+      "asc pricing availability"
+    );
+  });
+
+  test("wrappers do not hide the command that failed", () => {
+    expect(failureSignalKey("bash -lc 'rg -n needle src'")).toBeUndefined();
+    expect(failureSignalKey("rtk proxy sh -c 'sed -n 1,40p src/main.ts'")).toBeUndefined();
+    expect(failureSignalKey("rtk proxy grep -rn thing src")).toBeUndefined();
+    expect(failureSignalKey("timeout 200 bun run migrate")).toBe("bun run migrate");
+  });
+
+  test("shell one-liners and loops do not invent commands out of their bodies", () => {
+    expect(failureSignalKey(`bun -e 'import { run } from "./x"; await run()'`)).toBeUndefined();
+    expect(failureSignalKey("for f in *.ts; do echo $f; done")).toBeUndefined();
+    expect(failureSignalKey("bash scripts/one-off.sh")).toBeUndefined();
+  });
+
+  test("a verification or exploration segment anywhere still drops the whole command", () => {
+    expect(failureSignalKey("set -o pipefail; xcodebuild -scheme App -destination 'x' test")).toBeUndefined();
+    expect(failureSignalKey("pnpm build | tee build.log")).toBeUndefined();
+    expect(failureSignalKey("cd app && rg -n 'needle' src")).toBeUndefined();
+    expect(failureSignalKey("make")).toBeUndefined();
   });
 });
 

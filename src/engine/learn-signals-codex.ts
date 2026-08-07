@@ -9,6 +9,7 @@ import {
   scanClaudeTranscripts,
   scanToolEvents,
   skillNamesFromCommand,
+  type FailureObservation,
   type FailureSignalScan,
   type SessionScanState,
   type SkillInvocationEvent,
@@ -302,6 +303,12 @@ export type CodexUserMessageEvent = {
   context?: string;
 };
 
+/** A failed or denied shell command from a session whose cwd matched. */
+export type CodexFailureEvent = FailureObservation & {
+  sessionRef: string;
+  date: string | undefined;
+};
+
 export async function scanCodexSessions(input: {
   projectDir: string;
   collector: SignalCollector;
@@ -316,6 +323,8 @@ export async function scanCodexSessions(input: {
   onSkillInvocation?: (event: SkillInvocationEvent) => void;
   /** Tap for classified per-session activity (edits and commands). */
   onActivity?: (event: SessionActivityEvent) => void;
+  /** Tap for every failed/denied command, for learn's tool-policy half. */
+  onFailure?: (event: CodexFailureEvent) => void;
   /**
    * Restrict the scan to rollout files whose name carries one of these thread
    * ids (rollout file names embed the thread uuid): the user-selected
@@ -346,6 +355,8 @@ export async function scanCodexSessions(input: {
   let truncated = false;
   let malformedLines = 0;
   let toolEvents = 0;
+  let execShapeOutputs = 0;
+  let classicOutputs = 0;
   for (const file of files) {
     if (filesScanned >= maxFiles) {
       truncated = true;
@@ -417,6 +428,9 @@ export async function scanCodexSessions(input: {
           }
         }
       }
+      if (payload.type === "custom_tool_call_output") execShapeOutputs += 1;
+      else if (payload.type === "function_call_output" || payload.type === "local_shell_call_output") classicOutputs += 1;
+
       let result = toolResultFromPayload(payload);
       // Codex sessions carry outputs for many tools (MCP, apply_patch, ...);
       // only outputs of known shell calls may back a failure signal, so a
@@ -427,7 +441,12 @@ export async function scanCodexSessions(input: {
       if (uses.length === 0 && !result) continue;
       toolEvents += uses.length + (result ? 1 : 0);
       const context = { sessionRef, date: recordDate(parsed) };
-      scanToolEvents(uses, result ? [result] : [], context, input.collector, state);
+      const onFailure = input.onFailure;
+      scanToolEvents(uses, result ? [result] : [], context, input.collector, state, {
+        ...(onFailure
+          ? { onFailure: (observation) => onFailure({ ...observation, sessionRef, date: context.date }) }
+          : {})
+      });
     }
     if (cwdEverMatched) filesMatched += 1;
   }
@@ -437,6 +456,17 @@ export async function scanCodexSessions(input: {
   }
   if (malformedLines > 0) {
     notes.push(`Skipped ${malformedLines} malformed codex session line(s).`);
+  }
+  // The exec shape records no per-command exit status (its outputs read
+  // "Script completed" whatever the commands inside did), so only a failing
+  // script wrapper is countable. Say so rather than let a low failure count
+  // read as a well-behaved project.
+  if (execShapeOutputs > 0) {
+    notes.push(
+      `${execShapeOutputs} of ${execShapeOutputs + classicOutputs} codex tool output(s) use the Desktop "exec" shape, ` +
+        `which records no per-command exit status; only script-level failures were countable, so failure evidence from ` +
+        `those sessions undercounts.`
+    );
   }
   // Format-drift tripwire: sessions belong to this project but yielded zero
   // shell tool events, which is how the Codex Desktop 0.145 shape went
@@ -458,6 +488,12 @@ export type FailureSignalSources = {
   codexProjectDir: string;
   /** Override for tests; defaults to ~/.codex/sessions. */
   codexSessionsDir?: string;
+  /**
+   * Tap for failed codex commands. Learn's tool-policy half reads Claude
+   * transcripts directly; without this a codex-only project has no candidate
+   * events at all, however much history it has.
+   */
+  onCodexFailure?: (event: CodexFailureEvent) => void;
 };
 
 /** Mines failure signals from both sources into one merged accumulation, so a
@@ -469,7 +505,8 @@ export async function mineFailureSignalsFromSources(sources: FailureSignalSource
   const codex = await scanCodexSessions({
     projectDir: sources.codexProjectDir,
     sessionsDir: sources.codexSessionsDir,
-    collector
+    collector,
+    ...(sources.onCodexFailure ? { onFailure: sources.onCodexFailure } : {})
   });
 
   const notes = [...claude.notes, ...codex.notes];
