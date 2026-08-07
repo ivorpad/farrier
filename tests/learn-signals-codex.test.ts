@@ -10,9 +10,9 @@ async function tempDir(prefix = "farrier-codex-signals-"): Promise<string> {
 }
 
 // Real record shapes observed in ~/.codex/sessions (codex_cli_rs 0.115/0.116):
-//   {"timestamp":"2026-03-20T09:13:07.444Z","type":"session_meta","payload":{"id":"019d0a83-...","cwd":"/Users/ivor/src/tries/2026-03-19-hud","originator":"codex_cli_rs","cli_version":"0.116.0","source":"cli",...}}
-//   {"timestamp":"...","type":"turn_context","payload":{"turn_id":"019d0a85-...","cwd":"/Users/ivor/src/tries/2026-03-19-hud","approval_policy":"never",...}}
-//   {"timestamp":"...","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"pwd && rg --files .\",\"workdir\":\"/Users/ivor/src/tries/2026-03-19-hud\",\"yield_time_ms\":1000}","call_id":"call_c3xP62E6UPGXzMuGIu5JRbW6"}}
+//   {"timestamp":"2026-03-20T09:13:07.444Z","type":"session_meta","payload":{"id":"019d0a83-...","cwd":"<project-dir>","originator":"codex_cli_rs","cli_version":"0.116.0","source":"cli",...}}
+//   {"timestamp":"...","type":"turn_context","payload":{"turn_id":"019d0a85-...","cwd":"<project-dir>","approval_policy":"never",...}}
+//   {"timestamp":"...","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"pwd && rg --files .\",\"workdir\":\"<project-dir>\",\"yield_time_ms\":1000}","call_id":"call_c3xP62E6UPGXzMuGIu5JRbW6"}}
 //   {"timestamp":"...","type":"response_item","payload":{"type":"function_call_output","call_id":"call_c3xP62E6UPGXzMuGIu5JRbW6","output":"Command: /bin/zsh -lc \"pwd && rg --files .\"\nChunk ID: 2d6ed4\nWall time: 0.0000 seconds\nProcess exited with code 0\nOriginal token count: 295\nOutput:\n..."}}
 function sessionMeta(cwd: string, timestamp = "2026-07-20T08:00:00.000Z"): unknown {
   return {

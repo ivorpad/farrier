@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { codexHookEvent, createRenderPlan, getFarrierVersion, writeRenderPlan } from "../src/engine/render";
 import { resolvePack } from "../src/packs/index";
 import { seedToolingEvidence } from "./fixtures/toolchain-evidence";
@@ -271,7 +271,7 @@ describe("render engine", () => {
     // No pack may write a machine-local path or an unpublished tool into a
     // generated harness: it is unrunnable for every other user.
     expect(agents).not.toContain("## Accepted Risks");
-    expect(agents).not.toContain("/Users/ivor/src/tries");
+    expect(agents).not.toContain(homedir());
   });
 
   test("omits uv rules when the repository has no uv.lock evidence", async () => {
@@ -808,7 +808,7 @@ describe("render engine", () => {
     expect(agents).toContain("Use Bun for TypeScript package and script execution");
     expect(agents).toContain("Do not use `npx`; use `bunx` or `pnpm dlx` instead");
     expect(agents).toContain("Keep React components small and focused");
-    expect(agents).not.toContain("/Users/ivor/src/tries");
+    expect(agents).not.toContain(homedir());
 
     const justfile = plan.files.find((file) => file.path === "justfile")?.content ?? "";
     expect(justfile).toContain("check-fast *tests:\n  bunx tsc --noEmit\n  [ -z \"{{tests}}\" ] || bun test {{tests}}");
