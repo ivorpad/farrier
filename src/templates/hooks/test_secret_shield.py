@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 HOOK = Path(__file__).with_name("secret-shield.py")
 
 
@@ -14,8 +13,7 @@ def run_hook(payload: dict) -> tuple[int, str, str]:
         [sys.executable, str(HOOK)],
         input=json.dumps(payload),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr
@@ -204,7 +202,7 @@ def test_allows_example_discovery_command_with_env_prefixed_glob() -> None:
 
 
 def test_denies_broad_env_glob_that_matches_real_env() -> None:
-    code, stdout, stderr = run_hook(pretool_payload("Bash", {"command": "rg --files -g '.env*'"}))
+    code, stdout, _stderr = run_hook(pretool_payload("Bash", {"command": "rg --files -g '.env*'"}))
 
     assert code == 0
     assert_denied(stdout)
@@ -224,7 +222,7 @@ def test_blocked_event_records_redacted_detail(tmp_path_factory) -> None:
     with tempfile.TemporaryDirectory() as cwd:
         payload = pretool_payload("Bash", {"command": "cat .env"})
         payload["cwd"] = cwd
-        code, stdout, stderr = run_hook(payload)
+        code, stdout, _stderr = run_hook(payload)
         assert code == 0
         assert_denied(stdout)
         events = (Path(cwd) / ".farrier" / "runtime" / "events.jsonl").read_text(encoding="utf-8")

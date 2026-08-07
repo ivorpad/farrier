@@ -51,8 +51,8 @@ def log_event(
             entry["usage"] = usage
         with open(path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError):
+        return
 
 
 def terminate_process(proc: subprocess.Popen[bytes]) -> None:
@@ -437,4 +437,3 @@ def interpret_backend_output(
     if not isinstance(data, dict):
         return BackendResult(None, "invalid-json", usage, stderr_tail)
     return BackendResult(data, None, usage, stderr_tail)
-

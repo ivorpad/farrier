@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).parent
 
 
@@ -14,8 +13,7 @@ def run(name: str, payload: object, *, raw: str | None = None) -> dict | None:
         [sys.executable, str(ROOT / name)],
         input=raw if raw is not None else json.dumps(payload),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=3,
         check=False,
     )

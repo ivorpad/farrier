@@ -7,12 +7,10 @@ import json
 import os
 import re
 import sys
-from pathlib import PurePosixPath
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from _hook_runtime import log_event
-
 
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 PATH_KEYS = {"file_path", "path", "notebook_path"}

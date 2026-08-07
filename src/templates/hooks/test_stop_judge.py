@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 HOOK = Path(__file__).with_name("stop-judge.py")
 
 
@@ -95,8 +94,7 @@ def run_hook(payload: dict, extra_path: Path | None = None) -> tuple[int, str, s
         [sys.executable, str(HOOK)],
         input=json.dumps(payload),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         env=env,
         check=False,
     )
@@ -117,8 +115,7 @@ def git(tmp_path: Path, *args: str) -> None:
     subprocess.run(
         ["git", *args],
         cwd=tmp_path,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         check=True,
     )

@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 HOOK = Path(__file__).with_name("quality-judge.py")
 
 
@@ -96,8 +95,7 @@ def run_hook(
         [sys.executable, str(HOOK)],
         input=json.dumps(payload),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         env=env,
         check=False,
     )

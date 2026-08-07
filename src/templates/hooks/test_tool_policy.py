@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 HOOK = Path(__file__).with_name("tool-policy.py")
 
 
@@ -29,8 +28,7 @@ def run_hook(payload: dict) -> tuple[int, str, str]:
         [sys.executable, str(HOOK)],
         input=json.dumps(payload),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr

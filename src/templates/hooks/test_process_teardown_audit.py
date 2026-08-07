@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 HOOK = Path(__file__).with_name("process-teardown-audit.py")
 
 
@@ -18,8 +17,7 @@ def run_hook(payload: dict, *, raw: str | None = None) -> tuple[int, str, str]:
         [sys.executable, str(HOOK)],
         input=raw if raw is not None else json.dumps(payload),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=30,
         check=False,
     )

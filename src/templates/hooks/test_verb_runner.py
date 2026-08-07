@@ -17,7 +17,6 @@ from _hook_runtime import (
     run_bounded_process,
 )
 
-
 HOOK = Path(__file__).with_name("verb-runner.py")
 
 
@@ -41,8 +40,7 @@ def run_hook(payload: dict, tmp_path: Path, just_body: str) -> tuple[int, str, s
         [sys.executable, str(HOOK)],
         input=json.dumps(payload),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         env=env,
         check=False,
     )
@@ -107,7 +105,7 @@ def test_posttool_passes_edited_test_file_itself(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_app.py").write_text("def test_x(): pass\n", encoding="utf-8")
 
-    code, stdout, stderr = run_hook(
+    code, _stdout, _stderr = run_hook(
         post_payload(tmp_path, tool_input={"file_path": "tests/test_app.py"}),
         tmp_path,
         f'echo "$@" > {tmp_path}/just-args.txt\nexit 0',
@@ -249,7 +247,7 @@ def test_capture_stderr_returns_bounded_tail_without_touching_stdout(tmp_path: P
 
 
 def test_stderr_tail_is_empty_when_not_captured(tmp_path: Path) -> None:
-    returncode, output, status, stderr_tail = run_bounded_process(
+    _returncode, output, status, stderr_tail = run_bounded_process(
         [sys.executable, "-c", "import sys; sys.stderr.write('boom'); sys.stdout.write('ok')"],
         cwd=str(tmp_path),
         timeout_seconds=5,

@@ -175,7 +175,7 @@ def parse_git_invocations(command: str, cwd: str) -> list[GitInvocation]:
             if token == "-c" and index + 1 < len(tokens):
                 index += 2
                 continue
-            if token.startswith("--git-dir") or token.startswith("--work-tree"):
+            if token.startswith(("--git-dir", "--work-tree")):
                 exotic = True
                 break
             if token.startswith("-"):

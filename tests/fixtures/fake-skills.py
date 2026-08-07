@@ -35,7 +35,7 @@ lock_path = os.path.join(os.getcwd(), "skills-lock.json")
 try:
     with open(lock_path, encoding="utf8") as handle:
         lock = json.load(handle)
-except Exception:
+except (OSError, json.JSONDecodeError):
     lock = {"skills": {}}
 
 for skill_id in skill_ids:

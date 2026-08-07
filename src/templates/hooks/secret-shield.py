@@ -121,7 +121,7 @@ def is_secret_path(text: str) -> bool:
         if base in SECRET_BASENAMES or unglobbed in SECRET_BASENAMES:
             return True
 
-        if unglobbed.endswith(".pem") or unglobbed.endswith(".key"):
+        if unglobbed.endswith((".pem", ".key")):
             return True
 
     return False

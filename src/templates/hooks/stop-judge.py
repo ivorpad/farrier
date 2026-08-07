@@ -19,7 +19,6 @@ from _hook_runtime import (
     run_bounded_process,
 )
 
-
 # Measured: a per-edit haiku judge call takes ~17 s end to end and a stop
 # sonnet call ~44 s idle — 60 s timed out under load, so 90 s.
 DEFAULT_TIMEOUT_MS = 90000

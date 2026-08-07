@@ -12,7 +12,6 @@ from typing import Any
 
 from _hook_runtime import log_event, read_project_text, run_bounded_process
 
-
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 # Documentation-only edits cannot break the verification gate in the stacks
 # farrier scaffolds; they skip check-fast and downgrade the Stop check.
@@ -210,9 +209,7 @@ def record_edit(cwd: str, docs_only: bool) -> None:
 def is_test_file(path: str) -> bool:
     name = os.path.basename(path)
     stem, _ = os.path.splitext(name)
-    if name.startswith("test_") or stem.endswith(TEST_SUFFIX_STYLES):
-        return True
-    return False
+    return bool(name.startswith("test_") or stem.endswith(TEST_SUFFIX_STYLES))
 
 
 def edited_project_paths(payload: dict[str, Any]) -> list[str]:

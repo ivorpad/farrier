@@ -21,7 +21,6 @@ from _hook_runtime import (
     run_bounded_process,
 )
 
-
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
 PATH_KEYS = {"file_path", "path", "notebook_path"}
 PATCH_HEADER = re.compile(
