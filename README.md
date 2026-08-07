@@ -26,7 +26,7 @@ Across six completed A/B rounds, **no arm has ever changed a measured outcome.**
 
 That is not evidence the harness fails. It means the question is still open: you cannot measure prevention when the control never fails. Every completed round so far is codex-only, so nothing generalizes to Claude yet either. Farrier now has a frozen prospective protocol and deterministic validators for snapshots, native-harness delivery, event origin, independent audit, rescue, and result scoring. Those validators make a future result falsifiable; they do not establish lift by themselves.
 
-`farrier advise` has never been A/B evaluated at all.
+`farrier advise` has been through one arm: round 5 installed an enforcement hook it recommended, and that hook fired zero times. What no round has scored is the recommendations themselves, their precision and recall against known defects. The blinded audit panel is the instrument built for that, and it is still awaiting external approval with zero provider calls made.
 
 ### What does not work yet
 
