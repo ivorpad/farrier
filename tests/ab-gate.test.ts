@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { evaluateAbGate, formatAbGateReport, loadAbGateReport } from "../src/engine/ab-gate";
+
+// docs/evaluations/ is gitignored — eval output stays local, so this record is absent on a fresh clone.
+const recordedResultPath = join(import.meta.dir, "..", "docs", "evaluations", "harness-ab-2026-07-20", "result.json");
 
 function passingResult(): Record<string, unknown> {
   return {
@@ -27,8 +31,8 @@ describe("ab-gate", () => {
     expect(formatAbGateReport(report)).toContain("Gate passed.");
   });
 
-  test("fails the recorded 2026-07-20 evaluation on loops, overhead, and artifact contact", async () => {
-    const report = await loadAbGateReport(join(import.meta.dir, "..", "docs", "evaluations", "harness-ab-2026-07-20", "result.json"));
+  test.skipIf(!existsSync(recordedResultPath))("fails the recorded 2026-07-20 evaluation on loops, overhead, and artifact contact", async () => {
+    const report = await loadAbGateReport(recordedResultPath);
 
     expect(report.ok).toBe(false);
     const failedIds = report.checks.filter((check) => !check.ok).map((check) => check.id);
