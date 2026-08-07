@@ -1,6 +1,6 @@
 {
   "name": "farrier",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Create, understand, validate, and evolve reliable coding-agent harnesses.",
   "license": "MIT",
   "type": "module",
