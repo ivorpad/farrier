@@ -1,0 +1,300 @@
+import { createHash } from "node:crypto";
+
+import { canonicalEvidence } from "../behavior-evidence";
+
+type UnknownRecord = Record<string, unknown>;
+
+export type EventOrigin =
+  | "human"
+  | "assistant"
+  | "tool"
+  | "subagent"
+  | "scheduler"
+  | "context-manager"
+  | "skill-loader"
+  | "permission-system"
+  | "runner"
+  | "unknown";
+
+export type EventKind =
+  | "human-text"
+  | "human-multimodal"
+  | "human-command"
+  | "assistant-message"
+  | "assistant-tool-call"
+  | "tool-result"
+  | "tool-error"
+  | "subagent-status"
+  | "subagent-result"
+  | "scheduled-event"
+  | "context-compaction"
+  | "skill-injection"
+  | "permission-request"
+  | "permission-decision"
+  | "runner-start"
+  | "runner-stop"
+  | "submission"
+  | "interruption"
+  | "human-workspace-edit"
+  | "unknown-user-side"
+  | "unknown-system-side";
+
+export type RunPhase =
+  | "prestart"
+  | "autonomous"
+  | "post-autonomous-freeze"
+  | "rescue"
+  | "postrun";
+
+export type ClassificationBasis =
+  | "explicit-schema"
+  | "explicit-content-block"
+  | "versioned-synthetic-envelope"
+  | "interactive-input-channel"
+  | "manual-adjudication"
+  | "unknown";
+
+export type NormalizedEvent = {
+  schemaVersion: 1;
+  rawRecordId: string;
+  blockIndex: number;
+  interactionId: string;
+  observedAt: string | null;
+  sourceRole: string | null;
+  origin: EventOrigin;
+  kind: EventKind;
+  phase: RunPhase;
+  humanAuthored: boolean;
+  agentVisible: boolean;
+  changesRunnerControlState: boolean;
+  changesWorkspace: boolean;
+  classificationBasis: ClassificationBasis;
+  ruleId: string;
+  extractorVersion: string;
+  contentSha256: string;
+  contentBytes: number;
+};
+
+export type RunnerNativeEvent = {
+  eventId: string;
+  interactionId: string;
+  observedAt: string | null;
+  origin: EventOrigin;
+  kind: EventKind;
+  phase: RunPhase;
+  humanAuthored: boolean;
+  agentVisible: boolean;
+  changesRunnerControlState: boolean;
+  changesWorkspace: boolean;
+  payload?: unknown;
+};
+
+export const sessionEventExtractorVersion = "1.0.0";
+const encoder = new TextEncoder();
+
+function record(value: unknown): UnknownRecord | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as UnknownRecord
+    : undefined;
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function digest(value: unknown): { contentSha256: string; contentBytes: number } {
+  const canonical = canonicalEvidence(value);
+  return {
+    contentSha256: createHash("sha256").update(canonical).digest("hex"),
+    contentBytes: encoder.encode(canonical).byteLength,
+  };
+}
+
+function event(input: Omit<NormalizedEvent, "schemaVersion" | "extractorVersion" | "contentSha256" | "contentBytes"> & {
+  content: unknown;
+}): NormalizedEvent {
+  const { content, ...fields } = input;
+  return {
+    schemaVersion: 1,
+    ...fields,
+    extractorVersion: sessionEventExtractorVersion,
+    ...digest(content),
+  };
+}
+
+type Classification = Pick<NormalizedEvent,
+  "origin" | "kind" | "humanAuthored" | "agentVisible" |
+  "changesRunnerControlState" | "changesWorkspace" | "classificationBasis" | "ruleId"
+>;
+
+function classified(
+  origin: EventOrigin,
+  kind: EventKind,
+  basis: ClassificationBasis,
+  ruleId: string,
+  overrides: Partial<Classification> = {},
+): Classification {
+  return {
+    origin,
+    kind,
+    humanAuthored: origin === "human",
+    agentVisible: false,
+    changesRunnerControlState: false,
+    changesWorkspace: false,
+    classificationBasis: basis,
+    ruleId,
+    ...overrides,
+  };
+}
+
+function syntheticEnvelope(value: string, raw: UnknownRecord): Classification | undefined {
+  const source = value.trimStart();
+  if (source.startsWith("<task-notification>")) {
+    return classified("subagent", "subagent-status", "versioned-synthetic-envelope", "claude.task-notification", { agentVisible: true });
+  }
+  if (source.startsWith("Another Claude session sent a message:")) {
+    return classified("subagent", "subagent-result", "versioned-synthetic-envelope", "claude.teammate-message", { agentVisible: true });
+  }
+  if (source.startsWith("Background agent ")) {
+    return classified("subagent", "subagent-status", "versioned-synthetic-envelope", "claude.background-agent", { agentVisible: true });
+  }
+  if (source.startsWith("This session is being continued from a previous conversation")) {
+    return classified("context-manager", "context-compaction", "versioned-synthetic-envelope", "claude.compaction", { agentVisible: true });
+  }
+  if (source.startsWith("Base directory for this skill:")) {
+    return classified("skill-loader", "skill-injection", "versioned-synthetic-envelope", "claude.skill-injection", { agentVisible: true });
+  }
+  if (/^<local-command-(?:stdout|stderr)>/.test(source)) {
+    return classified("tool", "tool-result", "versioned-synthetic-envelope", "claude.local-command-output", { agentVisible: true });
+  }
+  if (/^(?:<local-command-caveat>|Caveat: The messages below were generated by the user while running local commands)/.test(source)) {
+    return classified("context-manager", "unknown-system-side", "versioned-synthetic-envelope", "claude.local-command-caveat", { agentVisible: true });
+  }
+  if (/^\[Request interrupted by user(?: for tool use)?\]/.test(source)) {
+    return classified("human", "interruption", "versioned-synthetic-envelope", "claude.human-interruption", {
+      agentVisible: true,
+      changesRunnerControlState: true,
+    });
+  }
+  if (/<command-(?:name|message|args)(?:\s[^>]*)?>/.test(source)) {
+    return classified("human", "human-command", "versioned-synthetic-envelope", "claude.human-command", {
+      agentVisible: true,
+      changesRunnerControlState: true,
+    });
+  }
+  if (raw.isMeta === true) {
+    return classified("unknown", "unknown-user-side", "unknown", "claude.unrecognized-meta", { agentVisible: true });
+  }
+  return undefined;
+}
+
+function userBlock(block: unknown, raw: UnknownRecord): Classification {
+  const item = record(block);
+  if (item?.type === "tool_result") {
+    const isError = item.is_error === true || item.isError === true;
+    return classified("tool", isError ? "tool-error" : "tool-result", "explicit-content-block", "claude.tool-result", { agentVisible: true });
+  }
+  const blockText = typeof block === "string" ? block : text(item?.text);
+  if (blockText) {
+    const envelope = syntheticEnvelope(blockText, raw);
+    if (envelope) return envelope;
+  }
+  if (raw.isSidechain === true || text(raw.agentId)) {
+    return classified("subagent", "subagent-result", "explicit-schema", "claude.sidechain", { agentVisible: true });
+  }
+  if (blockText && text(raw.promptId)) {
+    return classified("human", "human-text", "interactive-input-channel", "claude.prompt-text", { agentVisible: true });
+  }
+  if (item?.type === "image" && text(raw.promptId)) {
+    return classified("human", "human-multimodal", "interactive-input-channel", "claude.prompt-image", { agentVisible: true });
+  }
+  return classified("unknown", "unknown-user-side", "unknown", "claude.ambiguous-user-block", { agentVisible: true });
+}
+
+function assistantBlock(block: unknown): Classification {
+  const item = record(block);
+  if (item?.type === "tool_use") {
+    return classified("assistant", "assistant-tool-call", "explicit-content-block", "claude.assistant-tool-call", { agentVisible: true });
+  }
+  return classified("assistant", "assistant-message", "explicit-schema", "claude.assistant-message", { agentVisible: true });
+}
+
+function recordIdentity(raw: UnknownRecord): { rawRecordId: string; interactionId: string } {
+  const rawRecordId = text(raw.uuid) ?? text(raw.requestId) ?? digest(raw).contentSha256;
+  return {
+    rawRecordId,
+    interactionId: rawRecordId,
+  };
+}
+
+export function normalizeClaudeRecord(rawValue: unknown, phase: RunPhase): NormalizedEvent[] {
+  const raw = record(rawValue);
+  if (!raw) return [];
+  const identity = recordIdentity(raw);
+  const message = record(raw.message);
+  const sourceRole = text(message?.role) ?? null;
+  const observedAt = text(raw.timestamp) ?? null;
+  const content = message?.content;
+  const blocks = Array.isArray(content) ? content : content === undefined ? [] : [content];
+  if (raw.type === "user" && blocks.length > 0) {
+    return blocks.map((block, blockIndex) => event({
+      ...identity,
+      blockIndex,
+      observedAt,
+      sourceRole,
+      phase,
+      ...userBlock(block, raw),
+      content: block,
+    }));
+  }
+  if (raw.type === "assistant" && blocks.length > 0) {
+    return blocks.map((block, blockIndex) => event({
+      ...identity,
+      blockIndex,
+      observedAt,
+      sourceRole,
+      phase,
+      ...assistantBlock(block),
+      content: block,
+    }));
+  }
+  let classification = classified("runner", "unknown-system-side", "explicit-schema", `claude.record.${String(raw.type ?? "unknown")}`);
+  if (raw.type === "permission-mode") {
+    classification = classified("permission-system", "permission-request", "explicit-schema", "claude.permission-mode", { changesRunnerControlState: true });
+  } else if (raw.type === "system" && raw.subtype === "scheduled_task_fire") {
+    classification = classified("scheduler", "scheduled-event", "explicit-schema", "claude.scheduled-event", { agentVisible: true });
+  }
+  return [event({
+    ...identity,
+    blockIndex: 0,
+    observedAt,
+    sourceRole,
+    phase,
+    ...classification,
+    content: rawValue,
+  })];
+}
+
+export function normalizeRunnerNativeEvent(input: RunnerNativeEvent): NormalizedEvent {
+  return event({
+    rawRecordId: input.eventId,
+    blockIndex: 0,
+    interactionId: input.interactionId,
+    observedAt: input.observedAt,
+    sourceRole: input.origin,
+    phase: input.phase,
+    origin: input.origin,
+    kind: input.kind,
+    humanAuthored: input.humanAuthored,
+    agentVisible: input.agentVisible,
+    changesRunnerControlState: input.changesRunnerControlState,
+    changesWorkspace: input.changesWorkspace,
+    classificationBasis: "explicit-schema",
+    ruleId: "farrier.runner-native.v1",
+    content: input.payload ?? null,
+  });
+}
+
+export function normalizedEventDigest(events: readonly NormalizedEvent[]): string {
+  return createHash("sha256").update(canonicalEvidence(events)).digest("hex");
+}

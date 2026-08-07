@@ -32,7 +32,13 @@ export type InspectedMutationOperation = MutationOperation & {
   expected: PathFingerprint; sourceExpected?: PathFingerprint; linkTarget?: ReviewedLinkTarget;
 };
 
-export type MutationPlan = { targetDir: string; operations: InspectedMutationOperation[] };
+export type ReviewedMutationAssertion = { path: string; expected: PathFingerprint };
+
+export type MutationPlan = {
+  targetDir: string;
+  operations: InspectedMutationOperation[];
+  assertions: ReviewedMutationAssertion[];
+};
 
 export type MutationResult = { written: string[]; unchanged: string[]; backupDir: string | null };
 
@@ -178,7 +184,11 @@ async function inspectLinkTarget(root: string, absolute: string, target: string,
   return { path, expected, realPath, realExpected };
 }
 
-export async function inspectMutationPlan(targetDir: string, operations: MutationOperation[]): Promise<MutationPlan> {
+export async function inspectMutationPlan(
+  targetDir: string,
+  operations: MutationOperation[],
+  assertionPaths: readonly string[] = [],
+): Promise<MutationPlan> {
   const root = resolve(targetDir);
   const seen = new Set<string>();
   const inspected: InspectedMutationOperation[] = [];
@@ -205,7 +215,16 @@ export async function inspectMutationPlan(targetDir: string, operations: Mutatio
     }
     inspected.push({ ...operation, expected });
   }
-  return { targetDir: root, operations: inspected };
+  const assertions: ReviewedMutationAssertion[] = [];
+  for (const path of assertionPaths) {
+    const absolute = absoluteInside(root, path);
+    if (seen.has(absolute)) throw new Error(`Mutation assertion overlaps mutation target: ${path}`);
+    if (assertions.some((assertion) => absoluteInside(root, assertion.path) === absolute)) {
+      throw new Error(`Mutation plan contains duplicate assertion path: ${path}`);
+    }
+    assertions.push({ path, expected: await fingerprintPath(absolute) });
+  }
+  return { targetDir: root, operations: inspected, assertions };
 }
 
 async function ensureRoot(root: string, created: Map<string, CreatedDirectory>): Promise<DirectoryIdentity> {
@@ -277,6 +296,15 @@ async function validateLinkTarget(root: string, operation: InspectedMutationOper
   }
   if (!sameFingerprint(await fingerprintPath(currentReal), reviewed.realExpected)) {
     throw new Error(`Resolved link target changed after review: ${operation.path}`);
+  }
+}
+
+async function validateAssertions(root: string, assertions: readonly ReviewedMutationAssertion[]): Promise<void> {
+  for (const assertion of assertions) {
+    const current = await fingerprintPath(absoluteInside(root, assertion.path));
+    if (!sameFingerprint(current, assertion.expected)) {
+      throw new Error(`${assertion.path} changed after review`);
+    }
   }
 }
 
@@ -372,6 +400,7 @@ export async function applyMutationPlan(plan: MutationPlan, deps: MutationApplyD
 
   try {
     const rootIdentity = await ensureRoot(root, createdDirectories);
+    await validateAssertions(root, plan.assertions);
     try {
       await lstat(backupRoot);
       throw new Error(`Backup path already exists: ${backupRelative}`);
@@ -383,6 +412,7 @@ export async function applyMutationPlan(plan: MutationPlan, deps: MutationApplyD
     if (!ownsBackupRoot) throw new Error(`Backup path was not created by this transaction: ${backupRelative}`);
     for (const [index, operation] of plan.operations.entries()) {
       const absolute = absoluteInside(root, operation.path);
+      await validateAssertions(root, plan.assertions);
       await ensureParents(root, rootIdentity, absolute, createdDirectories);
       const current = await fingerprintPath(absolute);
       if (!sameFingerprint(current, operation.expected)) throw new Error(`${operation.path} changed after review`);
@@ -398,6 +428,7 @@ export async function applyMutationPlan(plan: MutationPlan, deps: MutationApplyD
       }
 
       await deps.beforeCommit?.({ operation, index });
+      await validateAssertions(root, plan.assertions);
       await assertStableDirectoryChain(root, rootIdentity, dirname(absolute));
       if (!sameFingerprint(await fingerprintPath(absolute), operation.expected)) throw new Error(`${operation.path} changed before commit`);
       await validateSource(operation);
@@ -419,6 +450,7 @@ export async function applyMutationPlan(plan: MutationPlan, deps: MutationApplyD
 
       let backupPath: string | undefined;
       await deps.beforeBackup?.({ operation, index });
+      await validateAssertions(root, plan.assertions);
       if (current.kind !== "absent") {
         backupPath = join(backupRoot, operation.path);
         const owned = backupDirectories.get(backupRoot);
@@ -435,6 +467,7 @@ export async function applyMutationPlan(plan: MutationPlan, deps: MutationApplyD
 
       try {
         await deps.afterBackup?.({ operation, index });
+        await validateAssertions(root, plan.assertions);
         await validateSource(operation);
         await validateLinkTarget(root, operation);
         if (operation.kind === "write-file") {
@@ -459,6 +492,7 @@ export async function applyMutationPlan(plan: MutationPlan, deps: MutationApplyD
         }
         written.push(operation.path);
         await deps.afterCommit?.({ operation, index });
+        await validateAssertions(root, plan.assertions);
       } finally {
         if (stagedFile) {
           await rm(stagedFile.path, { force: true }).catch(() => undefined);
@@ -470,6 +504,7 @@ export async function applyMutationPlan(plan: MutationPlan, deps: MutationApplyD
         }
       }
     }
+    await validateAssertions(root, plan.assertions);
   } catch (error) {
     await Promise.all([...stagedArtifacts].map((path) => rm(path, { recursive: true, force: true }).catch(() => undefined)));
     const failures = await rollback(applied);

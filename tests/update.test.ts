@@ -190,25 +190,22 @@ describe("update engine", () => {
   });
 
   test("reports stack drift but apply does not switch packs", async () => {
-    const dir = await tempDir();
+    const dir = await bareTempDir();
     await renderPack(dir, "python-uv");
-
-    await writeFile(
-      join(dir, "pyproject.toml"),
-      `[project]
-name = "example"
-dependencies = ["fastapi>=0.110"]
-`,
-      "utf8"
-    );
+    await writeJson(join(dir, "package.json"), {
+      name: "typescript-project",
+      packageManager: "bun@1.3.0",
+      devDependencies: { typescript: "latest" },
+    });
+    await writeJson(join(dir, "tsconfig.json"), { compilerOptions: { strict: true } });
 
     const report = await createUpdateReport({ targetDir: dir });
 
     expect(report.currentPackId).toBe("python-uv");
     expect(report.currentPackIds).toEqual(["python-uv"]);
-    expect(report.stackDrift.detectedPackIds).toEqual(["python-fastapi", "python-uv"]);
+    expect(report.stackDrift.detectedPackIds).toEqual(["ts-base"]);
     expect(report.stackDrift.hasDrift).toBe(true);
-    expect(report.stackDrift.suggestedPackId).toBe("python-fastapi");
+    expect(report.stackDrift.suggestedPackId).toBe("ts-base");
     expect(report.stackDrift.message).toContain("will not switch packs automatically");
 
     const result = await applyUpdate({ targetDir: dir });
@@ -216,6 +213,25 @@ dependencies = ["fastapi>=0.110"]
 
     const manifest = await readJson(join(dir, ".farrier.json"));
     expect(manifest.packIds).toEqual(["python-uv"]);
+  });
+
+  test("does not report drift for a compatible explicit parent pack", async () => {
+    const dir = await tempDir("ts");
+    await renderPack(dir, "ts-base");
+    await writeJson(join(dir, "package.json"), {
+      name: "next-project",
+      packageManager: "bun@1.3.0",
+      dependencies: { next: "latest" },
+      devDependencies: { typescript: "latest" },
+    });
+    await writeJson(join(dir, "tsconfig.json"), { compilerOptions: { strict: true } });
+
+    const report = await createUpdateReport({ targetDir: dir });
+
+    expect(report.stackDrift.detectedPackIds).toEqual(["ts-nextjs", "ts-base"]);
+    expect(report.stackDrift.hasDrift).toBe(false);
+    expect(report.stackDrift.suggestedPackId).toBeNull();
+    expect(report.stackDrift.message).toContain("explicitly selects compatible pack 'ts-base'");
   });
 
   test("reports and repairs missing files, owned drift, hook drift, and preserves user-mutable drift", async () => {

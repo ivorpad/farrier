@@ -110,7 +110,7 @@ Rules:
 - Do not return targetVendors. Farrier binds every accepted candidate to ${input.policy.provider}. Never mention or create the other provider's artifacts.
 - Every recommendation must cite exact evidence IDs. Evidence summaries are the complete factual boundary.
 - A path proves existence only. Do not claim file contents unless the summary states them.
-- registryRef is optional. If present, copy an exact compatible ref from the verified catalog. Never invent installable plugins, skills, or MCP packages.
+- registryRef is optional and valid only for skills, plugins, or MCP. If present, copy an exact compatible ref from the verified registry catalog. Policy reference IDs such as codex-guidance are not registry refs. Never invent installable plugins, skills, or MCP packages.
 - Hooks are declarative and limited to current supported lifecycle events and trusted project locations. Never output executable code, commands, scripts, or config payloads.
 - Never recommend a hook that commits, pushes, publishes, or deploys automatically. Those actions require explicit user invocation.
 - Advice is report-only. Do not suggest that Farrier applied or installed anything.
@@ -182,11 +182,14 @@ function validateRecommendation(input: {
     : input.policy.routes.find((item) => item.category === category);
   if (!route) return rejectRecommendation(`Dropped recommendation '${id}': unsupported implementation route for ${input.policy.provider}.`);
   if (!suppliedRouteId) notes.push(`Filled missing route for recommendation '${id}' with '${route.id}'.`);
-  const registryRef = typeof raw.registryRef === "string" ? raw.registryRef : undefined;
-  if (registryRef) {
-    const entry = input.registryByRef.get(registryRef);
-    if (!entry || entry.category !== category || !entry.vendors.includes(input.policy.provider)) return rejectRecommendation(`Dropped recommendation '${id}': registry ref '${registryRef}' is unsupported.`);
+  const suppliedRegistryRef = typeof raw.registryRef === "string" ? raw.registryRef : undefined;
+  const registryCategory = category === "skills" || category === "plugins" || category === "mcp";
+  if (suppliedRegistryRef && registryCategory) {
+    const entry = input.registryByRef.get(suppliedRegistryRef);
+    if (!entry || entry.category !== category || !entry.vendors.includes(input.policy.provider)) return rejectRecommendation(`Dropped recommendation '${id}': registry ref '${suppliedRegistryRef}' is unsupported.`);
   }
+  if (suppliedRegistryRef && !registryCategory) notes.push(`Ignored registry ref '${suppliedRegistryRef}' on non-installable ${category} recommendation '${id}'.`);
+  const registryRef = registryCategory ? suppliedRegistryRef : undefined;
   const unboundedBenefit = suppliedBenefit ?? adviceCategoryBenefit(category);
   const benefit = boundRecommendationText(unboundedBenefit, 240);
   const origins = new Set(cited.map((evidenceId) => input.evidenceById.get(evidenceId)!.source === "project" ? "codebase" : "sessions"));

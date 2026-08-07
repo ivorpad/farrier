@@ -19,6 +19,7 @@ import {
 } from "./manifest";
 import { applyMutationPlan, fingerprintPath, inspectMutationPlan, type MutationOperation, type PathFingerprint } from "./mutation-transaction";
 import { extractRepoMapSection, spliceRepoMapSection, stripRepoMapSection } from "./repo-map";
+import { compareManifestStack, type StackComparison } from "./stack-comparison";
 
 export {
   notFarrierProjectMessage,
@@ -154,23 +155,32 @@ function migratedHookIds(manifest: NormalizedManifest): PackHookRef[] {
  */
 export function packForManifest(manifest: NormalizedManifest, catalog: PackCatalog): ResolvedPack {
   const pack = catalog.resolvePack(manifest.currentPackId);
+  const hooks = migratedHookIds(manifest);
+  const remoteHooks = hooks
+    .map((hook) => catalog.remoteHook(hook))
+    .filter((hook): hook is NonNullable<typeof hook> => hook !== undefined);
 
   return {
     ...pack,
-    hooks: migratedHookIds(manifest)
+    hooks,
+    remoteHooks
   };
 }
 
-function stackDriftMessage(currentPackId: string, detectedPackIds: string[]): string {
-  if (detectedPackIds.length === 0) {
+function stackDriftMessage(comparison: StackComparison): string {
+  if (comparison.status === "undetected") {
     return "No stack detected; keeping current manifest pack.";
   }
 
-  if (detectedPackIds[0] === currentPackId) {
-    return `Detected stack matches current manifest pack '${currentPackId}'.`;
+  if (comparison.status === "match") {
+    return `Detected stack matches current manifest pack '${comparison.currentPackId}'.`;
   }
 
-  return `Detected '${detectedPackIds[0]}' but manifest uses '${currentPackId}'. Update will not switch packs automatically.`;
+  if (comparison.status === "compatible") {
+    return `Detected '${comparison.detectedPackId}' and manifest explicitly selects compatible pack '${comparison.currentPackId}'.`;
+  }
+
+  return `Detected '${comparison.detectedPackId}' but manifest uses '${comparison.currentPackId}'. Update will not switch packs automatically.`;
 }
 
 function hookDriftForManifestWithCatalog(manifest: NormalizedManifest, catalog: PackCatalog): HookDrift[] {
@@ -437,12 +447,18 @@ export async function createUpdateReport(input: UpdateInput | string): Promise<U
   const renderPack = packForManifest(manifest, catalog);
 
   const detectedPackIds = await detectPacks(targetDir, catalog);
+  const stackComparison = compareManifestStack({
+    manifestPackIds: manifest.packIds,
+    currentPackId: manifest.currentPackId,
+    detectedPackIds,
+    catalog,
+  });
   const stackDrift: StackDriftReport = {
     currentPackId: manifest.currentPackId,
     detectedPackIds,
-    hasDrift: detectedPackIds.length > 0 && detectedPackIds[0] !== manifest.currentPackId,
-    suggestedPackId: detectedPackIds[0] ?? null,
-    message: stackDriftMessage(manifest.currentPackId, detectedPackIds)
+    hasDrift: stackComparison.status === "drift",
+    suggestedPackId: stackComparison.status === "drift" ? stackComparison.detectedPackId ?? null : null,
+    message: stackDriftMessage(stackComparison)
   };
 
   const secondaryFindings = await detectSecondary(targetDir, currentPack);

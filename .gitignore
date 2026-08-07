@@ -30,6 +30,7 @@ eval-workspaces/
 docs/evaluations/
 docs/plans/
 docs/PLAN.md
+docs/decision-gate.md
 docs/harness-model.md
 prompt-exports/
 

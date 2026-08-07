@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import type { TestRendererSetup } from "@opentui/core/testing";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { act } from "react";
 import { AgentStep } from "../src/tui/AgentStep";
 import { CreateStep } from "../src/tui/CreateStep";
@@ -15,6 +18,7 @@ import type { WizardBootstrap } from "../src/tui/wizard-bootstrap";
 import { AdviceApp } from "../src/tui/advise-app";
 import { AdviceApplyFlow } from "../src/tui/AdviceApplyFlow";
 import { AdviceBatchFlow } from "../src/tui/AdviceBatchFlow";
+import { DoctorApp } from "../src/tui/doctor-app";
 import { notFarrierProjectMessage } from "../src/engine/manifest";
 import { createInitialAdviceBatchState, type AdviceBatchState } from "../src/engine/advice-batch";
 import type { SessionConsent } from "../src/engine/advice-sessions";
@@ -134,6 +138,50 @@ describe("TUI keyboard interactions", () => {
       // escape-sequence timeout, which the test scheduler never advances.
       await interact(view, () => view.mockInput.pressKey("b"));
       expect(backs).toBe(1);
+    } finally {
+      await interact(view, () => view.renderer.destroy());
+    }
+  });
+
+  test("Doctor routes deterministic stack drift into the migration review", async () => {
+    const targetDir = await mkdtemp(join(tmpdir(), "farrier-doctor-migration-"));
+    await writeFile(join(targetDir, "package.json"), JSON.stringify({
+      name: "typescript-project",
+      packageManager: "bun@1.3.0",
+      devDependencies: { typescript: "latest" },
+    }, null, 2));
+    await writeFile(join(targetDir, "tsconfig.json"), "{\"compilerOptions\":{\"strict\":true}}\n");
+    await writeFile(join(targetDir, "bun.lock"), "");
+    await writeFile(join(targetDir, ".farrier.json"), `${JSON.stringify({
+      farrierVersion: "0.1.0",
+      packIds: ["python-uv", "python-fastapi"],
+      agents: ["claude"],
+      hookIds: ["secret-shield", "tool-policy", "write-guard", "verb-runner"],
+      skills: [],
+      secondaryAcknowledged: [],
+      learn: { enabled: false },
+      quality: { maxFileLines: 500 },
+      versions: { farrierManifest: 1, hooks: {} },
+    }, null, 2)}\n`);
+
+    const view = await testRender(<DoctorApp targetDir={targetDir} onExit={() => undefined} />, renderOptions);
+    try {
+      await interact(view, () => new Promise((resolve) => setTimeout(resolve, 150)));
+      const report = await view.waitForFrame((frame) => frame.includes("Detected 'ts-base' but manifest uses 'python-fastapi'"));
+      expect(report).toContain("enter review stack migration");
+      await interact(view, () => view.mockInput.pressEnter());
+      await interact(view, () => new Promise((resolve) => setTimeout(resolve, 150)));
+      const review = await view.waitForFrame((frame) => frame.includes("Exact stack-migration bytes for python-fastapi → ts-base"));
+      expect(review).toContain("Nothing has been written yet");
+      expect(review).toContain("Enforcement: Claude");
+      expect(review).toContain("(a changes it)");
+      await interact(view, () => view.mockInput.typeText("a"));
+      await interact(view, () => new Promise((resolve) => setTimeout(resolve, 150)));
+      const rebuilt = await view.waitForFrame((frame) =>
+        frame.includes("Exact stack-migration bytes for python-fastapi → ts-base")
+        && frame.includes("Enforcement: Codex")
+      );
+      expect(rebuilt).toContain("Nothing has been written yet");
     } finally {
       await interact(view, () => view.renderer.destroy());
     }
@@ -942,6 +990,64 @@ describe("TUI keyboard interactions", () => {
       expect(second).toContain("source source-identity");
       await interact(review, () => review.mockInput.pressKey("\x1B[6~"));
       await review.waitForFrame((value) => value.includes("content sha256"));
+    } finally {
+      await interact(review, () => review.renderer.destroy());
+    }
+  });
+
+  test("migration review permits an existing harness and requires destructive confirmation", async () => {
+    const confirmations: boolean[] = [];
+    const review = await testRender(
+      <ReviewStep
+        mode="migrate"
+        migrationLabel="python-fastapi → ts-base"
+        agents={["claude"]}
+        createRequests={[]}
+        files={[
+          {
+            path: "AGENTS.md",
+            previousContent: "Use uv.\n",
+            content: "Use Bun.\n",
+            action: "replace",
+            purpose: "Agent instructions and project commands.",
+            reason: "Reviewed stack migration output.",
+            requiresForce: true,
+          },
+          {
+            path: ".farrier/hooks/python-only.py",
+            previousContent: "print('python')\n",
+            content: "",
+            action: "remove",
+            purpose: "Retires a generated file from the old stack pack.",
+            reason: "The target pack no longer emits this byte-exact generated file.",
+            requiresForce: true,
+          },
+        ]}
+        existingHarness
+        blockerCount={0}
+        loading={false}
+        canConfirm
+        onConfirm={(force) => confirmations.push(force)}
+        onBack={() => undefined}
+        onQuit={() => undefined}
+      />,
+      renderOptions
+    );
+    try {
+      const frame = await review.waitForFrame((value) => value.includes("Exact stack-migration bytes for python-fastapi → ts-base"));
+      expect(frame).not.toContain("create is disabled");
+      expect(frame).toContain("2 path(s) will be replaced or removed");
+      expect(frame).toContain("Before");
+      await interact(review, () => review.mockInput.pressKey("\x1B[6~"));
+      const bytes = await review.waitForFrame((value) => value.includes('1: "Use uv."'));
+      expect(bytes).toContain("After");
+      await interact(review, () => review.mockInput.pressKey("\x1B[6~"));
+      await review.waitForFrame((value) => value.includes('1: "Use Bun."'));
+
+      await interact(review, () => review.mockInput.pressEnter());
+      expect(confirmations).toEqual([]);
+      await interact(review, () => review.mockInput.typeText("y"));
+      expect(confirmations).toEqual([true]);
     } finally {
       await interact(review, () => review.renderer.destroy());
     }

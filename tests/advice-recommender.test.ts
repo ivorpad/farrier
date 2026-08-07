@@ -15,6 +15,31 @@ function rawRecommendation(id: string, evidence: string) {
 }
 
 describe("advice worker validation", () => {
+  test("keeps guidance when a policy reference id is misplaced in registryRef", () => {
+    const result = validateAdviceResponse({
+      parsed: { recommendations: [{
+        id: "guidance:validation-command",
+        category: "guidance",
+        evidence: ["project:check"],
+        routeId: "guidance:agents-md",
+        reason: "Document the repository validation command.",
+        confidence: "high",
+        registryRef: "codex-guidance",
+      }] },
+      evidence: [{ id: "project:check", source: "project", kind: "workflow", summary: "Check script." }],
+      categories: ["guidance"],
+      policy: advicePolicyFor("codex"),
+      registry: [],
+    });
+
+    expect(result.recommendations).toHaveLength(1);
+    expect(result.recommendations[0]?.registryRef).toBeUndefined();
+    expect(result.notes).toContain(
+      "Ignored registry ref 'codex-guidance' on non-installable guidance recommendation 'guidance:validation-command'.",
+    );
+    expect(result.localRecoveries).toBe(1);
+  });
+
   test("rejects opposite-provider evidence but accepts any category the model judges supported", () => {
     const evidence: AdviceEvidence[] = [
       { id: "session:none", source: "codex", kind: "session", summary: "No category.", targetVendors: ["codex"] },

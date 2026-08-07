@@ -1,7 +1,8 @@
-import { resolvePack } from "../packs/index";
+import { builtinCatalog } from "../registry/catalog";
 import { detectPacksWithEvidence } from "./detect";
 import type { HarnessAuditCheck } from "./harness-audit-types";
 import type { ContainedRepository } from "./repository-paths";
+import { compareManifestStack, type StackComparisonStatus } from "./stack-comparison";
 
 type ManifestDocument = {
   path: string;
@@ -9,7 +10,7 @@ type ManifestDocument = {
 };
 
 export type HarnessAuditManifestStack = {
-  status: "match" | "compatible" | "drift" | "undetected";
+  status: StackComparisonStatus;
   manifestPackIds: string[];
   currentPackId: string;
   detectedPackId?: string;
@@ -46,14 +47,13 @@ export async function inspectManifestStack(
 
   const detected = await detectPacksWithEvidence(repository);
   const first = detected[0];
-  const detectedManifestPackIds = first ? resolvePack(first.packId).packIds : [];
-  const status = first === undefined
-    ? "undetected"
-    : first.packId === currentPackId
-      ? "match"
-      : currentPackId === "generic" || selected.some((id) => detectedManifestPackIds.includes(id))
-        ? "compatible"
-        : "drift";
+  const comparisonResult = compareManifestStack({
+    manifestPackIds: selected,
+    currentPackId,
+    detectedPackIds: detected.map((item) => item.packId),
+    catalog: builtinCatalog(),
+  });
+  const { status, detectedManifestPackIds } = comparisonResult;
   const comparison: HarnessAuditManifestStack = {
     status,
     manifestPackIds: selected,

@@ -40,6 +40,7 @@
     "test": "bun test --max-concurrency=1",
     "typecheck": "tsc --noEmit",
     "test:hooks": "uvx pytest src/templates/hooks",
+    "test:evaluations": "bun test tests/incident-ledger.test.ts tests/session-event-normalizer.test.ts tests/event-origin-calibration.test.ts tests/prospective-snapshot.test.ts tests/harness-audit-prospective-paths.test.ts tests/native-harness-manifest.test.ts tests/codex-prompt-delivery.test.ts tests/prospective-autonomy-protocol.test.ts tests/prospective-run-evidence-adversarial.test.ts tests/prospective-instrumentation-canaries.test.ts tests/prospective-independent-audit-calibration.test.ts tests/prospective-e0-forgery-matrix.test.ts tests/prospective-autonomy-result.test.ts && tsc --noEmit",
     "check": "bun test --max-concurrency=1 && tsc --noEmit && uvx pytest src/templates/hooks"
   },
   "dependencies": {

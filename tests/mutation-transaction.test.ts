@@ -37,6 +37,23 @@ describe("closed mutation transaction", () => {
     }
   });
 
+  test("assertion-only inputs abort and roll back without reverting the external edit", async () => {
+    const root = await tempDir();
+    await writeFile(join(root, "evidence.json"), "reviewed");
+    await writeFile(join(root, "value.txt"), "old");
+    const plan = await inspectMutationPlan(
+      root,
+      [{ kind: "write-file", path: "value.txt", content: "new" }],
+      ["evidence.json"],
+    );
+
+    await expect(applyMutationPlan(plan, {
+      beforeCommit: () => writeFile(join(root, "evidence.json"), "external-edit"),
+    })).rejects.toMatchObject({ mutationState: "rolled-back", recoveryPath: null });
+    expect(await readFile(join(root, "value.txt"), "utf8")).toBe("old");
+    expect(await readFile(join(root, "evidence.json"), "utf8")).toBe("external-edit");
+  });
+
   test("a concurrent edit to transaction output is retained with exact recovery material", async () => {
     const root = await tempDir();
     await writeFile(join(root, "a.txt"), "old-a");

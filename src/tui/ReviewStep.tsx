@@ -42,7 +42,7 @@ export type ReviewFile = {
   path: string;
   content: string;
   previousContent?: string;
-  action: "create" | "unchanged" | "merge" | "update" | "replace" | "blocked";
+  action: "create" | "unchanged" | "merge" | "update" | "replace" | "remove" | "blocked";
   purpose: string;
   reason?: string;
   requiresForce: boolean;
@@ -62,6 +62,8 @@ type ReviewStepProps = {
   loading: boolean;
   error?: string;
   canConfirm: boolean;
+  mode?: "create" | "migrate";
+  migrationLabel?: string;
   onConfirm: (forceReplace: boolean) => void;
   /** When set, `a` cycles the enforcement target without walking back to the Agent step. */
   onCycleAgents?: () => void;
@@ -103,6 +105,8 @@ function actionView(action: ReviewFile["action"]): {
       };
     case "replace":
       return { marker: "↻ ", label: "overwrites existing file", fg: palette.warn };
+    case "remove":
+      return { marker: "- ", label: "removes old generated file", fg: palette.warn };
     case "blocked":
       return { marker: "⚠ ", label: "blocked", fg: palette.warn };
   }
@@ -170,6 +174,9 @@ export function ReviewStep(props: ReviewStepProps) {
   const [replaceConfirmationArmed, setReplaceConfirmationArmed] = useState(false);
   const replacements = props.files.filter((file) => file.requiresForce);
   const hasReplacements = replacements.length > 0;
+  const migrating = props.mode === "migrate";
+  const applyLabel = migrating ? "apply migration" : "create harness";
+  const reviewLabel = migrating ? "review destructive changes" : "review replacements";
 
   function backOrDisarm(): void {
     if (replaceConfirmationArmed) {
@@ -196,7 +203,7 @@ export function ReviewStep(props: ReviewStepProps) {
     : defineBindings(
         binding(["up", "down"], "move", "inspect file"),
         binding(["pageup", "pagedown"], "scroll", "scroll preview"),
-        binding("enter", "activate", hasReplacements ? "review replacements" : "create harness"),
+        binding("enter", "activate", hasReplacements ? reviewLabel : applyLabel),
         ...(props.onCycleAgents ? [binding("a", "agents", "change agent")] : []),
         binding(["escape", "b"], "back", "back"),
         binding(["q", "ctrl+c"], "quit", "quit")
@@ -271,19 +278,24 @@ export function ReviewStep(props: ReviewStepProps) {
         height: "100%",
       }}
     >
-      <StepHeader current="Review" subtitle="Everything that will be created. Nothing is written until you confirm." />
+      <StepHeader
+        current="Review"
+        subtitle={migrating
+          ? `Exact stack-migration bytes${props.migrationLabel ? ` for ${props.migrationLabel}` : ""}. Nothing is written until you confirm.`
+          : "Everything that will be created. Nothing is written until you confirm."}
+      />
 
       {props.loading ? <text fg={palette.muted}>Building the manifest…</text> : null}
       {props.error ? <text fg={palette.warn}>✗ Render plan failed: {props.error}</text> : null}
-      {props.existingHarness ? <text fg={palette.warn}>✗ This project already has a Farrier harness. Use `farrier update`; create is disabled.</text> : null}
-      {!props.existingHarness && blockedCount > 0 ? (
-        <text fg={palette.warn}>{`✗ ${blockedCount} unsafe path${blockedCount === 1 ? " is" : "s are"} blocked. Inspect the ⚠ rows; create is disabled.`}</text>
+      {props.existingHarness && !migrating ? <text fg={palette.warn}>✗ This project already has a Farrier harness. Use `farrier update`; create is disabled.</text> : null}
+      {blockedCount > 0 ? (
+        <text fg={palette.warn}>{`✗ ${blockedCount} unsafe path${blockedCount === 1 ? " is" : "s are"} blocked. Inspect the ⚠ rows; ${migrating ? "migration" : "create"} is disabled.`}</text>
       ) : null}
-      {!props.existingHarness && blockedCount === 0 && hasReplacements ? (
+      {(!props.existingHarness || migrating) && blockedCount === 0 && hasReplacements ? (
         <text fg={replaceConfirmationArmed ? palette.warn : palette.gold}>
           {replaceConfirmationArmed
-            ? `Replacement armed for ${replacements.length} file(s). Press y to replace and create; n or esc cancels.`
-            : `${replacements.length} existing file(s) require replacement. Backups stay in .farrier-staging/backups/. Press Enter, then y.`}
+            ? `Destructive apply armed for ${replacements.length} path(s). Press y to ${applyLabel}; n or esc cancels.`
+            : `${replacements.length} path(s) will be replaced or removed. Backups stay in ${migrating ? ".farrier-staging/transactions/" : ".farrier-staging/backups/"}. Press Enter, then y.`}
         </text>
       ) : null}
 
@@ -310,7 +322,7 @@ export function ReviewStep(props: ReviewStepProps) {
             ) : null}
             <span fg={palette.muted}>{". Nothing has been written yet."}</span>
           </text>
-          <text fg={palette.faint}>{"+ new · = no change · M merge · U permission fix · ↻ overwrites · ⚠ blocked"}</text>
+          <text fg={palette.faint}>{"+ new · = no change · M merge · U permission fix · ↻ overwrites · - removes · ⚠ blocked"}</text>
           {visibleFiles.map((file, offset) => {
             const index = fileWindow.start + offset;
             const note = file.reason ? `${file.purpose} · ${file.reason}` : file.purpose;
@@ -362,7 +374,7 @@ export function ReviewStep(props: ReviewStepProps) {
 
       <ButtonBar
         hint={bindingsHint(reviewBindings)}
-        emberActions={replaceConfirmationArmed ? ["replace & create"] : hasReplacements ? ["review replacements"] : ["create harness"]}
+        emberActions={replaceConfirmationArmed ? [applyLabel] : hasReplacements ? [reviewLabel] : [applyLabel]}
       />
     </box>
   );

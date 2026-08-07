@@ -27,6 +27,15 @@ export type DetectedPackEvidence = {
   evidence: string[];
 };
 
+export type DetectedPackEvidenceInputs = DetectedPackEvidence & {
+  evidencePaths: string[];
+};
+
+type MatchedDetectEvidence = {
+  evidence: string[];
+  evidencePaths: string[];
+};
+
 type DetectRequirements = {
   files: Set<string>;
   globs: Set<string>;
@@ -294,8 +303,9 @@ function appendUnique(target: string[], values: string[]): void {
   }
 }
 
-export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetect): string[] | undefined {
+function matchedDetectEvidenceInputs(signals: ProjectSignals, detect: PackDetect): MatchedDetectEvidence | undefined {
   const evidence: string[] = [];
+  const evidencePaths: string[] = [];
 
   for (const file of detect.files ?? []) {
     const normalized = normalizeRelativePath(file);
@@ -304,6 +314,7 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
     }
 
     appendUnique(evidence, [normalized]);
+    appendUnique(evidencePaths, [normalized]);
   }
 
   if ((detect.anyFiles ?? []).length > 0) {
@@ -314,6 +325,7 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
     }
 
     appendUnique(evidence, presentFiles);
+    appendUnique(evidencePaths, presentFiles);
   }
 
   for (const glob of detect.globs ?? []) {
@@ -322,7 +334,9 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
       return undefined;
     }
 
-    appendUnique(evidence, matches.slice(0, maxGlobEvidencePaths));
+    const displayedMatches = matches.slice(0, maxGlobEvidencePaths);
+    appendUnique(evidence, displayedMatches);
+    appendUnique(evidencePaths, displayedMatches);
   }
 
   for (const dependency of detect.pyprojectDependencies ?? []) {
@@ -331,6 +345,7 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
     }
 
     appendUnique(evidence, [`pyproject.toml dependency: ${dependency}`]);
+    appendUnique(evidencePaths, ["pyproject.toml"]);
   }
 
   for (const table of detect.pyprojectTables ?? []) {
@@ -339,6 +354,7 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
     }
 
     appendUnique(evidence, [`pyproject.toml [${table}]`]);
+    appendUnique(evidencePaths, ["pyproject.toml"]);
   }
 
   for (const dependency of detect.packageJsonDependencies ?? []) {
@@ -347,6 +363,7 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
     }
 
     appendUnique(evidence, [`package.json dependency: ${dependency}`]);
+    appendUnique(evidencePaths, ["package.json"]);
   }
 
   for (const dependency of detect.packageJsonDevDependencies ?? []) {
@@ -355,6 +372,7 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
     }
 
     appendUnique(evidence, [`package.json devDependency: ${dependency}`]);
+    appendUnique(evidencePaths, ["package.json"]);
   }
 
   for (const dependency of detect.packageJsonAnyDependencies ?? []) {
@@ -367,6 +385,7 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
       containsPackageJsonDevDependency(signals.packageJson, dependency) ? `package.json devDependency: ${dependency}` : undefined,
     ].filter((value): value is string => value !== undefined);
     appendUnique(evidence, sections);
+    appendUnique(evidencePaths, ["package.json"]);
   }
 
   for (const gem of detect.gemfileGems ?? []) {
@@ -375,21 +394,29 @@ export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetec
     }
 
     appendUnique(evidence, [`Gemfile gem: ${gem}`]);
+    appendUnique(evidencePaths, ["Gemfile"]);
   }
 
   if ((detect.any ?? []).length > 0) {
-    const matchedBranches = (detect.any ?? []).map((child) => matchedDetectEvidence(signals, child)).filter((branch): branch is string[] => branch !== undefined);
+    const matchedBranches = (detect.any ?? [])
+      .map((child) => matchedDetectEvidenceInputs(signals, child))
+      .filter((branch): branch is MatchedDetectEvidence => branch !== undefined);
 
     if (matchedBranches.length === 0) {
       return undefined;
     }
 
     for (const branch of matchedBranches) {
-      appendUnique(evidence, branch);
+      appendUnique(evidence, branch.evidence);
+      appendUnique(evidencePaths, branch.evidencePaths);
     }
   }
 
-  return evidence;
+  return { evidence, evidencePaths };
+}
+
+export function matchedDetectEvidence(signals: ProjectSignals, detect: PackDetect): string[] | undefined {
+  return matchedDetectEvidenceInputs(signals, detect)?.evidence;
 }
 
 function matchesDetect(signals: ProjectSignals, detect: PackDetect): boolean {
@@ -397,6 +424,14 @@ function matchesDetect(signals: ProjectSignals, detect: PackDetect): boolean {
 }
 
 export async function detectPacksWithEvidence(dir: RepositoryInput, catalog?: PackCatalog): Promise<DetectedPackEvidence[]> {
+  const detected = await detectPacksWithEvidenceInputs(dir, catalog);
+  return detected.map(({ packId, evidence }) => ({ packId, evidence }));
+}
+
+export async function detectPacksWithEvidenceInputs(
+  dir: RepositoryInput,
+  catalog?: PackCatalog,
+): Promise<DetectedPackEvidenceInputs[]> {
   const packIds = catalog ? catalog.detectablePackIds() : builtinDetectionOrder();
   const packs = packIds.map((id) => (catalog ? catalog.getPack(id) : getPack(id))).filter((pack): pack is NonNullable<typeof pack> => pack !== undefined);
 
@@ -406,8 +441,8 @@ export async function detectPacksWithEvidence(dir: RepositoryInput, catalog?: Pa
   );
 
   return packs.flatMap((pack) => {
-    const evidence = matchedDetectEvidence(signals, pack.detect);
-    return evidence === undefined ? [] : [{ packId: pack.id, evidence }];
+    const matched = matchedDetectEvidenceInputs(signals, pack.detect);
+    return matched === undefined ? [] : [{ packId: pack.id, ...matched }];
   });
 }
 
