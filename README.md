@@ -2,6 +2,10 @@
 
 farrier generates the agent harness for a repository: the hooks, rules, verification verbs, and context files that Claude Code and Codex read. You pick a stack or farrier detects one, and it writes 15 to 18 files depending on what your repository proves it needs.
 
+It is for people who use Claude Code or Codex on a repository and want guard hooks and rules that the repo's own files justify. To try it in a project: `bunx farrier --detect --dry-run --dir .`, which shows what it would write without writing anything.
+
+Contents: [What it does](#what-it-does-and-what-that-is-worth) · [Quickstart](#5-minute-quickstart) · [What got generated](#what-got-generated-and-why-each-file-exists) · [Day-2 loop](#living-with-the-harness-the-day-2-loop) · [Stacks](#stacks) · [Private registries](#private-registries) · [Model configuration](#model-configuration) · [Developing farrier](#developing-farrier-itself)
+
 ## What it does, and what that is worth
 
 This section separates the two. Everything under "measured" comes from local paired A/B records that are intentionally excluded from this repository; the numbers are project notes, not independently reproducible published evidence. Everything under "unmeasured" may still be useful, but no round has shown it.
